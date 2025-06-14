@@ -104,8 +104,9 @@ async fn main(spawner: Spawner) {
     let _pin3 = PwmPin::new_ch3(p.PA10, OutputType::PushPull);
 
     let timer = low_level::Timer::new(p.TIM1);
-    timer.set_frequency(khz(20 * 2));
+    timer.set_max_compare_value((1 << 12) - 1);
     timer.set_counting_mode(low_level::CountingMode::CenterAlignedUpInterrupts);
+    info!("Timer frequency: {}", timer.get_frequency());
 
     unwrap!(spawner.spawn(blinker(led, Duration::from_millis(300))));
     unwrap!(spawner.spawn(i2c_task(p_i2c)));
