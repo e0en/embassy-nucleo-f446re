@@ -1,5 +1,5 @@
 use crate::i2c;
-use embassy_stm32::i2c as stm32_i2c;
+use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Blocking;
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
@@ -19,7 +19,7 @@ pub enum MagnetStatus {
 }
 
 pub fn read_raw_angle(
-    i2c_peripheral: &mut stm32_i2c::I2c<'_, Blocking>,
+    i2c_peripheral: &mut stm32_i2c::I2c<'_, Blocking, Master>,
 ) -> Result<u16, stm32_i2c::Error> {
     let mut buffer: [u8; 2] = [0, 0];
     i2c::blocking_read(
@@ -34,7 +34,7 @@ pub fn read_raw_angle(
 }
 
 pub fn read_magnet_status(
-    i2c_peripheral: &mut stm32_i2c::I2c<'_, Blocking>,
+    i2c_peripheral: &mut stm32_i2c::I2c<'_, Blocking, Master>,
 ) -> Result<MagnetStatus, stm32_i2c::Error> {
     let mut buffer: [u8; 1] = [0];
     i2c::blocking_read(i2c_peripheral, I2C_ADDRESS, REGISTER_STATUS, &mut buffer)?;
@@ -54,7 +54,7 @@ pub fn read_magnet_status(
 }
 
 pub fn set_digital_output_mode(
-    i2c_peripheral: &mut stm32_i2c::I2c<'_, Blocking>,
+    i2c_peripheral: &mut stm32_i2c::I2c<'_, Blocking, Master>,
 ) -> Result<(), stm32_i2c::Error> {
     let mut buffer: [u8; 1] = [0];
     i2c::blocking_read(i2c_peripheral, I2C_ADDRESS, REGISTER_CONF_L, &mut buffer)?;
