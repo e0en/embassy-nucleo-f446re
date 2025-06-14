@@ -2,6 +2,7 @@
 #![no_main]
 mod as5600;
 mod clock;
+mod foc;
 mod i2c;
 
 use crate::as5600::MagnetStatus;
