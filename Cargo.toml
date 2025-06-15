@@ -28,6 +28,7 @@ cortex-m-rt = "^0.7"
 defmt = { version = "^1.0" }
 defmt-rtt = { version = "^1.0" }
 panic-probe = { version = "^1.0", features = ["print-defmt"] }
+libm = "^0.2"
 
 [[bin]]
 name = "blink"
