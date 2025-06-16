@@ -3,6 +3,8 @@ use libm::floorf;
 use libm::sinf;
 use libm::sqrtf;
 
+use crate::pid::PID;
+
 use core::fmt::Debug;
 use core::prelude::rust_2024::derive;
 use core::result::Result;
@@ -24,14 +26,6 @@ pub struct Motor {
     pub max_voltage: f32, // Volts
     pub max_power: f32,   // Watts
     pub max_rpm: u16,
-    // TODO: add more parameters as needed
-    // pub resistance: f32, // Ohms
-}
-
-pub struct PID {
-    pub p: f32,
-    pub i: f32,
-    pub d: f32,
 }
 
 pub struct FOCParameters {
