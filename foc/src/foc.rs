@@ -54,9 +54,11 @@ pub struct FOC {
     pub current: f32,                     // Amperes
 }
 
-pub fn align_sensor() {}
-
-pub fn svpwm(v_ref: f32, angle: Radian, v_max: f32) -> Result<(f32, f32, f32), FocError> {
+pub fn svpwm(
+    v_ref: f32,
+    electrical_angle: Radian,
+    v_max: f32,
+) -> Result<(f32, f32, f32), FocError> {
     // Calculate the duty cycles for the three phases based on the voltage and angle
 
     // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
@@ -68,11 +70,15 @@ pub fn svpwm(v_ref: f32, angle: Radian, v_max: f32) -> Result<(f32, f32, f32), F
     let inv_sqrt3 = 1.0 / sqrtf(3.0);
 
     let v_normalized = v_ref / v_max;
-    let v_x = v_normalized * cosf(angle.0);
-    let v_y = v_normalized * sinf(angle.0);
+
+    let target_angle = electrical_angle.0 + core::f32::consts::PI / 2.0;
+
+    // use electrical angle + pi/2 for maximum torque
+    let v_x = v_normalized * cosf(target_angle);
+    let v_y = v_normalized * sinf(target_angle);
 
     // get the sector based on angle
-    let sector = floorf(angle.0 / pi_third) as u8 % 6;
+    let sector = floorf(target_angle / pi_third) as u8 % 6;
     match sector {
         0 => {
             let t_100 = v_x - v_y * inv_sqrt3;
