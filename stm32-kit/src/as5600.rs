@@ -4,10 +4,8 @@ use embassy_stm32::mode::Async;
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
 
-const REGISTER_CONF_H: u8 = 0x07;
 const REGISTER_CONF_L: u8 = 0x08;
 const REGISTER_RAW_ANGLE_H: u8 = 0x0C;
-const REGISTER_RAW_ANGLE_L: u8 = 0x0D;
 const REGISTER_STATUS: u8 = 0x0B;
 
 #[derive(defmt::Format)]
