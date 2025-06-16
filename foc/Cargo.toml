@@ -1,0 +1,15 @@
+[package]
+name = "foc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libm = "^0.2"
+
+[features]
+default = ["std"]
+std = []
+
+[lib]
+name = "foc"
+path = "src/lib.rs"
