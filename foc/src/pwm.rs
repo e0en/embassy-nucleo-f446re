@@ -3,6 +3,7 @@ use libm::floorf;
 use libm::sinf;
 use libm::sqrtf;
 
+use crate::motor::DutyCycle3Phase;
 use crate::pid::PID;
 use crate::units::{Radian, RadianPerSecond};
 
@@ -50,7 +51,7 @@ pub fn svpwm(
     v_ref: f32,
     electrical_angle: Radian,
     v_max: f32,
-) -> Result<(f32, f32, f32), FocError> {
+) -> Result<DutyCycle3Phase, FocError> {
     // Calculate the duty cycles for the three phases based on the voltage and angle
 
     // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
@@ -76,37 +77,61 @@ pub fn svpwm(
             let t_100 = v_x - v_y * inv_sqrt3;
             let t_110 = v_y * 2.0 * inv_sqrt3;
             let t_111 = (1.0 - t_100 - t_110) / 2.0;
-            Ok((t_100 + t_110 + t_111, t_110 + t_111, t_111))
+            Ok(DutyCycle3Phase {
+                t1: t_100 + t_110 + t_111,
+                t2: t_110 + t_111,
+                t3: t_111,
+            })
         }
         1 => {
             let t_110 = v_x + v_y * inv_sqrt3;
             let t_010 = -v_x + v_y * inv_sqrt3;
             let t_111 = (1.0 - t_110 - t_010) / 2.0;
-            Ok((t_110 + t_111, t_010 + t_110 + t_111, t_111))
+            Ok(DutyCycle3Phase {
+                t1: t_110 + t_111,
+                t2: t_010 + t_110 + t_111,
+                t3: t_111,
+            })
         }
         2 => {
             let t_010 = v_y * 2.0 * inv_sqrt3;
             let t_011 = -v_x - v_y * inv_sqrt3;
             let t_111 = (1.0 - t_010 - t_011) / 2.0;
-            Ok((t_111, t_010 + t_011 + t_111, t_011 + t_111))
+            Ok(DutyCycle3Phase {
+                t1: t_111,
+                t2: t_010 + t_011 + t_111,
+                t3: t_011 + t_111,
+            })
         }
         3 => {
             let t_011 = -v_x + v_y * inv_sqrt3;
             let t_001 = -v_y * 2.0 * inv_sqrt3;
             let t_111 = (1.0 - t_011 - t_001) / 2.0;
-            Ok((t_111, t_011 + t_111, t_011 + t_001 + t_111))
+            Ok(DutyCycle3Phase {
+                t1: t_111,
+                t2: t_011 + t_111,
+                t3: t_011 + t_001 + t_111,
+            })
         }
         4 => {
             let t_001 = -v_x - v_y * inv_sqrt3;
             let t_101 = v_x - v_y * inv_sqrt3;
             let t_111 = (1.0 - t_001 - t_101) / 2.0;
-            Ok((t_101 + t_111, t_111, t_001 + t_101 + t_111))
+            Ok(DutyCycle3Phase {
+                t1: t_101 + t_111,
+                t2: t_111,
+                t3: t_001 + t_101 + t_111,
+            })
         }
         5 => {
             let t_101 = -v_y * 2.0 * inv_sqrt3;
             let t_100 = v_x + v_y * inv_sqrt3;
             let t_111 = (1.0 - t_101 - t_100) / 2.0;
-            Ok((t_101 + t_100 + t_111, t_111, t_101 + t_111))
+            Ok(DutyCycle3Phase {
+                t1: t_101 + t_100 + t_111,
+                t2: t_111,
+                t3: t_101 + t_111,
+            })
         }
         _ => Err(FocError::CalculationError),
     }
@@ -134,10 +159,10 @@ mod tests {
         let result = svpwm(1.0, Radian(0.0), 2.0);
         assert!(result.is_ok());
 
-        let (a, b, c) = result.unwrap();
-        assert!(a >= 0.0 && a <= 1.0);
-        assert!(b >= 0.0 && b <= 1.0);
-        assert!(c >= 0.0 && c <= 1.0);
+        let duty_cycle = result.unwrap();
+        assert!(duty_cycle.t1 >= 0.0 && duty_cycle.t1 <= 1.0);
+        assert!(duty_cycle.t2 >= 0.0 && duty_cycle.t2 <= 1.0);
+        assert!(duty_cycle.t3 >= 0.0 && duty_cycle.t3 <= 1.0);
     }
 
     #[test]
@@ -170,29 +195,29 @@ mod tests {
             let result = svpwm(0.5, Radian(angle), 1.0);
             assert!(result.is_ok(), "Failed for sector {}", sector);
 
-            let (a, b, c) = result.unwrap();
+            let duty_cycle = result.unwrap();
             println!(
-                "Sector {}: angle={:.3}, a={:.6}, b={:.6}, c={:.6}",
-                sector, angle, a, b, c
+                "Sector {}: angle={:.3}, t1={:.6}, t2={:.6}, t3={:.6}",
+                sector, angle, duty_cycle.t1, duty_cycle.t2, duty_cycle.t3
             );
 
             assert!(
-                a >= 0.0 && a <= 1.0,
-                "Phase A out of range for sector {}: {}",
+                duty_cycle.t1 >= 0.0 && duty_cycle.t1 <= 1.0,
+                "Phase t1 out of range for sector {}: {}",
                 sector,
-                a
+                duty_cycle.t1
             );
             assert!(
-                b >= 0.0 && b <= 1.0,
-                "Phase B out of range for sector {}: {}",
+                duty_cycle.t2 >= 0.0 && duty_cycle.t2 <= 1.0,
+                "Phase t2 out of range for sector {}: {}",
                 sector,
-                b
+                duty_cycle.t2
             );
             assert!(
-                c >= 0.0 && c <= 1.0,
-                "Phase C out of range for sector {}: {}",
+                duty_cycle.t3 >= 0.0 && duty_cycle.t3 <= 1.0,
+                "Phase t3 out of range for sector {}: {}",
                 sector,
-                c
+                duty_cycle.t3
             );
         }
     }
@@ -214,30 +239,30 @@ mod tests {
                 sector
             );
 
-            let (a, b, c) = result.unwrap();
+            let duty_cycle = result.unwrap();
             println!(
-                "Max V Sector {}: angle={:.3}, v_ref={:.6}, a={:.6}, b={:.6}, c={:.6}",
-                sector, angle, v_ref, a, b, c
+                "Max V Sector {}: angle={:.3}, v_ref={:.6}, t1={:.6}, t2={:.6}, t3={:.6}",
+                sector, angle, v_ref, duty_cycle.t1, duty_cycle.t2, duty_cycle.t3
             );
 
             // SVPWM outputs must be strictly within [0.0, 1.0] range
             assert!(
-                a >= 0.0 && a <= 1.0,
-                "Phase A out of range for sector {}: {}",
+                duty_cycle.t1 >= 0.0 && duty_cycle.t1 <= 1.0,
+                "Phase t1 out of range for sector {}: {}",
                 sector,
-                a
+                duty_cycle.t1
             );
             assert!(
-                b >= 0.0 && b <= 1.0,
-                "Phase B out of range for sector {}: {}",
+                duty_cycle.t2 >= 0.0 && duty_cycle.t2 <= 1.0,
+                "Phase t2 out of range for sector {}: {}",
                 sector,
-                b
+                duty_cycle.t2
             );
             assert!(
-                c >= 0.0 && c <= 1.0,
-                "Phase C out of range for sector {}: {}",
+                duty_cycle.t3 >= 0.0 && duty_cycle.t3 <= 1.0,
+                "Phase t3 out of range for sector {}: {}",
                 sector,
-                c
+                duty_cycle.t3
             );
         }
     }
@@ -251,9 +276,9 @@ mod tests {
             let result = svpwm(v_ref, Radian(angle), 1.0);
             assert!(result.is_ok(), "Failed for sector {}", sector);
 
-            let (a, b, c) = result.unwrap();
-            let max_cycle = a.max(b).max(c);
-            let min_cycle = a.min(b).min(c);
+            let duty_cycle = result.unwrap();
+            let max_cycle = duty_cycle.t1.max(duty_cycle.t2).max(duty_cycle.t3);
+            let min_cycle = duty_cycle.t1.min(duty_cycle.t2).min(duty_cycle.t3);
             println!(
                 "Sector {}: angle={}, max_cycle={}, min_cycle={}",
                 sector, angle, max_cycle, min_cycle

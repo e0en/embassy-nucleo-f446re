@@ -1,4 +1,5 @@
 use crate::{
+    motor::DutyCycle3Phase,
     pid::PIDController,
     pwm::FocError,
     svpwm,
@@ -25,22 +26,6 @@ pub struct FocController {
     velocity_pid: PIDController,
 }
 
-pub struct DutyCycle3Phase {
-    pub t1: f32,
-    pub t2: f32,
-    pub t3: f32,
-}
-
-impl DutyCycle3Phase {
-    pub fn new(phases: (f32, f32, f32)) -> Self {
-        Self {
-            t1: phases.0,
-            t2: phases.1,
-            t3: phases.2,
-        }
-    }
-}
-
 impl FocController {
     pub fn align_sensor(
         &mut self,
@@ -50,7 +35,7 @@ impl FocController {
     ) -> Result<(), FocError> {
         // keep sending zero
         let zero_signal = svpwm(align_voltage, Radian(0.0), self.psu_voltage)?;
-        set_motor(DutyCycle3Phase::new(zero_signal));
+        set_motor(zero_signal);
 
         // monitor mechanical angle until convergence
         let mut angle = Radian(0.0);
@@ -64,7 +49,7 @@ impl FocController {
         for _ in 0..10 {
             target_angle.0 += 0.1;
             let signal = svpwm(align_voltage, target_angle, self.psu_voltage)?;
-            set_motor(DutyCycle3Phase::new(signal));
+            set_motor(signal);
             let (_, _measured_velocity, _) = read_sensor();
         }
 
@@ -72,7 +57,7 @@ impl FocController {
         for _ in 0..10 {
             target_angle.0 -= 0.1;
             let signal = svpwm(align_voltage, Radian(target_angle.0), self.psu_voltage)?;
-            set_motor(DutyCycle3Phase::new(signal));
+            set_motor(signal);
             let (_, _measured_velocity, _) = read_sensor();
         }
         self.sensor_direction = Direction::Clockwise;
@@ -101,11 +86,7 @@ impl FocController {
             None => 0.0,
         };
         let _electrical_angle = mechanical_angle.0 - self.bias_angle.0;
-        let uptimes = svpwm(v_ref, mechanical_angle, self.psu_voltage)?;
-        Ok(DutyCycle3Phase {
-            t1: uptimes.0,
-            t2: uptimes.1,
-            t3: uptimes.2,
-        })
+        let duty_cycle = svpwm(v_ref, mechanical_angle, self.psu_voltage)?;
+        Ok(duty_cycle)
     }
 }
