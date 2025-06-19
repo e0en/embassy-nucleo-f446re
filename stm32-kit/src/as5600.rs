@@ -1,12 +1,71 @@
 use crate::i2c;
 use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Async;
+use embassy_time::Instant;
+use foc::sensor::Sensor;
+use foc::units::{Radian, RadianPerSecond};
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
 
 const REGISTER_CONF_L: u8 = 0x08;
 const REGISTER_RAW_ANGLE_H: u8 = 0x0C;
 const REGISTER_STATUS: u8 = 0x0B;
+
+pub struct As5600 {
+    previous_raw_angle: u16,
+    previous_angle: f32,
+    previous_time: Instant,
+}
+
+impl As5600 {
+    pub fn new() -> Self {
+        As5600 {
+            previous_raw_angle: 0,
+            previous_angle: 0.0,
+            previous_time: Instant::from_secs(0),
+        }
+    }
+}
+
+impl Sensor for As5600 {
+    type Bus = stm32_i2c::I2c<'static, Async, Master>;
+
+    async fn read_async(&mut self, bus: &mut Self::Bus) -> (Radian, RadianPerSecond, f32) {
+        let now = Instant::now();
+        let dt_seconds = ((now - self.previous_time).as_micros() as f32) / 1e6;
+        let raw_angle = read_raw_angle(bus).await.unwrap();
+        let delta_1 = {
+            if raw_angle >= self.previous_raw_angle {
+                (raw_angle - self.previous_raw_angle) as i32
+            } else {
+                (4096 + raw_angle as i32) - (self.previous_raw_angle as i32)
+            }
+        };
+        let delta_2 = {
+            if raw_angle <= self.previous_raw_angle {
+                (self.previous_raw_angle - raw_angle) as i32
+            } else {
+                (4096 + self.previous_raw_angle as i32) - (raw_angle as i32)
+            }
+        };
+
+        let raw_angle_change: i32 = {
+            if delta_1.abs() < delta_2.abs() {
+                delta_1
+            } else if delta_1.abs() > delta_2.abs() {
+                delta_2
+            } else {
+                0
+            }
+        };
+        let angular_change = (raw_angle_change as f32) / 4096.0;
+        let angle = self.previous_angle + angular_change;
+        let velocity = angular_change / dt_seconds;
+        self.previous_angle = angle;
+        self.previous_time = now;
+        (Radian(angle), RadianPerSecond(velocity), dt_seconds)
+    }
+}
 
 #[derive(defmt::Format)]
 pub enum MagnetStatus {

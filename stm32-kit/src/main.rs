@@ -5,7 +5,7 @@ mod can;
 mod clock;
 mod i2c;
 
-use crate::as5600::MagnetStatus;
+use crate::as5600::{As5600, MagnetStatus};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -23,6 +23,7 @@ use embassy_stm32::{
 use embassy_stm32::gpio::{Input, Level, Output, OutputType, Pull, Speed};
 use embassy_stm32::{peripherals::TIM1, time::khz};
 use embassy_time::{Duration, Timer};
+use foc::sensor::Sensor;
 
 #[embassy_executor::task]
 async fn blinker(mut led: Output<'static>, delay: Duration) {
@@ -36,6 +37,7 @@ async fn blinker(mut led: Output<'static>, delay: Duration) {
 
 #[embassy_executor::task]
 async fn i2c_task(mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>) {
+    let mut sensor = As5600::new();
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
         Err(Error::Timeout) => error!("I2C operation timed out"),
@@ -48,6 +50,8 @@ async fn i2c_task(mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>) {
             Err(Error::Timeout) => error!("I2C operation timed out"),
             Err(e) => error!("Failed to read magnet status: {:?}", e),
         }
+
+        let (_angle, _velocity, _dt) = sensor.read_async(&mut p_i2c).await;
 
         match as5600::read_raw_angle(&mut p_i2c).await {
             Ok(angle) => info!("Magnet angle: {}", angle),
