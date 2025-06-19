@@ -137,17 +137,41 @@ pub fn svpwm(
     }
 }
 
-pub fn set_angle(_angle: f32) {
-    // set target velocity from angle difference
-    // set target current from velocity difference
-    // calculate FOC control signals
-}
-pub fn set_velocity(_rpm: u16) {
-    // set target current from velocity difference
-    // calculate FOC control signals
-}
-pub fn set_torque(_current: f32) {
-    // calculate FOC control signals
+pub fn svpwm_simplified(
+    v_ref: f32,
+    electrical_angle: Radian,
+    v_max: f32,
+) -> Result<DutyCycle3Phase, FocError> {
+    // Calculate the duty cycles for the three phases based on the voltage and angle
+
+    // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
+    let theoretical_max = sqrtf(3.0) / 2.0 * v_max;
+    if v_ref < 0.0 || v_max <= 0.0 || v_ref > theoretical_max {
+        return Err(FocError::InvalidParameters);
+    }
+
+    let v_normalized = v_ref / v_max / 1.5;
+
+    let v_x = -v_normalized * sinf(electrical_angle.0);
+    let v_y = v_normalized * cosf(electrical_angle.0);
+
+    // use SimpleFOC's implementation
+    // https://github.com/simplefoc/Arduino-FOC/blob/05672d28187320c10f74f8fa382e92b09cfadce0/src/BLDCMotor.cpp#L568-L602
+    let half_sqrt3 = sqrtf(3.0) / 2.0;
+    let u_a = v_x;
+    let u_b = -v_x / 2.0 + half_sqrt3 * v_y;
+    let u_c = -v_x / 2.0 - half_sqrt3 * v_y;
+
+    let u_max = u_a.max(u_b.max(u_c));
+    let u_min = u_a.min(u_b.min(u_c));
+
+    let center = 0.5 - (u_max + u_min) / 2.0;
+
+    Ok(DutyCycle3Phase {
+        t1: u_a + center,
+        t2: u_b + center,
+        t3: u_c + center,
+    })
 }
 
 #[cfg(test)]
@@ -291,6 +315,49 @@ mod tests {
                 max_cycle,
                 min_cycle
             );
+        }
+    }
+
+    #[test]
+    fn test_svpwm_equivalency() {
+        // Test that two implementations of svpwm give identical result
+        let v_max = 1.0;
+        for v_ref in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6] {
+            for angle_div_pi in [
+                0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
+                1.6, 1.7, 1.8, 1.9,
+            ] {
+                let angle = Radian(angle_div_pi * core::f32::consts::PI);
+                let duty_reference = svpwm(v_ref, angle, v_max).unwrap();
+                let duty_simple = svpwm_simplified(v_ref, angle, v_max).unwrap();
+
+                assert!(
+                    (duty_reference.t1 - duty_simple.t1).abs() < 1e-6,
+                    "t1: {:?} != {:?} at v_ref={}, angle={}",
+                    duty_reference,
+                    duty_simple,
+                    v_ref,
+                    angle.0
+                );
+
+                assert!(
+                    (duty_reference.t2 - duty_simple.t2).abs() < 1e-6,
+                    "t2: {:?} != {:?} at v_ref={}, angle={}",
+                    duty_reference,
+                    duty_simple,
+                    v_ref,
+                    angle.0
+                );
+
+                assert!(
+                    (duty_reference.t3 - duty_simple.t3).abs() < 1e-6,
+                    "t3: {:?} != {:?} at v_ref={}, angle={}",
+                    duty_reference,
+                    duty_simple,
+                    v_ref,
+                    angle.0
+                );
+            }
         }
     }
 }
