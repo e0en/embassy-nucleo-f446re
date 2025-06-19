@@ -4,15 +4,13 @@ use libm::sinf;
 use libm::sqrtf;
 
 use crate::pid::PID;
+use crate::units::{Radian, RadianPerSecond};
 
 use core::fmt::Debug;
 use core::prelude::rust_2024::derive;
 use core::result::Result;
 use core::result::Result::Err;
 use core::result::Result::Ok;
-
-pub struct Radian(pub f32);
-pub struct RadianPerSecond(pub f32);
 
 #[derive(Debug)]
 pub enum FocError {

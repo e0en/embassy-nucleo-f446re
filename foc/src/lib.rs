@@ -1,4 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-pub mod foc;
 pub mod pid;
-pub use foc::svpwm;
+pub mod pwm;
+pub mod units;
+pub use pwm::svpwm;
+pub mod controller;
