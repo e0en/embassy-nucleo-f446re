@@ -1,3 +1,5 @@
+use libm::fmodf;
+
 use crate::{
     motor::DutyCycle3Phase,
     pid::PIDController,
@@ -24,6 +26,7 @@ pub struct FocController {
     psu_voltage: f32,
     angle_pid: PIDController,
     velocity_pid: PIDController,
+    pole_count: u16,
 }
 
 impl FocController {
@@ -64,6 +67,13 @@ impl FocController {
 
         Ok(())
     }
+
+    fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
+        let full_angle = (mechanical_angle.0 - self.bias_angle.0) / (self.pole_count as f32);
+        let angle = fmodf(full_angle, 2.0 * core::f32::consts::PI);
+        Radian(angle)
+    }
+
     pub fn set_command(&mut self, command: Command) {
         self.command = Some(command);
     }
@@ -85,8 +95,8 @@ impl FocController {
             }
             None => 0.0,
         };
-        let _electrical_angle = mechanical_angle.0 - self.bias_angle.0;
-        let duty_cycle = svpwm(v_ref, mechanical_angle, self.psu_voltage)?;
+        let electrical_angle = self.to_electrical_angle(mechanical_angle);
+        let duty_cycle = svpwm(v_ref, electrical_angle, self.psu_voltage)?;
         Ok(duty_cycle)
     }
 }
