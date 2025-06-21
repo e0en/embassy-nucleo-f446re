@@ -51,7 +51,7 @@ async fn i2c_task(mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>) {
             Err(e) => error!("Failed to read magnet status: {:?}", e),
         }
 
-        let (_angle, _velocity, _dt) = sensor.read_async(&mut p_i2c).await;
+        let _reading = sensor.read_async(&mut p_i2c).await;
 
         match as5600::read_raw_angle(&mut p_i2c).await {
             Ok(angle) => info!("Magnet angle: {}", angle),

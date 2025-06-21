@@ -1,3 +1,5 @@
+use crate::units::Second;
+
 pub struct PID {
     pub p: f32,
     pub i: f32,
@@ -24,13 +26,14 @@ impl PIDController {
         self.last_error = 0.0;
     }
 
-    pub fn update(&mut self, error: f32, dt: f32) -> f32 {
+    pub fn update(&mut self, error: f32, dt: Second) -> f32 {
         let p_term = self.gains.p * error;
+        let seconds = dt.0;
 
-        self.integral += self.gains.i * error * dt;
+        self.integral += self.gains.i * error * seconds;
 
-        let d_term = if dt > 0.0 {
-            self.gains.d * (error - self.last_error) / dt
+        let d_term = if seconds > 0.0 {
+            self.gains.d * (error - self.last_error) / seconds
         } else {
             0.0
         };

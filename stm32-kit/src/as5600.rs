@@ -2,8 +2,8 @@ use crate::i2c;
 use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_time::Instant;
-use foc::sensor::Sensor;
-use foc::units::{Radian, RadianPerSecond};
+use foc::sensor::{Sensor, SensorReading};
+use foc::units::{Radian, Second};
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
 
@@ -13,7 +13,7 @@ const REGISTER_STATUS: u8 = 0x0B;
 
 pub struct As5600 {
     previous_raw_angle: u16,
-    previous_angle: f32,
+    previous_angle: Radian,
     previous_time: Instant,
 }
 
@@ -21,7 +21,7 @@ impl As5600 {
     pub fn new() -> Self {
         As5600 {
             previous_raw_angle: 0,
-            previous_angle: 0.0,
+            previous_angle: Radian(0.0),
             previous_time: Instant::from_secs(0),
         }
     }
@@ -30,9 +30,9 @@ impl As5600 {
 impl Sensor for As5600 {
     type Bus = stm32_i2c::I2c<'static, Async, Master>;
 
-    async fn read_async(&mut self, bus: &mut Self::Bus) -> (Radian, RadianPerSecond, f32) {
+    async fn read_async(&mut self, bus: &mut Self::Bus) -> SensorReading {
         let now = Instant::now();
-        let dt_seconds = ((now - self.previous_time).as_micros() as f32) / 1e6;
+        let dt = Second((now - self.previous_time).as_micros() as f32 / 1e6);
         let raw_angle = read_raw_angle(bus).await.unwrap();
         let delta_1 = {
             if raw_angle >= self.previous_raw_angle {
@@ -58,12 +58,16 @@ impl Sensor for As5600 {
                 0
             }
         };
-        let angular_change = (raw_angle_change as f32) / 4096.0;
+        let angular_change = Radian((raw_angle_change as f32) / 4096.0);
         let angle = self.previous_angle + angular_change;
-        let velocity = angular_change / dt_seconds;
+        let velocity = angular_change / dt;
         self.previous_angle = angle;
         self.previous_time = now;
-        (Radian(angle), RadianPerSecond(velocity), dt_seconds)
+        SensorReading {
+            angle,
+            velocity,
+            dt,
+        }
     }
 }
 

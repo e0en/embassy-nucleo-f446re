@@ -4,6 +4,7 @@ use crate::{
     motor::DutyCycle3Phase,
     pid::PIDController,
     pwm::FocError,
+    sensor::SensorReading,
     svpwm,
     units::{Radian, RadianPerSecond},
 };
@@ -30,20 +31,26 @@ pub struct FocController {
 }
 
 impl FocController {
-    pub fn align_sensor(
+    pub async fn align_sensor<FSensor, FutSensor, FMotor, FutMotor>(
         &mut self,
         align_voltage: f32,
-        read_sensor: fn() -> (Radian, RadianPerSecond, f32),
-        set_motor: fn(DutyCycle3Phase) -> (),
-    ) -> Result<(), FocError> {
+        read_sensor: FSensor,
+        set_motor: FMotor,
+    ) -> Result<(), FocError>
+    where
+        FSensor: Fn() -> FutSensor,
+        FutSensor: Future<Output = SensorReading> + Send,
+        FMotor: Fn(DutyCycle3Phase) -> FutMotor,
+        FutMotor: Future<Output = ()> + Send,
+    {
         // keep sending zero
         let zero_signal = svpwm(align_voltage, Radian(0.0), self.psu_voltage)?;
-        set_motor(zero_signal);
+        set_motor(zero_signal).await;
 
         // monitor mechanical angle until convergence
         let mut angle = Radian(0.0);
         for _ in 0..10 {
-            angle = read_sensor().0;
+            angle = read_sensor().await.angle;
         }
         self.bias_angle = angle;
 
@@ -52,16 +59,16 @@ impl FocController {
         for _ in 0..10 {
             target_angle.0 += 0.1;
             let signal = svpwm(align_voltage, target_angle, self.psu_voltage)?;
-            set_motor(signal);
-            let (_, _measured_velocity, _) = read_sensor();
+            set_motor(signal).await;
+            let _velocity = read_sensor().await.velocity;
         }
 
         // do the same for reversed direction
         for _ in 0..10 {
             target_angle.0 -= 0.1;
             let signal = svpwm(align_voltage, Radian(target_angle.0), self.psu_voltage)?;
-            set_motor(signal);
-            let (_, _measured_velocity, _) = read_sensor();
+            set_motor(signal).await;
+            let _measured_velocity = read_sensor().await.velocity;
         }
         self.sensor_direction = Direction::Clockwise;
 
@@ -69,8 +76,8 @@ impl FocController {
     }
 
     fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
-        let full_angle = (mechanical_angle.0 - self.bias_angle.0) / (self.pole_count as f32);
-        let angle = fmodf(full_angle, 2.0 * core::f32::consts::PI);
+        let full_angle = (mechanical_angle - self.bias_angle) / (self.pole_count as f32);
+        let angle = fmodf(full_angle.0, 2.0 * core::f32::consts::PI);
         Radian(angle)
     }
 
@@ -79,23 +86,23 @@ impl FocController {
     }
     pub fn get_duty_cycle(
         &mut self,
-        read_sensor: fn() -> (Radian, RadianPerSecond, f32),
+        read_sensor: fn() -> SensorReading,
     ) -> Result<DutyCycle3Phase, FocError> {
-        let (mechanical_angle, measured_velocity, dt) = read_sensor();
+        let s = read_sensor();
         let v_ref = match &self.command {
             Some(Command::Angle(target_angle)) => {
-                let angle_error = target_angle.0 - mechanical_angle.0;
-                let target_velocity = self.angle_pid.update(angle_error, dt);
-                let velocity_error = target_velocity - measured_velocity.0;
-                self.velocity_pid.update(velocity_error, dt)
+                let angle_error = *target_angle - s.angle;
+                let target_velocity = self.angle_pid.update(angle_error.0, s.dt);
+                let velocity_error = RadianPerSecond(target_velocity) - s.velocity;
+                self.velocity_pid.update(velocity_error.0, s.dt)
             }
             Some(Command::Velocity(target_velocity)) => {
-                let error = target_velocity.0 - measured_velocity.0;
-                self.velocity_pid.update(error, dt)
+                let error = *target_velocity - s.velocity;
+                self.velocity_pid.update(error.0, s.dt)
             }
             None => 0.0,
         };
-        let electrical_angle = self.to_electrical_angle(mechanical_angle);
+        let electrical_angle = self.to_electrical_angle(s.angle);
         let duty_cycle = svpwm(v_ref, electrical_angle, self.psu_voltage)?;
         Ok(duty_cycle)
     }
