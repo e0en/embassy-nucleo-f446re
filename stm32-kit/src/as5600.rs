@@ -7,6 +7,7 @@ use foc::units::{Radian, Second};
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
 
+const RAW_ANGLE_MAX: u16 = 1 << 12;
 const REGISTER_CONF_L: u8 = 0x08;
 const REGISTER_RAW_ANGLE_H: u8 = 0x0C;
 const REGISTER_STATUS: u8 = 0x0B;
@@ -38,14 +39,14 @@ impl Sensor for As5600 {
             if raw_angle >= self.previous_raw_angle {
                 (raw_angle - self.previous_raw_angle) as i32
             } else {
-                (4096 + raw_angle as i32) - (self.previous_raw_angle as i32)
+                (RAW_ANGLE_MAX as i32 + raw_angle as i32) - (self.previous_raw_angle as i32)
             }
         };
         let delta_2 = {
             if raw_angle <= self.previous_raw_angle {
                 (self.previous_raw_angle - raw_angle) as i32
             } else {
-                (4096 + self.previous_raw_angle as i32) - (raw_angle as i32)
+                (RAW_ANGLE_MAX as i32 + self.previous_raw_angle as i32) - (raw_angle as i32)
             }
         };
 
@@ -58,7 +59,7 @@ impl Sensor for As5600 {
                 0
             }
         };
-        let angular_change = Radian((raw_angle_change as f32) / 4096.0);
+        let angular_change = Radian((raw_angle_change as f32) / (RAW_ANGLE_MAX as f32));
         let angle = self.previous_angle + angular_change;
         let velocity = angular_change / dt;
         self.previous_angle = angle;
