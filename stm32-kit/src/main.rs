@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 mod as5600;
-mod can;
 mod clock;
 mod i2c;
 
@@ -11,7 +10,6 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::can as stm32_can;
 use embassy_stm32::i2c as stm32_i2c;
 use embassy_stm32::{
     Config, bind_interrupts,
@@ -20,7 +18,7 @@ use embassy_stm32::{
     timer::{low_level, simple_pwm::PwmPin},
 };
 
-use embassy_stm32::gpio::{Input, Level, Output, OutputType, Pull, Speed};
+use embassy_stm32::gpio::{Level, Output, OutputType, Speed};
 use embassy_stm32::{peripherals::TIM1, time::khz};
 use embassy_time::{Duration, Timer};
 use foc::sensor::Sensor;
@@ -36,7 +34,28 @@ async fn blinker(mut led: Output<'static>, delay: Duration) {
 }
 
 #[embassy_executor::task]
-async fn i2c_task(mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>) {
+async fn foc_task(
+    mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
+    pwm_timer: low_level::Timer<'static, TIM1>,
+) {
+    let mut cycle = 0u32;
+    let max_duty = pwm_timer.get_max_compare_value() + 1;
+
+    pwm_timer.enable_outputs();
+    pwm_timer.start();
+
+    [
+        embassy_stm32::timer::Channel::Ch1,
+        embassy_stm32::timer::Channel::Ch2,
+        embassy_stm32::timer::Channel::Ch3,
+    ]
+    .iter()
+    .for_each(|&ch| {
+        pwm_timer.enable_channel(ch, true);
+        pwm_timer.set_output_compare_mode(ch, low_level::OutputCompareMode::PwmMode1);
+        pwm_timer.set_output_compare_preload(ch, true);
+    });
+
     let mut sensor = As5600::new();
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
@@ -44,6 +63,12 @@ async fn i2c_task(mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>) {
         Err(e) => error!("Failed to set digital output mode: {:?}", e),
     }
     loop {
+        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch1, cycle);
+        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch2, cycle);
+        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch3, cycle);
+
+        cycle = (cycle + 1) % max_duty;
+
         match as5600::read_magnet_status(&mut p_i2c).await {
             Ok(MagnetStatus::Ok) => info!("Magnet is ok"),
             Ok(status) => warn!("Magnet status: {:?}", status),
@@ -63,62 +88,17 @@ async fn i2c_task(mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>) {
     }
 }
 
-#[embassy_executor::task]
-async fn pwm_task(pwm_timer: low_level::Timer<'static, TIM1>) {
-    let mut cycle = 0u32;
-    let max_duty = pwm_timer.get_max_compare_value() + 1;
-
-    pwm_timer.enable_outputs();
-    pwm_timer.start();
-
-    [
-        embassy_stm32::timer::Channel::Ch1,
-        embassy_stm32::timer::Channel::Ch2,
-        embassy_stm32::timer::Channel::Ch3,
-    ]
-    .iter()
-    .for_each(|&ch| {
-        pwm_timer.enable_channel(ch, true);
-        pwm_timer.set_output_compare_mode(ch, low_level::OutputCompareMode::PwmMode1);
-        pwm_timer.set_output_compare_preload(ch, true);
-    });
-    info!("Max duty cycle: {}", max_duty);
-    loop {
-        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch1, cycle);
-        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch2, cycle);
-        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch3, cycle);
-
-        info!("Duty cycle: {} / {}", cycle, max_duty);
-        cycle += max_duty / 100;
-        cycle %= max_duty;
-        Timer::after(Duration::from_millis(100)).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn can_task() {
-    // Placeholder for CAN task implementation
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
-        info!("CAN task running");
-    }
-}
-
 bind_interrupts!(
     struct Irqs {
         I2C1_EV => stm32_i2c::EventInterruptHandler<peripherals::I2C1>;
         I2C1_ER => stm32_i2c::ErrorInterruptHandler<peripherals::I2C1>;
-        CAN1_RX0 => stm32_can::Rx0InterruptHandler<peripherals::CAN1>;
-        CAN1_RX1 => stm32_can::Rx1InterruptHandler<peripherals::CAN1>;
-        CAN1_SCE => stm32_can::SceInterruptHandler<peripherals::CAN1>;
-        CAN1_TX => stm32_can::TxInterruptHandler<peripherals::CAN1>;
 });
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let mut config = Config::default();
     clock::set_clock(&mut config);
-    let mut p = embassy_stm32::init(config);
+    let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
     let led = Output::new(p.PA5, Level::Low, Speed::Medium);
@@ -146,27 +126,6 @@ async fn main(spawner: Spawner) {
     timer.set_counting_mode(low_level::CountingMode::CenterAlignedUpInterrupts);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    // Initialize CAN
-
-    // Pull up PA11 for CAN loopback test
-    let rx_pin = Input::new(p.PA11.reborrow(), Pull::Up);
-    core::mem::forget(rx_pin);
-
-    let mut can = stm32_can::Can::new(p.CAN1, p.PA11, p.PA12, Irqs);
-    can.modify_filters().enable_bank(
-        0,
-        stm32_can::Fifo::Fifo0,
-        stm32_can::filter::Mask32::accept_all(),
-    );
-
-    can.modify_config()
-        .set_loopback(true) // Receive own frames
-        .set_silent(true)
-        .set_bitrate(1_000_000);
-    can.enable().await;
-
     unwrap!(spawner.spawn(blinker(led, Duration::from_millis(300))));
-    unwrap!(spawner.spawn(i2c_task(p_i2c)));
-    unwrap!(spawner.spawn(pwm_task(timer)));
-    unwrap!(spawner.spawn(can_task()));
+    unwrap!(spawner.spawn(foc_task(p_i2c, timer)));
 }
