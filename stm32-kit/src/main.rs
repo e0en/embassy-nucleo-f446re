@@ -3,6 +3,7 @@
 mod as5600;
 mod clock;
 mod i2c;
+mod pwm;
 
 use crate::as5600::{As5600, MagnetStatus};
 
@@ -10,16 +11,16 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::i2c as stm32_i2c;
 use embassy_stm32::{
     Config, bind_interrupts,
     i2c::{Error, I2c, Master},
     peripherals,
-    timer::{low_level, simple_pwm::PwmPin},
+    timer::low_level,
 };
+use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 
-use embassy_stm32::gpio::{Level, Output, OutputType, Speed};
-use embassy_stm32::{peripherals::TIM1, time::khz};
+use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::time::khz;
 use embassy_time::{Duration, Timer};
 use foc::sensor::Sensor;
 
@@ -36,25 +37,12 @@ async fn blinker(mut led: Output<'static>, delay: Duration) {
 #[embassy_executor::task]
 async fn foc_task(
     mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
-    pwm_timer: low_level::Timer<'static, TIM1>,
+    mut pwm_timer: low_level::Timer<'static, TIM1>,
 ) {
     let mut cycle = 0u32;
     let max_duty = pwm_timer.get_max_compare_value() + 1;
 
-    pwm_timer.enable_outputs();
-    pwm_timer.start();
-
-    [
-        embassy_stm32::timer::Channel::Ch1,
-        embassy_stm32::timer::Channel::Ch2,
-        embassy_stm32::timer::Channel::Ch3,
-    ]
-    .iter()
-    .for_each(|&ch| {
-        pwm_timer.enable_channel(ch, true);
-        pwm_timer.set_output_compare_mode(ch, low_level::OutputCompareMode::PwmMode1);
-        pwm_timer.set_output_compare_preload(ch, true);
-    });
+    pwm::initialize(&mut pwm_timer);
 
     let mut sensor = As5600::new();
     match as5600::set_digital_output_mode(&mut p_i2c).await {
@@ -63,10 +51,7 @@ async fn foc_task(
         Err(e) => error!("Failed to set digital output mode: {:?}", e),
     }
     loop {
-        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch1, cycle);
-        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch2, cycle);
-        pwm_timer.set_compare_value(embassy_stm32::timer::Channel::Ch3, cycle);
-
+        pwm::set_duty_cycle(&mut pwm_timer, cycle, cycle, cycle);
         cycle = (cycle + 1) % max_duty;
 
         match as5600::read_magnet_status(&mut p_i2c).await {
@@ -116,14 +101,8 @@ async fn main(spawner: Spawner) {
         i2c_config,
     );
 
-    // Initialize PWM
-    let _pin1 = PwmPin::new_ch1(p.PA8, OutputType::PushPull);
-    let _pin2 = PwmPin::new_ch2(p.PA9, OutputType::PushPull);
-    let _pin3 = PwmPin::new_ch3(p.PA10, OutputType::PushPull);
-
-    let timer = low_level::Timer::new(p.TIM1);
+    let timer = pwm::create_timer(p.PA8, p.PA9, p.PA10, p.TIM1);
     timer.set_max_compare_value((1 << 12) - 1);
-    timer.set_counting_mode(low_level::CountingMode::CenterAlignedUpInterrupts);
     info!("Timer frequency: {}", timer.get_frequency());
 
     unwrap!(spawner.spawn(blinker(led, Duration::from_millis(300))));
