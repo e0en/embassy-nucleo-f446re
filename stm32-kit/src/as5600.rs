@@ -2,7 +2,7 @@ use crate::i2c;
 use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_time::Instant;
-use foc::sensor::{Sensor, SensorReading};
+use foc::angle_input::{AngleInput, AngleReading};
 use foc::units::{Radian, Second};
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
@@ -28,13 +28,14 @@ impl As5600 {
     }
 }
 
-impl Sensor for As5600 {
+impl AngleInput for As5600 {
     type Bus = stm32_i2c::I2c<'static, Async, Master>;
+    type ReadError = stm32_i2c::Error;
 
-    async fn read_async(&mut self, bus: &mut Self::Bus) -> SensorReading {
+    async fn read_async(&mut self, bus: &mut Self::Bus) -> Result<AngleReading, Self::ReadError> {
         let now = Instant::now();
         let dt = Second((now - self.previous_time).as_micros() as f32 / 1e6);
-        let raw_angle = read_raw_angle(bus).await.unwrap();
+        let raw_angle = read_raw_angle(bus).await?;
         let delta_1 = {
             if raw_angle >= self.previous_raw_angle {
                 (raw_angle - self.previous_raw_angle) as i32
@@ -64,11 +65,11 @@ impl Sensor for As5600 {
         let velocity = angular_change / dt;
         self.previous_angle = angle;
         self.previous_time = now;
-        SensorReading {
+        Ok(AngleReading {
             angle,
             velocity,
             dt,
-        }
+        })
     }
 }
 

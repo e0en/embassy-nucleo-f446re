@@ -26,7 +26,8 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
 use embassy_time::{Duration, Timer};
-use foc::{motor::DutyCycle3Phase, motor::MotorDriver, sensor::Sensor};
+use foc::angle_input::AngleInput;
+use foc::pwm_output::{DutyCycle3Phase, PwmOutput};
 
 #[embassy_executor::task]
 async fn blinker(mut led: Output<'static>, delay: Duration) {
@@ -66,12 +67,13 @@ async fn foc_task(
             Err(e) => error!("Failed to read magnet status: {:?}", e),
         }
 
-        let _reading = sensor.read_async(&mut p_i2c).await;
-
-        match as5600::read_raw_angle(&mut p_i2c).await {
-            Ok(angle) => info!("Magnet angle: {}", angle),
+        match sensor.read_async(&mut p_i2c).await {
+            Ok(reading) => info!(
+                "Angle = {}, Velocity = {}, dt = {}",
+                reading.angle, reading.velocity, reading.dt
+            ),
             Err(Error::Timeout) => error!("I2C operation timed out"),
-            Err(e) => error!("Failed to read raw angle: {:?}", e),
+            Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
         Timer::after(Duration::from_millis(500)).await;

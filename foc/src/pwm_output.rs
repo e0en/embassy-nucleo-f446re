@@ -23,6 +23,6 @@ impl DutyCycle3Phase {
     }
 }
 
-pub trait MotorDriver {
+pub trait PwmOutput {
     fn run(&mut self, signal: DutyCycle3Phase);
 }

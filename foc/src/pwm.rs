@@ -3,7 +3,7 @@ use libm::floorf;
 use libm::sinf;
 use libm::sqrtf;
 
-use crate::motor::DutyCycle3Phase;
+use crate::pwm_output::DutyCycle3Phase;
 use crate::units::Radian;
 
 use core::fmt::Debug;

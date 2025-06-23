@@ -1,10 +1,10 @@
 use libm::fmodf;
 
 use crate::{
-    motor::DutyCycle3Phase,
+    angle_input::AngleReading,
     pid::PIDController,
     pwm::FocError,
-    sensor::SensorReading,
+    pwm_output::DutyCycle3Phase,
     svpwm,
     units::{Radian, RadianPerSecond, Second},
 };
@@ -41,7 +41,7 @@ impl FocController {
     ) -> Result<(), FocError>
     where
         FSensor: Fn() -> FutSensor,
-        FutSensor: Future<Output = SensorReading> + Send,
+        FutSensor: Future<Output = AngleReading> + Send,
         FMotor: Fn(DutyCycle3Phase) -> FutMotor,
         FutMotor: Future<Output = ()> + Send,
     {
@@ -88,7 +88,7 @@ impl FocController {
     }
     pub fn get_duty_cycle(
         &mut self,
-        read_sensor: fn() -> SensorReading,
+        read_sensor: fn() -> AngleReading,
     ) -> Result<DutyCycle3Phase, FocError> {
         let s = read_sensor();
         let v_ref = match &self.command {

@@ -1,6 +1,6 @@
 use embassy_stm32::timer::GeneralInstance4Channel;
 use embassy_stm32::timer::low_level;
-use foc::motor::{DutyCycle3Phase, MotorDriver};
+use foc::pwm_output::{DutyCycle3Phase, PwmOutput};
 
 use crate::pwm::set_duty_cycle;
 
@@ -25,7 +25,7 @@ where
     }
 }
 
-impl<'a, TIM> MotorDriver for PwmDriver<'a, TIM>
+impl<'a, TIM> PwmOutput for PwmDriver<'a, TIM>
 where
     TIM: GeneralInstance4Channel,
 {
