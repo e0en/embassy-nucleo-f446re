@@ -4,8 +4,7 @@ use libm::sinf;
 use libm::sqrtf;
 
 use crate::motor::DutyCycle3Phase;
-use crate::pid::PID;
-use crate::units::{Radian, RadianPerSecond};
+use crate::units::Radian;
 
 use core::fmt::Debug;
 use core::prelude::rust_2024::derive;
@@ -17,34 +16,6 @@ use core::result::Result::Ok;
 pub enum FocError {
     InvalidParameters,
     CalculationError,
-}
-
-pub struct Motor {
-    pub pole_pairs: u8,
-    pub max_current: f32, // Amperes
-    pub max_voltage: f32, // Volts
-    pub max_power: f32,   // Watts
-    pub max_rpm: u16,
-}
-
-pub struct FOCParameters {
-    pub align_voltage: f32, // Volts
-    pub angle_pid: PID,
-    pub velocity_pid: PID,
-    pub velocity_output_limit: f32, // Volts per second
-    pub velocity_time_filter: f32,  // Seconds,
-    pub motor: Motor,
-}
-
-pub struct FOC {
-    pub parameters: FOCParameters,
-    pub angle: Radian,                    // Radians
-    pub target_angle: Radian,             // Radians
-    pub sensor_angle: Radian,             // Radians
-    pub velocity: RadianPerSecond,        // Radians per second
-    pub target_velocity: RadianPerSecond, // Radians per second
-    pub sensor_velocity: RadianPerSecond, // Radians per second
-    pub current: f32,                     // Amperes
 }
 
 pub fn svpwm(

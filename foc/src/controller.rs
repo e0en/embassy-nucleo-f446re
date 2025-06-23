@@ -6,7 +6,7 @@ use crate::{
     pwm::FocError,
     sensor::SensorReading,
     svpwm,
-    units::{Radian, RadianPerSecond},
+    units::{Radian, RadianPerSecond, Second},
 };
 
 pub enum Direction {
@@ -27,6 +27,8 @@ pub struct FocController {
     psu_voltage: f32,
     angle_pid: PIDController,
     velocity_pid: PIDController,
+    _velocity_output_limit: f32, // Volts per second
+    _velocity_time_filter: Second,
     pole_count: u16,
 }
 

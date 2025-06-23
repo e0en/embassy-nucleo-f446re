@@ -5,6 +5,14 @@ pub struct DutyCycle3Phase {
     pub t3: f32,
 }
 
+pub struct Motor {
+    pub pole_pairs: u8,
+    pub max_current: f32, // Amperes
+    pub max_voltage: f32, // Volts
+    pub max_power: f32,   // Watts
+    pub max_rpm: u16,
+}
+
 impl DutyCycle3Phase {
     pub fn new(phases: (f32, f32, f32)) -> Self {
         Self {
@@ -15,6 +23,6 @@ impl DutyCycle3Phase {
     }
 }
 
-pub trait Motor {
-    fn run(signal: DutyCycle3Phase);
+pub trait MotorDriver {
+    fn run(&mut self, signal: DutyCycle3Phase);
 }
