@@ -3,17 +3,18 @@ use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_time::Instant;
 use foc::angle_input::{AngleInput, AngleReading};
-use foc::units::{Radian, Second};
+use foc::units::{Radian, RadianPerSecond, Second};
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
 
 const RAW_ANGLE_MAX: u16 = 1 << 12;
+const RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / (RAW_ANGLE_MAX as f32);
 const REGISTER_CONF_L: u8 = 0x08;
 const REGISTER_RAW_ANGLE_H: u8 = 0x0C;
 const REGISTER_STATUS: u8 = 0x0B;
 
 pub struct As5600 {
-    previous_raw_angle: u16,
+    previous_raw_angle: Option<u16>,
     previous_angle: Radian,
     previous_time: Instant,
 }
@@ -21,7 +22,7 @@ pub struct As5600 {
 impl As5600 {
     pub fn new() -> Self {
         As5600 {
-            previous_raw_angle: 0,
+            previous_raw_angle: None,
             previous_angle: Radian(0.0),
             previous_time: Instant::from_secs(0),
         }
@@ -36,40 +37,55 @@ impl AngleInput for As5600 {
         let now = Instant::now();
         let dt = Second((now - self.previous_time).as_micros() as f32 / 1e6);
         let raw_angle = read_raw_angle(bus).await?;
-        let delta_1 = {
-            if raw_angle >= self.previous_raw_angle {
-                (raw_angle - self.previous_raw_angle) as i32
-            } else {
-                (RAW_ANGLE_MAX as i32 + raw_angle as i32) - (self.previous_raw_angle as i32)
+        match self.previous_raw_angle {
+            None => {
+                self.previous_time = now;
+                self.previous_raw_angle = Some(raw_angle);
+                self.previous_angle = Radian(raw_angle as f32 * RAW_TO_RADIAN);
+                Ok(AngleReading {
+                    angle: self.previous_angle,
+                    velocity: RadianPerSecond(0.0),
+                    dt: Second(0.0),
+                })
             }
-        };
-        let delta_2 = {
-            if raw_angle <= self.previous_raw_angle {
-                (self.previous_raw_angle - raw_angle) as i32
-            } else {
-                (RAW_ANGLE_MAX as i32 + self.previous_raw_angle as i32) - (raw_angle as i32)
-            }
-        };
+            Some(previous_raw_angle) => {
+                let delta_1 = {
+                    if raw_angle >= previous_raw_angle {
+                        (raw_angle as i32) - (previous_raw_angle as i32)
+                    } else {
+                        (RAW_ANGLE_MAX as i32 + raw_angle as i32) - (previous_raw_angle as i32)
+                    }
+                };
+                let delta_2 = {
+                    if raw_angle <= previous_raw_angle {
+                        (previous_raw_angle as i32) - (raw_angle as i32)
+                    } else {
+                        (RAW_ANGLE_MAX as i32 + previous_raw_angle as i32) - (raw_angle as i32)
+                    }
+                };
 
-        let raw_angle_change: i32 = {
-            if delta_1.abs() < delta_2.abs() {
-                delta_1
-            } else if delta_1.abs() > delta_2.abs() {
-                delta_2
-            } else {
-                0
+                let raw_angle_change: i32 = {
+                    if delta_1.abs() < delta_2.abs() {
+                        delta_1
+                    } else if delta_1.abs() > delta_2.abs() {
+                        -delta_2
+                    } else {
+                        0
+                    }
+                };
+                let angular_change = Radian((raw_angle_change as f32) * RAW_TO_RADIAN);
+                let angle = self.previous_angle + angular_change;
+                let velocity = angular_change / dt;
+                self.previous_raw_angle = Some(raw_angle);
+                self.previous_angle = angle;
+                self.previous_time = now;
+                Ok(AngleReading {
+                    angle,
+                    velocity,
+                    dt,
+                })
             }
-        };
-        let angular_change = Radian((raw_angle_change as f32) / (RAW_ANGLE_MAX as f32));
-        let angle = self.previous_angle + angular_change;
-        let velocity = angular_change / dt;
-        self.previous_angle = angle;
-        self.previous_time = now;
-        Ok(AngleReading {
-            angle,
-            velocity,
-            dt,
-        })
+        }
     }
 }
 

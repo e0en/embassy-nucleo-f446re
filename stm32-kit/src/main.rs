@@ -70,7 +70,7 @@ async fn foc_task(
         match sensor.read_async(&mut p_i2c).await {
             Ok(reading) => info!(
                 "Angle = {}, Velocity = {}, dt = {}",
-                reading.angle, reading.velocity, reading.dt
+                reading.angle.0, reading.velocity.0, reading.dt.0
             ),
             Err(Error::Timeout) => error!("I2C operation timed out"),
             Err(e) => error!("Failed to read from sensor: {:?}", e),
