@@ -25,7 +25,7 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use foc::angle_input::AngleInput;
 use foc::pwm_output::{DutyCycle3Phase, PwmOutput};
 
@@ -44,39 +44,52 @@ async fn foc_task(
     mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
     pwm_timer: low_level::Timer<'static, TIM1>,
 ) {
-    let mut cycle = 0u32;
-    let max_duty = pwm_timer.get_max_compare_value() + 1;
-
     let mut driver = PwmDriver::new(pwm_timer);
 
     let mut sensor = As5600::new();
+    sensor.initialize(&mut p_i2c).await.unwrap();
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
         Err(Error::Timeout) => error!("I2C operation timed out"),
         Err(e) => error!("Failed to set digital output mode: {:?}", e),
     }
+
+    match as5600::read_magnet_status(&mut p_i2c).await {
+        Ok(MagnetStatus::Ok) => info!("Magnet is ok"),
+        Ok(status) => warn!("Magnet status: {:?}", status),
+        Err(Error::Timeout) => error!("I2C operation timed out"),
+        Err(e) => error!("Failed to read magnet status: {:?}", e),
+    }
+
+    let mut last_logged_at = Instant::from_secs(0);
+    let mut count: usize = 0;
     loop {
-        let duty_ratio = (cycle as f32) / (max_duty as f32);
-        driver.run(DutyCycle3Phase::new((duty_ratio, duty_ratio, duty_ratio)));
-        cycle = (cycle + 1) % max_duty;
-
-        match as5600::read_magnet_status(&mut p_i2c).await {
-            Ok(MagnetStatus::Ok) => info!("Magnet is ok"),
-            Ok(status) => warn!("Magnet status: {:?}", status),
-            Err(Error::Timeout) => error!("I2C operation timed out"),
-            Err(e) => error!("Failed to read magnet status: {:?}", e),
-        }
-
+        count += 1;
         match sensor.read_async(&mut p_i2c).await {
-            Ok(reading) => info!(
-                "Angle = {}, Velocity = {}, dt = {}",
-                reading.angle.0, reading.velocity.0, reading.dt.0
-            ),
+            Ok(reading) => {
+                let duty_ratio = reading.angle.0 / (2.0 * core::f32::consts::PI);
+                driver.run(DutyCycle3Phase::new((duty_ratio, duty_ratio, duty_ratio)));
+
+                let now = Instant::now();
+                if (now - last_logged_at) > Duration::from_millis(200) {
+                    let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
+
+                    last_logged_at = now;
+                    info!(
+                        "Angle = {}, Velocity = {}, dt = {} loop = {} Hz",
+                        reading.angle.0,
+                        reading.velocity.0,
+                        reading.dt.0,
+                        count as f32 / second_since_last_log
+                    );
+                    count = 0;
+                }
+            }
             Err(Error::Timeout) => error!("I2C operation timed out"),
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
-        Timer::after(Duration::from_millis(500)).await;
+        Timer::after(Duration::from_micros(1)).await;
     }
 }
 

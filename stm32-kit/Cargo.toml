@@ -19,7 +19,7 @@ embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "56572
 ], optional = true }
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
   "defmt-timestamp-uptime",
-  "tick-hz-32_768",
+  "tick-hz-1_000_000",
   "defmt",
 ], optional = true }
 

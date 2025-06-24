@@ -1,7 +1,7 @@
 use crate::i2c;
 use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Async;
-use embassy_time::Instant;
+use embassy_time::{Duration, Instant, Timer};
 use foc::angle_input::{AngleInput, AngleReading};
 use foc::units::{Radian, RadianPerSecond, Second};
 
@@ -9,6 +9,7 @@ const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
 
 const RAW_ANGLE_MAX: u16 = 1 << 12;
 const RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / (RAW_ANGLE_MAX as f32);
+const REGISTER_CONF_H: u8 = 0x07;
 const REGISTER_CONF_L: u8 = 0x08;
 const REGISTER_RAW_ANGLE_H: u8 = 0x0C;
 const REGISTER_STATUS: u8 = 0x0B;
@@ -26,6 +27,17 @@ impl As5600 {
             previous_angle: Radian(0.0),
             previous_time: Instant::from_secs(0),
         }
+    }
+
+    pub async fn initialize(
+        &mut self,
+        i2c_peripheral: &mut stm32_i2c::I2c<'_, Async, Master>,
+    ) -> Result<(), stm32_i2c::Error> {
+        set_fast_sampling(i2c_peripheral).await?;
+        Timer::after(Duration::from_millis(10)).await;
+        set_digital_output_mode(i2c_peripheral).await?;
+        Timer::after(Duration::from_millis(10)).await;
+        Ok(())
     }
 }
 
@@ -142,6 +154,19 @@ pub async fn set_digital_output_mode(
     buffer[0] &= 0b1100_1111;
     buffer[0] |= 0b0010_0000;
     i2c::write_byte(i2c_peripheral, I2C_ADDRESS, REGISTER_CONF_L, buffer[0]).await?;
+
+    Ok(())
+}
+
+pub async fn set_fast_sampling(
+    i2c_peripheral: &mut stm32_i2c::I2c<'_, Async, Master>,
+) -> Result<(), stm32_i2c::Error> {
+    let mut buffer: [u8; 1] = [0];
+    i2c::read(i2c_peripheral, I2C_ADDRESS, REGISTER_CONF_H, &mut buffer).await?;
+    // set bit 1~0 to 0b11 (fastest sampling)
+    buffer[0] &= 0b1111_1100;
+    buffer[0] |= 0b0000_0011;
+    i2c::write_byte(i2c_peripheral, I2C_ADDRESS, REGISTER_CONF_H, buffer[0]).await?;
 
     Ok(())
 }
