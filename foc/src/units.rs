@@ -1,4 +1,4 @@
-use core::ops::{Add, Div, Mul, Sub};
+use core::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
 use libm::fmodf;
 
@@ -24,10 +24,22 @@ impl Add<Self> for Radian {
     }
 }
 
+impl AddAssign<Self> for Radian {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+
 impl Sub<Self> for Radian {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self::Output {
         Radian(self.0 - rhs.0)
+    }
+}
+
+impl SubAssign<Self> for Radian {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
     }
 }
 
@@ -38,10 +50,22 @@ impl Add<f32> for Radian {
     }
 }
 
+impl AddAssign<f32> for Radian {
+    fn add_assign(&mut self, rhs: f32) {
+        self.0 += rhs;
+    }
+}
+
 impl Sub<f32> for Radian {
     type Output = Self;
     fn sub(self, rhs: f32) -> Self::Output {
         Self(self.0 - rhs)
+    }
+}
+
+impl SubAssign<f32> for Radian {
+    fn sub_assign(&mut self, rhs: f32) {
+        self.0 -= rhs;
     }
 }
 

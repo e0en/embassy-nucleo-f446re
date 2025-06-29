@@ -26,8 +26,8 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::AngleInput;
-use foc::pwm_output::{DutyCycle3Phase, PwmOutput};
+use foc::{angle_input::AngleInput, svpwm};
+use foc::{pwm_output::PwmOutput, units::Radian};
 
 #[embassy_executor::task]
 async fn blinker(mut led: Output<'static>, delay: Duration) {
@@ -63,18 +63,25 @@ async fn foc_task(
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
+    let mut electrical_angle = Radian(0.0);
     loop {
         count += 1;
         match sensor.read_async(&mut p_i2c).await {
             Ok(reading) => {
-                let duty_ratio = reading.angle.0 / (2.0 * core::f32::consts::PI);
-                driver.run(DutyCycle3Phase::new((duty_ratio, duty_ratio, duty_ratio)));
+                let duty = svpwm(4.0, electrical_angle, 12.0).unwrap();
+                driver.run(duty);
+
+                electrical_angle += Radian(0.01);
 
                 let now = Instant::now();
                 if (now - last_logged_at) > Duration::from_millis(200) {
                     let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
 
                     last_logged_at = now;
+                    info!(
+                        "e_angle = {}, v = {}, {}, {}",
+                        electrical_angle.0, duty.t1, duty.t2, duty.t3
+                    );
                     info!(
                         "Angle = {}, Velocity = {}, dt = {} loop = {} Hz",
                         reading.angle.0,

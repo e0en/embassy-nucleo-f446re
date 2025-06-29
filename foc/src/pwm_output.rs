@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct DutyCycle3Phase {
     pub t1: f32,
     pub t2: f32,

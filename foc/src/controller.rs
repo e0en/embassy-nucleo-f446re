@@ -2,7 +2,7 @@ use libm::fmodf;
 
 use crate::{
     angle_input::AngleReading,
-    pid::PIDController,
+    pid::{PID, PIDController},
     pwm::FocError,
     pwm_output::DutyCycle3Phase,
     svpwm,
@@ -29,10 +29,36 @@ pub struct FocController {
     velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
     _velocity_time_filter: Second,
-    pole_count: u16,
+    pole_pair_count: u16,
 }
 
 impl FocController {
+    pub fn new(
+        psu_voltage: f32,
+        pole_pair_count: u16,
+        angle_pid_gains: PID,
+        velocity_pid_gains: PID,
+    ) -> Self {
+        Self {
+            bias_angle: Radian(0.0),
+            sensor_direction: Direction::Clockwise,
+            command: None,
+            psu_voltage,
+            angle_pid: PIDController {
+                gains: angle_pid_gains,
+                integral: 0.0,
+                last_error: 0.0,
+            },
+            velocity_pid: PIDController {
+                gains: velocity_pid_gains,
+                integral: 0.0,
+                last_error: 0.0,
+            },
+            _velocity_time_filter: Second(0.01),
+            _velocity_output_limit: 1000.0,
+            pole_pair_count,
+        }
+    }
     pub async fn align_sensor<FSensor, FutSensor, FMotor, FutMotor>(
         &mut self,
         align_voltage: f32,
@@ -78,7 +104,7 @@ impl FocController {
     }
 
     fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
-        let full_angle = (mechanical_angle - self.bias_angle) / (self.pole_count as f32);
+        let full_angle = (mechanical_angle - self.bias_angle) / (self.pole_pair_count as f32);
         let angle = fmodf(full_angle.0, 2.0 * core::f32::consts::PI);
         Radian(angle)
     }
