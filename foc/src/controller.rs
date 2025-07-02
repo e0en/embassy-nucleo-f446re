@@ -2,11 +2,12 @@ use libm::fmodf;
 
 use crate::{
     angle_input::AngleReading,
+    lowpass_filter::LowPassFilter,
     pid::{PID, PIDController},
     pwm::FocError,
     pwm_output::DutyCycle3Phase,
     svpwm,
-    units::{Radian, RadianPerSecond, Second},
+    units::{Radian, RadianPerSecond},
 };
 
 pub enum Direction {
@@ -28,7 +29,7 @@ pub struct FocController {
     angle_pid: PIDController,
     velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
-    _velocity_time_filter: Second,
+    velocity_filter: LowPassFilter,
     pole_pair_count: u16,
 }
 
@@ -54,7 +55,7 @@ impl FocController {
                 integral: 0.0,
                 last_error: 0.0,
             },
-            _velocity_time_filter: Second(0.01),
+            velocity_filter: LowPassFilter::new(0.01),
             _velocity_output_limit: 1000.0,
             pole_pair_count,
         }
@@ -117,15 +118,16 @@ impl FocController {
         read_sensor: fn() -> AngleReading,
     ) -> Result<DutyCycle3Phase, FocError> {
         let s = read_sensor();
+        let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
         let v_ref = match &self.command {
             Some(Command::Angle(target_angle)) => {
                 let angle_error = *target_angle - s.angle;
                 let target_velocity = self.angle_pid.update(angle_error.0, s.dt);
-                let velocity_error = RadianPerSecond(target_velocity) - s.velocity;
+                let velocity_error = RadianPerSecond(target_velocity) - velocity;
                 self.velocity_pid.update(velocity_error.0, s.dt)
             }
             Some(Command::Velocity(target_velocity)) => {
-                let error = *target_velocity - s.velocity;
+                let error = *target_velocity - velocity;
                 self.velocity_pid.update(error.0, s.dt)
             }
             None => 0.0,
