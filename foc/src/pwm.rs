@@ -188,30 +188,27 @@ mod tests {
         for sector in 0..6 {
             let angle = sector as f32 * pi_third + 0.1;
             let result = svpwm(0.5, Radian(angle), 1.0);
-            assert!(result.is_ok(), "Failed for sector {}", sector);
+            assert!(result.is_ok(), "Failed for sector {sector}");
 
             let duty_cycle = result.unwrap();
             println!(
-                "Sector {}: angle={:.3}, t1={:.6}, t2={:.6}, t3={:.6}",
-                sector, angle, duty_cycle.t1, duty_cycle.t2, duty_cycle.t3
+                "Sector {sector}: angle={:.3}, t1={:.6}, t2={:.6}, t3={:.6}",
+                angle, duty_cycle.t1, duty_cycle.t2, duty_cycle.t3
             );
 
             assert!(
                 duty_cycle.t1 >= 0.0 && duty_cycle.t1 <= 1.0,
-                "Phase t1 out of range for sector {}: {}",
-                sector,
+                "Phase t1 out of range for sector {sector}: {}",
                 duty_cycle.t1
             );
             assert!(
                 duty_cycle.t2 >= 0.0 && duty_cycle.t2 <= 1.0,
-                "Phase t2 out of range for sector {}: {}",
-                sector,
+                "Phase t2 out of range for sector {sector}: {}",
                 duty_cycle.t2
             );
             assert!(
                 duty_cycle.t3 >= 0.0 && duty_cycle.t3 <= 1.0,
-                "Phase t3 out of range for sector {}: {}",
-                sector,
+                "Phase t3 out of range for sector {sector}: {}",
                 duty_cycle.t3
             );
         }
@@ -230,33 +227,29 @@ mod tests {
             let result = svpwm(v_ref, Radian(angle), 1.0);
             assert!(
                 result.is_ok(),
-                "Failed for sector {} at theoretical max",
-                sector
+                "Failed for sector {sector} at theoretical max",
             );
 
             let duty_cycle = result.unwrap();
             println!(
-                "Max V Sector {}: angle={:.3}, v_ref={:.6}, t1={:.6}, t2={:.6}, t3={:.6}",
-                sector, angle, v_ref, duty_cycle.t1, duty_cycle.t2, duty_cycle.t3
+                "Max V Sector {sector}: angle={:.3}, v_ref={:.6}, t1={:.6}, t2={:.6}, t3={:.6}",
+                angle, v_ref, duty_cycle.t1, duty_cycle.t2, duty_cycle.t3
             );
 
             // SVPWM outputs must be strictly within [0.0, 1.0] range
             assert!(
                 duty_cycle.t1 >= 0.0 && duty_cycle.t1 <= 1.0,
-                "Phase t1 out of range for sector {}: {}",
-                sector,
+                "Phase t1 out of range for sector {sector}: {}",
                 duty_cycle.t1
             );
             assert!(
                 duty_cycle.t2 >= 0.0 && duty_cycle.t2 <= 1.0,
-                "Phase t2 out of range for sector {}: {}",
-                sector,
+                "Phase t2 out of range for sector {sector}: {}",
                 duty_cycle.t2
             );
             assert!(
                 duty_cycle.t3 >= 0.0 && duty_cycle.t3 <= 1.0,
-                "Phase t3 out of range for sector {}: {}",
-                sector,
+                "Phase t3 out of range for sector {sector}: {}",
                 duty_cycle.t3
             );
         }
@@ -269,22 +262,18 @@ mod tests {
         for sector in 0..6 {
             let angle = sector as f32 * core::f32::consts::PI / 3.0 + 0.1;
             let result = svpwm(v_ref, Radian(angle), 1.0);
-            assert!(result.is_ok(), "Failed for sector {}", sector);
+            assert!(result.is_ok(), "Failed for sector {sector}");
 
             let duty_cycle = result.unwrap();
             let max_cycle = duty_cycle.t1.max(duty_cycle.t2).max(duty_cycle.t3);
             let min_cycle = duty_cycle.t1.min(duty_cycle.t2).min(duty_cycle.t3);
             println!(
-                "Sector {}: angle={}, max_cycle={}, min_cycle={}",
-                sector, angle, max_cycle, min_cycle
+                "Sector {sector}: angle={angle}, max_cycle={max_cycle}, min_cycle={min_cycle}"
             );
 
             assert!(
                 (max_cycle + min_cycle - 1.0).abs() < 1e-6,
-                "Duty cycle max + min not equal to 1 for sector {}, max: {}, min: {}",
-                sector,
-                max_cycle,
-                min_cycle
+                "Duty cycle max + min not equal to 1 for sector {sector}, max: {max_cycle}, min: {min_cycle}"
             );
         }
     }
