@@ -26,7 +26,10 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
 use embassy_time::{Duration, Instant, Timer};
-use foc::{angle_input::AngleInput, svpwm};
+use foc::{
+    angle_input::AngleInput, controller::FocController, pwm_output::DutyCycle3Phase, svpwm,
+    units::Second,
+};
 use foc::{pwm_output::PwmOutput, units::Radian};
 
 #[embassy_executor::task]
@@ -48,6 +51,35 @@ async fn foc_task(
 
     let mut sensor = As5600::new();
     sensor.initialize(&mut p_i2c).await.unwrap();
+
+    let mut foc = FocController::new(
+        12.0,
+        11,
+        foc::pid::PID {
+            p: 0.0,
+            i: 0.0,
+            d: 0.0,
+        },
+        foc::pid::PID {
+            p: 0.0,
+            i: 0.0,
+            d: 0.0,
+        },
+    );
+
+    let mut read_sensor = {
+        let s = &mut sensor;
+        let b = &mut p_i2c;
+        async || s.read_async(b).await.unwrap()
+    };
+    let set_motor = |d: DutyCycle3Phase| driver.run(d);
+    let wait_seconds =
+        async |s: Second| Timer::after(Duration::from_micros((s.0 * 1e6) as u64)).await;
+
+    foc.align_sensor(4.0, &mut read_sensor, set_motor, wait_seconds)
+        .await
+        .unwrap();
+
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
         Err(Error::Timeout) => error!("I2C operation timed out"),
