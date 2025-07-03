@@ -16,6 +16,7 @@ use core::result::Result::Ok;
 pub enum FocError {
     InvalidParameters,
     CalculationError,
+    AlignError,
 }
 
 pub fn svpwm(

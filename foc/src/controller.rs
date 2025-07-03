@@ -7,7 +7,7 @@ use crate::{
     pwm::FocError,
     pwm_output::DutyCycle3Phase,
     svpwm,
-    units::{Radian, RadianPerSecond},
+    units::{Radian, RadianPerSecond, Second},
 };
 
 pub enum Direction {
@@ -60,17 +60,19 @@ impl FocController {
             pole_pair_count,
         }
     }
-    pub async fn align_sensor<FSensor, FutSensor, FMotor, FutMotor>(
+    pub async fn align_sensor<FSensor, FutSensor, FMotor, FWait, FutUnit>(
         &mut self,
         align_voltage: f32,
         read_sensor: FSensor,
         set_motor: FMotor,
+        wait_function: FWait,
     ) -> Result<(), FocError>
     where
         FSensor: Fn() -> FutSensor,
         FutSensor: Future<Output = AngleReading> + Send,
-        FMotor: Fn(DutyCycle3Phase) -> FutMotor,
-        FutMotor: Future<Output = ()> + Send,
+        FMotor: Fn(DutyCycle3Phase) -> FutUnit,
+        FutUnit: Future<Output = ()> + Send,
+        FWait: Fn(Second) -> FutUnit,
     {
         // keep sending zero
         let zero_signal = svpwm(align_voltage, Radian(0.0), self.psu_voltage)?;
@@ -78,29 +80,45 @@ impl FocController {
 
         // monitor mechanical angle until convergence
         let mut angle = Radian(0.0);
+        let mut last_angle = Radian(0.0);
         for _ in 0..10 {
             angle = read_sensor().await.angle;
+            wait_function(Second(0.01)).await;
+            if angle == last_angle {
+                break;
+            }
+            last_angle = angle;
         }
         self.bias_angle = angle;
 
         // start rotating slowly and monitor velocity
         let mut target_angle = Radian(0.0);
+        let mut velocity_sum = RadianPerSecond(0.0);
         for _ in 0..10 {
             target_angle.0 += 0.1;
             let signal = svpwm(align_voltage, target_angle, self.psu_voltage)?;
             set_motor(signal).await;
-            let _velocity = read_sensor().await.velocity;
+            wait_function(Second(0.1)).await;
+            velocity_sum += read_sensor().await.velocity;
         }
+        let direction_forward = velocity_sum.0 > 0.0;
 
         // do the same for reversed direction
+        velocity_sum = RadianPerSecond(0.0);
         for _ in 0..10 {
             target_angle.0 -= 0.1;
             let signal = svpwm(align_voltage, Radian(target_angle.0), self.psu_voltage)?;
             set_motor(signal).await;
-            let _measured_velocity = read_sensor().await.velocity;
+            wait_function(Second(0.1)).await;
+            velocity_sum += read_sensor().await.velocity;
         }
-        self.sensor_direction = Direction::Clockwise;
+        let direction_backward = velocity_sum.0 < 0.0;
 
+        match (direction_forward, direction_backward) {
+            (true, true) => self.sensor_direction = Direction::Clockwise,
+            (false, false) => self.sensor_direction = Direction::CounterClockWise,
+            _ => return Err(FocError::AlignError),
+        }
         Ok(())
     }
 

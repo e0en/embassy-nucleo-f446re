@@ -2,7 +2,7 @@ use core::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
 use libm::fmodf;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Radian(pub f32);
 
 #[derive(Clone, Copy)]
@@ -94,6 +94,12 @@ impl Add<Self> for RadianPerSecond {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
         Self(self.0 + rhs.0)
+    }
+}
+
+impl AddAssign<Self> for RadianPerSecond {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
     }
 }
 
