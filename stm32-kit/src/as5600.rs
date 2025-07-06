@@ -18,6 +18,7 @@ pub struct As5600 {
     previous_raw_angle: Option<u16>,
     previous_angle: Radian,
     previous_time: Instant,
+    full_rotations: i32,
 }
 
 impl As5600 {
@@ -26,6 +27,7 @@ impl As5600 {
             previous_raw_angle: None,
             previous_angle: Radian(0.0),
             previous_time: Instant::from_secs(0),
+            full_rotations: 0,
         }
     }
 
@@ -86,13 +88,20 @@ impl AngleInput for As5600 {
                     }
                 };
                 let angular_change = Radian((raw_angle_change as f32) * RAW_TO_RADIAN);
-                let angle = self.previous_angle + angular_change;
+                let mut angle = self.previous_angle + angular_change;
+                if angle.0 > 2.0 * core::f32::consts::PI {
+                    angle.0 -= 2.0 * core::f32::consts::PI;
+                    self.full_rotations += 1;
+                } else if angle.0 < -2.0 * core::f32::consts::PI {
+                    angle.0 += 2.0 * core::f32::consts::PI;
+                    self.full_rotations -= 1;
+                }
                 let velocity = angular_change / dt;
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
                 Ok(AngleReading {
-                    angle,
+                    angle: angle + 2.0 * core::f32::consts::PI * self.full_rotations as f32,
                     velocity,
                     dt,
                 })

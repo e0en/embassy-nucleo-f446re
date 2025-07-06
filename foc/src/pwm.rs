@@ -6,8 +6,6 @@ use libm::sqrtf;
 use crate::pwm_output::DutyCycle3Phase;
 use crate::units::Radian;
 
-use core::fmt::Debug;
-use core::prelude::rust_2024::derive;
 use core::result::Result;
 use core::result::Result::Err;
 use core::result::Result::Ok;
@@ -26,17 +24,15 @@ pub fn svpwm(
 ) -> Result<DutyCycle3Phase, FocError> {
     // Calculate the duty cycles for the three phases based on the voltage and angle
 
-    // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
+    // Clamp input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
     let theoretical_max = sqrtf(3.0) / 2.0 * v_max;
-    if v_ref < 0.0 || v_max <= 0.0 || v_ref > theoretical_max {
-        return Err(FocError::InvalidParameters);
-    }
-    let pi_third = core::f32::consts::PI / 3.0;
+    let v_ref = v_ref.max(-theoretical_max).min(theoretical_max);
+    let pi_third = core::f32::consts::FRAC_PI_3;
     let inv_sqrt3 = 1.0 / sqrtf(3.0);
 
     let v_normalized = v_ref / v_max;
 
-    let target_angle = electrical_angle.0 + core::f32::consts::PI / 2.0;
+    let target_angle = electrical_angle.0 + core::f32::consts::FRAC_PI_2;
 
     // use electrical angle + pi/2 for maximum torque
     let v_x = v_normalized * cosf(target_angle);

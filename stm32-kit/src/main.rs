@@ -26,11 +26,13 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
 use embassy_time::{Duration, Instant, Timer};
+use foc::pwm_output::PwmOutput;
 use foc::{
-    angle_input::AngleInput, controller::FocController, pwm_output::DutyCycle3Phase, svpwm,
+    angle_input::AngleInput,
+    controller::{Direction, FocController},
+    pwm_output::DutyCycle3Phase,
     units::Second,
 };
-use foc::{pwm_output::PwmOutput, units::Radian};
 
 #[embassy_executor::task]
 async fn blinker(mut led: Output<'static>, delay: Duration) {
@@ -53,7 +55,7 @@ async fn foc_task(
     sensor.initialize(&mut p_i2c).await.unwrap();
 
     let mut foc = FocController::new(
-        12.0,
+        16.0,
         11,
         foc::pid::PID {
             p: 0.0,
@@ -61,10 +63,12 @@ async fn foc_task(
             d: 0.0,
         },
         foc::pid::PID {
-            p: 0.0,
-            i: 0.0,
+            p: 0.2,
+            i: 12.0,
             d: 0.0,
         },
+        12.0,
+        1000.0,
     );
 
     let mut read_sensor = {
@@ -74,11 +78,28 @@ async fn foc_task(
     };
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
     let wait_seconds =
-        async |s: Second| Timer::after(Duration::from_micros((s.0 * 1e6) as u64)).await;
+        async |s: Second| Timer::after(Duration::from_millis((s.0 * 1e3) as u64)).await;
 
-    foc.align_sensor(4.0, &mut read_sensor, set_motor, wait_seconds)
+    match foc
+        .align_sensor(4.0, &mut read_sensor, set_motor, wait_seconds)
         .await
-        .unwrap();
+    {
+        Ok(_) => {
+            info!(
+                "Sensor aligned {} {}",
+                foc.bias_angle.0,
+                foc.sensor_direction == Direction::Clockwise
+            );
+        }
+        Err(_) => {
+            error!("Sensor align failed");
+            return;
+        }
+    };
+
+    foc.set_command(foc::controller::Command::Velocity(
+        foc::units::RadianPerSecond(-40.0),
+    ));
 
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
@@ -95,33 +116,66 @@ async fn foc_task(
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
-    let mut electrical_angle = Radian(0.0);
+    let mut velocity_logs = [0.0; 100];
+    let mut ring_start: usize = 0;
+    let mut ring_size: usize = 0;
     loop {
         count += 1;
         match sensor.read_async(&mut p_i2c).await {
             Ok(reading) => {
-                let duty = svpwm(4.0, electrical_angle, 12.0).unwrap();
-                driver.run(duty);
+                if let Ok(duty) = foc.get_duty_cycle(&reading) {
+                    driver.run(duty);
+                    if let Some(state) = foc.state {
+                        let ring_end = (ring_start + ring_size) % 100;
+                        velocity_logs[ring_end] = state.filtered_velocity.0;
+                        if ring_size < 100 {
+                            ring_size += 1;
+                        } else {
+                            ring_start = (ring_start + 1) % 100;
+                        }
+                    }
 
-                electrical_angle += Radian(0.01);
+                    let now = Instant::now();
+                    if (now - last_logged_at) > Duration::from_millis(50) {
+                        let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
 
-                let now = Instant::now();
-                if (now - last_logged_at) > Duration::from_millis(200) {
-                    let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
+                        last_logged_at = now;
 
-                    last_logged_at = now;
-                    info!(
-                        "e_angle = {}, v = {}, {}, {}",
-                        electrical_angle.0, duty.t1, duty.t2, duty.t3
-                    );
-                    info!(
-                        "Angle = {}, Velocity = {}, dt = {} loop = {} Hz",
-                        reading.angle.0,
-                        reading.velocity.0,
-                        reading.dt.0,
-                        count as f32 / second_since_last_log
-                    );
-                    count = 0;
+                        let mut mean = 0.0;
+                        let mut stdev = 0.0;
+
+                        if ring_size > 0 {
+                            for i in 0..ring_size {
+                                let i_ring = (ring_start + i) % 100;
+                                mean += velocity_logs[i_ring];
+                            }
+                            mean /= ring_size as f32;
+                            for i in 0..ring_size {
+                                let i_ring = (ring_start + i) % 100;
+                                stdev +=
+                                    (velocity_logs[i_ring] - mean) * (velocity_logs[i_ring] - mean);
+                            }
+                            stdev /= ring_size as f32;
+                        }
+
+                        if let Some(state) = foc.state {
+                            info!(
+                                "v = {}, vf = {}, err = {}, stdev = {}, int = {}, vref= {}, a = {}, e_a = {}, dt = {}",
+                                reading.velocity.0,
+                                state.filtered_velocity.0,
+                                state.velocity_error.0,
+                                stdev,
+                                state.velocity_integral,
+                                state.v_ref,
+                                reading.angle.0,
+                                state.electrical_angle.0,
+                                state.dt.0
+                            );
+                        }
+
+                        info!("loop = {} Hz", count as f32 / second_since_last_log);
+                        count = 0;
+                    };
                 }
             }
             Err(Error::Timeout) => error!("I2C operation timed out"),
