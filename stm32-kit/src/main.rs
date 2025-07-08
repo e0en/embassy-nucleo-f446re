@@ -98,7 +98,7 @@ async fn foc_task(
     };
 
     foc.set_command(foc::controller::Command::Velocity(
-        foc::units::RadianPerSecond(-40.0),
+        foc::units::RadianPerSecond(core::f32::consts::PI * 2.0),
     ));
 
     match as5600::set_digital_output_mode(&mut p_i2c).await {
@@ -116,7 +116,7 @@ async fn foc_task(
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
-    let mut velocity_logs = [0.0; 100];
+    let mut velocity_logs = [0.0; 1000];
     let mut ring_start: usize = 0;
     let mut ring_size: usize = 0;
     loop {
@@ -126,12 +126,12 @@ async fn foc_task(
                 if let Ok(duty) = foc.get_duty_cycle(&reading) {
                     driver.run(duty);
                     if let Some(state) = foc.state {
-                        let ring_end = (ring_start + ring_size) % 100;
+                        let ring_end = (ring_start + ring_size) % 1000;
                         velocity_logs[ring_end] = state.filtered_velocity.0;
-                        if ring_size < 100 {
+                        if ring_size < 1000 {
                             ring_size += 1;
                         } else {
-                            ring_start = (ring_start + 1) % 100;
+                            ring_start = (ring_start + 1) % 1000;
                         }
                     }
 
@@ -146,12 +146,12 @@ async fn foc_task(
 
                         if ring_size > 0 {
                             for i in 0..ring_size {
-                                let i_ring = (ring_start + i) % 100;
+                                let i_ring = (ring_start + i) % 1000;
                                 mean += velocity_logs[i_ring];
                             }
                             mean /= ring_size as f32;
                             for i in 0..ring_size {
-                                let i_ring = (ring_start + i) % 100;
+                                let i_ring = (ring_start + i) % 1000;
                                 stdev +=
                                     (velocity_logs[i_ring] - mean) * (velocity_logs[i_ring] - mean);
                             }
@@ -160,15 +160,10 @@ async fn foc_task(
 
                         if let Some(state) = foc.state {
                             info!(
-                                "v = {}, vf = {}, err = {}, stdev = {}, int = {}, vref= {}, a = {}, e_a = {}, dt = {}",
-                                reading.velocity.0,
+                                "vf = {}, err = {}, stdev = {}, dt = {}",
                                 state.filtered_velocity.0,
                                 state.velocity_error.0,
                                 stdev,
-                                state.velocity_integral,
-                                state.v_ref,
-                                reading.angle.0,
-                                state.electrical_angle.0,
                                 state.dt.0
                             );
                         }
