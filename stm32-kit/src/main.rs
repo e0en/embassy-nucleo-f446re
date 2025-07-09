@@ -6,6 +6,8 @@ mod clock;
 mod i2c;
 mod pwm;
 
+use libm::sqrtf;
+
 use crate::{
     as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
@@ -157,6 +159,7 @@ async fn foc_task(
                             }
                             stdev /= ring_size as f32;
                         }
+                        stdev = sqrtf(stdev);
 
                         if let Some(state) = foc.state {
                             info!(
