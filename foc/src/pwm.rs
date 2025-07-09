@@ -1,7 +1,5 @@
 use libm::cosf;
-use libm::floorf;
 use libm::sinf;
-use libm::sqrtf;
 
 use crate::pwm_output::DutyCycle3Phase;
 use crate::units::Radian;
@@ -17,6 +15,8 @@ pub enum FocError {
     AlignError,
 }
 
+const HALF_SQRT3: f32 = 0.866_025_4;
+
 pub fn svpwm(
     v_ref: f32,
     electrical_angle: Radian,
@@ -24,96 +24,8 @@ pub fn svpwm(
 ) -> Result<DutyCycle3Phase, FocError> {
     // Calculate the duty cycles for the three phases based on the voltage and angle
 
-    // Clamp input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
-    let theoretical_max = sqrtf(3.0) / 2.0 * v_max;
-    let v_ref = v_ref.max(-theoretical_max).min(theoretical_max);
-    let pi_third = core::f32::consts::FRAC_PI_3;
-    let inv_sqrt3 = 1.0 / sqrtf(3.0);
-
-    let v_normalized = v_ref / v_max;
-
-    let target_angle = electrical_angle.0 + core::f32::consts::FRAC_PI_2;
-
-    // use electrical angle + pi/2 for maximum torque
-    let v_x = v_normalized * cosf(target_angle);
-    let v_y = v_normalized * sinf(target_angle);
-
-    // get the sector based on angle
-    let sector = floorf(target_angle / pi_third) as u8 % 6;
-    match sector {
-        0 => {
-            let t_100 = v_x - v_y * inv_sqrt3;
-            let t_110 = v_y * 2.0 * inv_sqrt3;
-            let t_111 = (1.0 - t_100 - t_110) / 2.0;
-            Ok(DutyCycle3Phase {
-                t1: t_100 + t_110 + t_111,
-                t2: t_110 + t_111,
-                t3: t_111,
-            })
-        }
-        1 => {
-            let t_110 = v_x + v_y * inv_sqrt3;
-            let t_010 = -v_x + v_y * inv_sqrt3;
-            let t_111 = (1.0 - t_110 - t_010) / 2.0;
-            Ok(DutyCycle3Phase {
-                t1: t_110 + t_111,
-                t2: t_010 + t_110 + t_111,
-                t3: t_111,
-            })
-        }
-        2 => {
-            let t_010 = v_y * 2.0 * inv_sqrt3;
-            let t_011 = -v_x - v_y * inv_sqrt3;
-            let t_111 = (1.0 - t_010 - t_011) / 2.0;
-            Ok(DutyCycle3Phase {
-                t1: t_111,
-                t2: t_010 + t_011 + t_111,
-                t3: t_011 + t_111,
-            })
-        }
-        3 => {
-            let t_011 = -v_x + v_y * inv_sqrt3;
-            let t_001 = -v_y * 2.0 * inv_sqrt3;
-            let t_111 = (1.0 - t_011 - t_001) / 2.0;
-            Ok(DutyCycle3Phase {
-                t1: t_111,
-                t2: t_011 + t_111,
-                t3: t_011 + t_001 + t_111,
-            })
-        }
-        4 => {
-            let t_001 = -v_x - v_y * inv_sqrt3;
-            let t_101 = v_x - v_y * inv_sqrt3;
-            let t_111 = (1.0 - t_001 - t_101) / 2.0;
-            Ok(DutyCycle3Phase {
-                t1: t_101 + t_111,
-                t2: t_111,
-                t3: t_001 + t_101 + t_111,
-            })
-        }
-        5 => {
-            let t_101 = -v_y * 2.0 * inv_sqrt3;
-            let t_100 = v_x + v_y * inv_sqrt3;
-            let t_111 = (1.0 - t_101 - t_100) / 2.0;
-            Ok(DutyCycle3Phase {
-                t1: t_101 + t_100 + t_111,
-                t2: t_111,
-                t3: t_101 + t_111,
-            })
-        }
-        _ => Err(FocError::CalculationError),
-    }
-}
-
-pub fn svpwm_simplified(
-    v_ref: f32,
-    electrical_angle: Radian,
-    v_max: f32,
-) -> Result<DutyCycle3Phase, FocError> {
-    // Calculate the duty cycles for the three phases based on the voltage and angle
-
     // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
-    let theoretical_max = sqrtf(3.0) / 2.0 * v_max;
+    let theoretical_max = HALF_SQRT3 * v_max;
     if v_ref < 0.0 || v_max <= 0.0 || v_ref > theoretical_max {
         return Err(FocError::InvalidParameters);
     }
@@ -125,10 +37,9 @@ pub fn svpwm_simplified(
 
     // use SimpleFOC's implementation
     // https://github.com/simplefoc/Arduino-FOC/blob/05672d28187320c10f74f8fa382e92b09cfadce0/src/BLDCMotor.cpp#L568-L602
-    let half_sqrt3 = sqrtf(3.0) / 2.0;
     let u_a = v_x;
-    let u_b = -v_x / 2.0 + half_sqrt3 * v_y;
-    let u_c = -v_x / 2.0 - half_sqrt3 * v_y;
+    let u_b = -v_x / 2.0 + HALF_SQRT3 * v_y;
+    let u_c = -v_x / 2.0 - HALF_SQRT3 * v_y;
 
     let u_max = u_a.max(u_b.max(u_c));
     let u_min = u_a.min(u_b.min(u_c));
@@ -145,6 +56,94 @@ pub fn svpwm_simplified(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libm::floorf;
+    const INV_SQRT3: f32 = 0.577_350_26;
+
+    fn svpwm_reference(
+        v_ref: f32,
+        electrical_angle: Radian,
+        v_max: f32,
+    ) -> Result<DutyCycle3Phase, FocError> {
+        // Calculate the duty cycles for the three phases based on the voltage and angle
+
+        // Clamp input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
+        let theoretical_max = HALF_SQRT3 * v_max;
+        let v_ref = v_ref.max(-theoretical_max).min(theoretical_max);
+
+        let v_normalized = v_ref / v_max;
+
+        let target_angle = electrical_angle.0 + core::f32::consts::FRAC_PI_2;
+
+        // use electrical angle + pi/2 for maximum torque
+        let v_x = v_normalized * cosf(target_angle);
+        let v_y = v_normalized * sinf(target_angle);
+
+        // get the sector based on angle
+        let sector = floorf(target_angle / core::f32::consts::FRAC_PI_3) as u8 % 6;
+        match sector {
+            0 => {
+                let t_100 = v_x - v_y * INV_SQRT3;
+                let t_110 = v_y * 2.0 * INV_SQRT3;
+                let t_111 = (1.0 - t_100 - t_110) / 2.0;
+                Ok(DutyCycle3Phase {
+                    t1: t_100 + t_110 + t_111,
+                    t2: t_110 + t_111,
+                    t3: t_111,
+                })
+            }
+            1 => {
+                let t_110 = v_x + v_y * INV_SQRT3;
+                let t_010 = -v_x + v_y * INV_SQRT3;
+                let t_111 = (1.0 - t_110 - t_010) / 2.0;
+                Ok(DutyCycle3Phase {
+                    t1: t_110 + t_111,
+                    t2: t_010 + t_110 + t_111,
+                    t3: t_111,
+                })
+            }
+            2 => {
+                let t_010 = v_y * 2.0 * INV_SQRT3;
+                let t_011 = -v_x - v_y * INV_SQRT3;
+                let t_111 = (1.0 - t_010 - t_011) / 2.0;
+                Ok(DutyCycle3Phase {
+                    t1: t_111,
+                    t2: t_010 + t_011 + t_111,
+                    t3: t_011 + t_111,
+                })
+            }
+            3 => {
+                let t_011 = -v_x + v_y * INV_SQRT3;
+                let t_001 = -v_y * 2.0 * INV_SQRT3;
+                let t_111 = (1.0 - t_011 - t_001) / 2.0;
+                Ok(DutyCycle3Phase {
+                    t1: t_111,
+                    t2: t_011 + t_111,
+                    t3: t_011 + t_001 + t_111,
+                })
+            }
+            4 => {
+                let t_001 = -v_x - v_y * INV_SQRT3;
+                let t_101 = v_x - v_y * INV_SQRT3;
+                let t_111 = (1.0 - t_001 - t_101) / 2.0;
+                Ok(DutyCycle3Phase {
+                    t1: t_101 + t_111,
+                    t2: t_111,
+                    t3: t_001 + t_101 + t_111,
+                })
+            }
+            5 => {
+                let t_101 = -v_y * 2.0 * INV_SQRT3;
+                let t_100 = v_x + v_y * INV_SQRT3;
+                let t_111 = (1.0 - t_101 - t_100) / 2.0;
+                Ok(DutyCycle3Phase {
+                    t1: t_101 + t_100 + t_111,
+                    t2: t_111,
+                    t3: t_101 + t_111,
+                })
+            }
+            _ => Err(FocError::CalculationError),
+        }
+    }
 
     #[test]
     fn test_svpwm_valid_parameters() {
@@ -215,7 +214,7 @@ mod tests {
     fn test_svpwm_maximum_voltage() {
         // Test at theoretical maximum (sqrt(3)/2 ≈ 0.866)
         let pi_third = core::f32::consts::PI / 3.0;
-        let sqrt3_over_2 = sqrtf(3.0) / 2.0;
+        let sqrt3_over_2 = HALF_SQRT3;
 
         // Test at theoretical maximum
         let v_ref = sqrt3_over_2;
@@ -285,32 +284,32 @@ mod tests {
                 1.6, 1.7, 1.8, 1.9,
             ] {
                 let angle = Radian(angle_div_pi * core::f32::consts::PI);
-                let duty_reference = svpwm(v_ref, angle, v_max).unwrap();
-                let duty_simple = svpwm_simplified(v_ref, angle, v_max).unwrap();
+                let duty_reference = svpwm_reference(v_ref, angle, v_max).unwrap();
+                let duty = svpwm(v_ref, angle, v_max).unwrap();
 
                 assert!(
-                    (duty_reference.t1 - duty_simple.t1).abs() < 1e-6,
+                    (duty_reference.t1 - duty.t1).abs() < 1e-6,
                     "t1: {:?} != {:?} at v_ref={}, angle={}",
                     duty_reference,
-                    duty_simple,
+                    duty,
                     v_ref,
                     angle.0
                 );
 
                 assert!(
-                    (duty_reference.t2 - duty_simple.t2).abs() < 1e-6,
+                    (duty_reference.t2 - duty.t2).abs() < 1e-6,
                     "t2: {:?} != {:?} at v_ref={}, angle={}",
                     duty_reference,
-                    duty_simple,
+                    duty,
                     v_ref,
                     angle.0
                 );
 
                 assert!(
-                    (duty_reference.t3 - duty_simple.t3).abs() < 1e-6,
+                    (duty_reference.t3 - duty.t3).abs() < 1e-6,
                     "t3: {:?} != {:?} at v_ref={}, angle={}",
                     duty_reference,
-                    duty_simple,
+                    duty,
                     v_ref,
                     angle.0
                 );
