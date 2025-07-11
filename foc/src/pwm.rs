@@ -25,10 +25,11 @@ pub fn svpwm(
     // Calculate the duty cycles for the three phases based on the voltage and angle
 
     // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
-    let theoretical_max = HALF_SQRT3 * v_max;
-    if v_ref < 0.0 || v_max <= 0.0 || v_ref > theoretical_max {
+    if v_max <= 0.0 {
         return Err(FocError::InvalidParameters);
     }
+    let theoretical_max = HALF_SQRT3 * v_max;
+    let v_ref = v_ref.min(theoretical_max).max(-theoretical_max);
 
     let v_normalized = v_ref / v_max / 1.5;
 

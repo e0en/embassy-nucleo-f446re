@@ -29,13 +29,13 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
 use embassy_time::{Duration, Instant, Timer};
-use foc::pwm_output::PwmOutput;
 use foc::{
     angle_input::AngleInput,
     controller::{Direction, FocController},
     pwm_output::DutyCycle3Phase,
-    units::Second,
+    units::{Radian, Second},
 };
+use foc::{controller::Command, pwm_output::PwmOutput};
 
 #[embassy_executor::task]
 async fn blinker(mut led: Output<'static>, delay: Duration) {
@@ -62,7 +62,7 @@ async fn foc_task(
         16.0,
         11,
         foc::pid::PID {
-            p: 0.0,
+            p: 16.0,
             i: 0.0,
             d: 0.0,
         },
@@ -101,9 +101,8 @@ async fn foc_task(
         }
     };
 
-    foc.set_command(foc::controller::Command::Velocity(
-        foc::units::RadianPerSecond(core::f32::consts::PI * 2.0),
-    ));
+    let mut command_angle = foc::units::Radian(0.0);
+    foc.set_command(Command::Angle(command_angle));
 
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
@@ -126,8 +125,8 @@ async fn foc_task(
     loop {
         count += 1;
         match sensor.read_async(&mut p_i2c).await {
-            Ok(reading) => {
-                if let Ok(duty) = foc.get_duty_cycle(&reading) {
+            Ok(reading) => match foc.get_duty_cycle(&reading) {
+                Ok(duty) => {
                     driver.run(duty);
                     if let Some(state) = foc.state {
                         let ring_end = (ring_start + ring_size) % 1000;
@@ -140,7 +139,10 @@ async fn foc_task(
                     }
 
                     let now = Instant::now();
-                    if (now - last_logged_at) > Duration::from_millis(50) {
+                    if (now - last_logged_at) > Duration::from_millis(250) {
+                        command_angle -= Radian(core::f32::consts::FRAC_PI_2);
+                        foc.set_command(Command::Angle(command_angle));
+
                         let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
 
                         last_logged_at = now;
@@ -177,7 +179,12 @@ async fn foc_task(
                         count = 0;
                     };
                 }
-            }
+                Err(e) => match e {
+                    foc::pwm::FocError::AlignError => error!("AlignError"),
+                    foc::pwm::FocError::CalculationError => error!("CalculationError"),
+                    foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
+                },
+            },
             Err(Error::Timeout) => error!("I2C operation timed out"),
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
