@@ -19,6 +19,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, bind_interrupts,
+    can::{CanRx, CanTx},
     i2c::{Error, I2c, Master},
     peripherals,
     timer::low_level,
@@ -49,6 +50,7 @@ async fn blinker(mut led: Output<'static>, delay: Duration) {
 #[embassy_executor::task]
 async fn foc_task(
     mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
+    mut _can_tx: CanTx<'static>,
     pwm_timer: low_level::Timer<'static, TIM1>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer);
@@ -184,10 +186,24 @@ async fn foc_task(
     }
 }
 
+#[embassy_executor::task]
+async fn can_rx_task(mut p_can: CanRx<'static>) {
+    loop {
+        match p_can.read().await {
+            Ok(_) => (),
+            Err(_) => Timer::after(Duration::from_micros(1)).await,
+        }
+    }
+}
+
 bind_interrupts!(
     struct Irqs {
         I2C1_EV => stm32_i2c::EventInterruptHandler<peripherals::I2C1>;
         I2C1_ER => stm32_i2c::ErrorInterruptHandler<peripherals::I2C1>;
+        CAN1_TX => embassy_stm32::can::TxInterruptHandler<peripherals::CAN1>;
+        CAN1_RX0 => embassy_stm32::can::Rx0InterruptHandler<peripherals::CAN1>;
+        CAN1_RX1 => embassy_stm32::can::Rx1InterruptHandler<peripherals::CAN1>;
+        CAN1_SCE => embassy_stm32::can::SceInterruptHandler<peripherals::CAN1>;
 });
 
 #[embassy_executor::main]
@@ -212,11 +228,17 @@ async fn main(spawner: Spawner) {
         i2c_config,
     );
 
+    let mut p_can = embassy_stm32::can::Can::new(p.CAN1, p.PA11, p.PA12, Irqs);
+    p_can.set_bitrate(1_000_000);
+    p_can.enable().await;
+    let (can_tx, can_rx) = p_can.split();
+
     let mut timer = pwm::create_timer(p.PA8, p.PA9, p.PA10, p.TIM1);
     pwm::initialize(&mut timer);
     timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
     unwrap!(spawner.spawn(blinker(led, Duration::from_millis(300))));
-    unwrap!(spawner.spawn(foc_task(p_i2c, timer)));
+    unwrap!(spawner.spawn(foc_task(p_i2c, can_tx, timer)));
+    unwrap!(spawner.spawn(can_rx_task(can_rx)));
 }
