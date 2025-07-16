@@ -2,6 +2,7 @@
 #![no_main]
 mod as5600;
 mod bldc_driver;
+mod can_message;
 mod clock;
 mod i2c;
 mod pwm;
@@ -11,6 +12,7 @@ use libm::sqrtf;
 use crate::{
     as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
+    can_message::{ControlMode, StatusMessage},
 };
 
 use {defmt_rtt as _, panic_probe as _};
@@ -50,7 +52,7 @@ async fn blinker(mut led: Output<'static>, delay: Duration) {
 #[embassy_executor::task]
 async fn foc_task(
     mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
-    mut _can_tx: CanTx<'static>,
+    mut can_tx: CanTx<'static>,
     pwm_timer: low_level::Timer<'static, TIM1>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer);
@@ -175,6 +177,19 @@ async fn foc_task(
                             );
                         }
 
+                        let status = StatusMessage {
+                            motor_can_id: 0,
+                            host_can_id: 0,
+                            raw_position: 0,
+                            raw_speed: 0,
+                            raw_torque: 0,
+                            raw_temperature: 0,
+                        };
+
+                        if let Ok(frame) = status.try_into() {
+                            can_tx.write(&frame).await;
+                        }
+
                         info!("loop = {} Hz", count as f32 / second_since_last_log);
                         count = 0;
                     };
@@ -195,9 +210,32 @@ async fn foc_task(
 
 #[embassy_executor::task]
 async fn can_rx_task(mut p_can: CanRx<'static>) {
+    let mut can_id: u8 = 0x0F;
     loop {
         match p_can.read().await {
-            Ok(_) => (),
+            Ok(m) => {
+                if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {
+                    if message.motor_can_id != can_id {
+                        continue;
+                    }
+                    // TODO: send request to the main FOC task
+                    match message.command {
+                        can_message::Command::Enable => (),
+                        can_message::Command::Stop => (),
+                        can_message::Command::SetMode(ControlMode::Position) => (),
+                        can_message::Command::SetMode(ControlMode::Speed) => (),
+                        can_message::Command::SetMode(ControlMode::Current) => (),
+                        can_message::Command::SetPosition(_pos) => (),
+                        can_message::Command::SetSpeed(_speed) => (),
+                        can_message::Command::SetTorque(_torque) => (),
+                        can_message::Command::SetSpeedLimit(_speed) => (),
+                        can_message::Command::SetCurrentLimit(_current) => (),
+                        can_message::Command::SetTorqueLimit(_torque) => (),
+                        can_message::Command::SetCanId(new_can_id) => can_id = new_can_id,
+                        can_message::Command::RequestStatus => (),
+                    }
+                }
+            }
             Err(_) => Timer::after(Duration::from_micros(1)).await,
         }
     }
