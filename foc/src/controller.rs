@@ -20,6 +20,16 @@ pub enum Direction {
 pub enum Command {
     Angle(Radian),
     Velocity(RadianPerSecond),
+    Impedance(ImpedanceParameter),
+}
+
+#[derive(Clone, Copy)]
+pub struct ImpedanceParameter {
+    pub angle: Radian,
+    pub velocity: RadianPerSecond,
+    pub spring: f32,
+    pub damping: f32,
+    pub torque: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -178,6 +188,11 @@ impl FocController {
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error.0, s.dt)
+            }
+            Some(Command::Impedance(param)) => {
+                let angle_error = param.angle - s.angle;
+                let velocity_error = param.velocity - velocity;
+                param.spring * angle_error.0 + param.damping * velocity_error.0 + param.torque
             }
             None => 0.0,
         };
