@@ -35,7 +35,7 @@ use foc::{
     angle_input::AngleInput,
     controller::{Direction, FocController},
     pwm_output::DutyCycle3Phase,
-    units::{Radian, Second},
+    units::Second,
 };
 use foc::{controller::Command, pwm_output::PwmOutput};
 
@@ -103,8 +103,13 @@ async fn foc_task(
         }
     };
 
-    let mut command_angle = foc::units::Radian(0.0);
-    foc.set_command(Command::Angle(command_angle));
+    foc.set_command(Command::Impedance(foc::controller::ImpedanceParameter {
+        angle: foc::units::Radian(0.0),
+        velocity: foc::units::RadianPerSecond(0.0),
+        spring: 4.0,
+        damping: -0.09,
+        torque: 0.0,
+    }));
 
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
@@ -142,9 +147,6 @@ async fn foc_task(
 
                     let now = Instant::now();
                     if (now - last_logged_at) > Duration::from_millis(250) {
-                        command_angle -= Radian(core::f32::consts::FRAC_PI_2);
-                        foc.set_command(Command::Angle(command_angle));
-
                         let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
 
                         last_logged_at = now;
