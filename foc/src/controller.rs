@@ -173,7 +173,7 @@ impl FocController {
         new_state.dt = s.dt;
         let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
         new_state.filtered_velocity = velocity;
-        let v_ref = match &self.command {
+        let mut v_ref = match &self.command {
             Some(Command::Angle(target_angle)) => {
                 let angle_error = *target_angle - s.angle;
                 new_state.angle_error = Some(angle_error);
@@ -196,6 +196,11 @@ impl FocController {
             }
             None => 0.0,
         };
+
+        if self.sensor_direction == Direction::CounterClockWise {
+            v_ref *= -1.0;
+        }
+
         new_state.v_ref = v_ref;
         let electrical_angle = self.to_electrical_angle(s.angle);
         new_state.electrical_angle = electrical_angle;
