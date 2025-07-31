@@ -2,4 +2,4 @@
 target = "thumbv7em-none-eabihf"
 
 [target.'thumbv7em-none-eabihf']
-runner = "probe-rs run --chip STM32F446RE --connect-under-reset"
+runner = "probe-rs run --chip STM32G431KB --connect-under-reset"

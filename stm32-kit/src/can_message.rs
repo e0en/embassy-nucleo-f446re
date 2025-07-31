@@ -60,7 +60,7 @@ impl TryFrom<can::Frame> for CommandMessage {
 
     fn try_from(message: can::Frame) -> Result<Self, Self::Error> {
         let raw_id = match message.id() {
-            can::Id::Extended(e) => e.as_raw().to_le_bytes(),
+            embedded_can::Id::Extended(e) => e.as_raw().to_le_bytes(),
             _ => return Err(CommandError::IdFormat),
         };
         let motor_can_id = raw_id[0];

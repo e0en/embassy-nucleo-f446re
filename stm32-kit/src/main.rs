@@ -20,7 +20,7 @@ use {defmt_rtt as _, panic_probe as _};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, bind_interrupts,
+    Config, bind_interrupts, can,
     can::{CanRx, CanTx},
     i2c::{Error, I2c, Master},
     peripherals,
@@ -28,7 +28,6 @@ use embassy_stm32::{
 };
 use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 
-use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::khz;
 use embassy_time::{Duration, Instant, Timer};
 use foc::{
@@ -40,16 +39,6 @@ use foc::{
 use foc::{controller::Command, pwm_output::PwmOutput};
 
 #[embassy_executor::task]
-async fn blinker(mut led: Output<'static>, delay: Duration) {
-    loop {
-        led.set_high();
-        Timer::after(delay).await;
-        led.set_low();
-        Timer::after(delay).await;
-    }
-}
-
-#[embassy_executor::task]
 async fn foc_task(
     mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
     mut can_tx: CanTx<'static>,
@@ -58,7 +47,10 @@ async fn foc_task(
     let mut driver = PwmDriver::new(pwm_timer);
 
     let mut sensor = As5600::new();
-    sensor.initialize(&mut p_i2c).await.unwrap();
+    match sensor.initialize(&mut p_i2c).await {
+        Ok(_) => info!("Sensor initialized"),
+        Err(e) => error!("Sensor initialization failed, {}", e),
+    }
 
     let mut foc = FocController::new(
         16.0,
@@ -247,10 +239,8 @@ bind_interrupts!(
     struct Irqs {
         I2C1_EV => stm32_i2c::EventInterruptHandler<peripherals::I2C1>;
         I2C1_ER => stm32_i2c::ErrorInterruptHandler<peripherals::I2C1>;
-        CAN1_TX => embassy_stm32::can::TxInterruptHandler<peripherals::CAN1>;
-        CAN1_RX0 => embassy_stm32::can::Rx0InterruptHandler<peripherals::CAN1>;
-        CAN1_RX1 => embassy_stm32::can::Rx1InterruptHandler<peripherals::CAN1>;
-        CAN1_SCE => embassy_stm32::can::SceInterruptHandler<peripherals::CAN1>;
+        FDCAN1_IT1 => can::IT1InterruptHandler<embassy_stm32::peripherals::FDCAN1>;
+        FDCAN1_IT0 => can::IT0InterruptHandler<embassy_stm32::peripherals::FDCAN1>;
 });
 
 #[embassy_executor::main]
@@ -260,32 +250,33 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
-    let led = Output::new(p.PA5, Level::Low, Speed::Medium);
-
     // Initialize I2c
     let i2c_config = embassy_stm32::i2c::Config::default();
     let p_i2c = I2c::new(
         p.I2C1,
-        p.PB8,
-        p.PB9,
+        p.PA15,
+        p.PB7,
         Irqs,
-        p.DMA1_CH6,
-        p.DMA1_CH0,
+        p.DMA1_CH1,
+        p.DMA1_CH2,
         khz(400),
         i2c_config,
     );
 
-    let mut p_can = embassy_stm32::can::Can::new(p.CAN1, p.PA11, p.PA12, Irqs);
-    p_can.set_bitrate(1_000_000);
-    p_can.enable().await;
-    let (can_tx, can_rx) = p_can.split();
+    let mut can_conf = can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
+    can_conf.set_bitrate(1_000_000);
+    can_conf.properties().set_extended_filter(
+        can::filter::ExtendedFilterSlot::_0,
+        can::filter::ExtendedFilter::accept_all_into_fifo1(),
+    );
+    let p_can = can_conf.into_normal_mode();
+    let (can_tx, can_rx, _properties) = p_can.split();
 
     let mut timer = pwm::create_timer(p.PA8, p.PA9, p.PA10, p.TIM1);
     pwm::initialize(&mut timer);
     timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    unwrap!(spawner.spawn(blinker(led, Duration::from_millis(300))));
     unwrap!(spawner.spawn(foc_task(p_i2c, can_tx, timer)));
     unwrap!(spawner.spawn(can_rx_task(can_rx)));
 }
