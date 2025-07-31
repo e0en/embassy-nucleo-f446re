@@ -163,11 +163,13 @@ async fn foc_task(
 
                         if let Some(state) = foc.state {
                             info!(
-                                "vf = {}, err = {}, stdev = {}, dt = {}",
+                                "a = {}, vf = {}, err = {}, stdev = {}, dt = {}, v_ref = {}",
+                                state.angle_error.map(|x| x.0),
                                 state.filtered_velocity.0,
                                 state.velocity_error.0,
                                 stdev,
-                                state.dt.0
+                                state.dt.0,
+                                state.v_ref,
                             );
                         }
 

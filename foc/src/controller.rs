@@ -192,6 +192,8 @@ impl FocController {
             Some(Command::Impedance(param)) => {
                 let angle_error = param.angle - s.angle;
                 let velocity_error = param.velocity - velocity;
+                new_state.angle_error = Some(angle_error);
+                new_state.velocity_error = velocity_error;
                 param.spring * angle_error.0 + param.damping * velocity_error.0 + param.torque
             }
             None => 0.0,
