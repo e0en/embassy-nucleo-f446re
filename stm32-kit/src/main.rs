@@ -102,6 +102,7 @@ async fn foc_task(
     foc.set_spring(4.0);
     foc.set_damping(-0.09);
     foc.set_run_mode(RunMode::Impedance);
+    foc.enable();
 
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
@@ -125,13 +126,21 @@ async fn foc_task(
         count += 1;
         if let Ok(command) = command_channel.try_receive() {
             match command {
+                Command::Enable => foc.enable(),
+                Command::Stop => foc.stop(),
                 Command::SetRunMode(m) => foc.set_run_mode(m),
-                Command::SetPosition(p) => foc.set_target_angle(Radian(p)),
-                Command::SetSpeed(v) => foc.set_target_velocity(RadianPerSecond(v)),
+                Command::SetAngle(p) => foc.set_target_angle(Radian(p)),
+                Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(v)),
                 Command::SetTorque(t) => foc.set_target_torque(t),
                 Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
                 Command::SetCurrentLimit(i) => foc.set_current_limit(i),
                 Command::SetTorqueLimit(t) => foc.set_torque_limit(t),
+                Command::SetVelocityKp(kp) => foc.set_velocity_kp(kp),
+                Command::SetVelocityKi(ki) => foc.set_velocity_ki(ki),
+                Command::SetVelocityGain(tf) => foc.set_velocity_gain(tf),
+                Command::SetAngleKp(kp) => foc.set_angle_kp(kp),
+                Command::SetSpring(k) => foc.set_spring(k),
+                Command::SetDamping(b) => foc.set_damping(b),
                 _ => (),
             }
         }
@@ -182,12 +191,16 @@ async fn can_task(p_can: Can<'static>) {
     let command_sender = COMMAND_CHANNEL.sender();
     let status_receiver = STATUS_CHANNEL.receiver();
     let mut status: Option<MotorStatus> = None;
+    let mut angle = 0.0;
     loop {
         for _ in 0..3 {
             if let Ok(s) = status_receiver.try_receive() {
                 status = Some(s);
             }
         }
+        command_sender.send(Command::SetAngle(angle)).await;
+        Timer::after(Duration::from_secs(1)).await;
+        angle += 1.0;
         match can_rx.read().await {
             Ok(m) => {
                 if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {

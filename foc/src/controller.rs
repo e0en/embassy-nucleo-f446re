@@ -67,6 +67,7 @@ pub struct FocController {
     pole_pair_count: u16,
     mode: RunMode,
     target: Target,
+    is_running: bool,
 }
 
 impl FocController {
@@ -99,6 +100,7 @@ impl FocController {
                 spring: 0.0,
                 damping: 0.0,
             },
+            is_running: false,
         }
     }
     pub async fn align_sensor<'a, FSensor, FMotor, FWait, FutUnit>(
@@ -176,6 +178,14 @@ impl FocController {
         Radian(angle)
     }
 
+    pub fn stop(&mut self) {
+        self.is_running = false;
+    }
+
+    pub fn enable(&mut self) {
+        self.is_running = true;
+    }
+
     pub fn set_run_mode(&mut self, mode: RunMode) {
         self.mode = mode;
     }
@@ -210,6 +220,22 @@ impl FocController {
 
     pub fn set_current_limit(&mut self, current: f32) {
         self.current_limit = Some(current);
+    }
+
+    pub fn set_velocity_kp(&mut self, kp: f32) {
+        self.velocity_pid.gains.p = kp;
+    }
+
+    pub fn set_velocity_ki(&mut self, ki: f32) {
+        self.velocity_pid.gains.i = ki;
+    }
+
+    pub fn set_velocity_gain(&mut self, tf: f32) {
+        self.velocity_filter = LowPassFilter::new(tf);
+    }
+
+    pub fn set_angle_kp(&mut self, kp: f32) {
+        self.angle_pid.gains.p = kp;
     }
 
     pub fn get_duty_cycle(
@@ -272,6 +298,10 @@ impl FocController {
         // TODO: implement actual torque calculation
         if let Some(t) = self.torque_limit {
             v_ref = v_ref.min(t).max(-t);
+        }
+
+        if !self.is_running {
+            v_ref = 0.0;
         }
 
         new_state.v_ref = v_ref;
