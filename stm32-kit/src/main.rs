@@ -20,8 +20,8 @@ use {defmt_rtt as _, panic_probe as _};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, bind_interrupts, can,
-    can::{CanRx, CanTx},
+    Config, bind_interrupts,
+    can::{self, Can},
     i2c::{Error, I2c, Master},
     peripherals,
     timer::low_level,
@@ -41,7 +41,6 @@ use foc::{controller::Command, pwm_output::PwmOutput};
 #[embassy_executor::task]
 async fn foc_task(
     mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
-    mut can_tx: CanTx<'static>,
     pwm_timer: low_level::Timer<'static, TIM1>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer);
@@ -173,19 +172,6 @@ async fn foc_task(
                             );
                         }
 
-                        let status = StatusMessage {
-                            motor_can_id: 0,
-                            host_can_id: 0,
-                            raw_position: 0,
-                            raw_speed: 0,
-                            raw_torque: 0,
-                            raw_temperature: 0,
-                        };
-
-                        if let Ok(frame) = status.try_into() {
-                            can_tx.write(&frame).await;
-                        }
-
                         info!("loop = {} Hz", count as f32 / second_since_last_log);
                         count = 0;
                     };
@@ -205,10 +191,11 @@ async fn foc_task(
 }
 
 #[embassy_executor::task]
-async fn can_rx_task(mut p_can: CanRx<'static>) {
+async fn can_task(p_can: Can<'static>) {
+    let (mut can_tx, mut can_rx, _properties) = p_can.split();
     let mut can_id: u8 = 0x0F;
     loop {
-        match p_can.read().await {
+        match can_rx.read().await {
             Ok(m) => {
                 if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {
                     if message.motor_can_id != can_id {
@@ -228,7 +215,19 @@ async fn can_rx_task(mut p_can: CanRx<'static>) {
                         can_message::Command::SetCurrentLimit(_current) => (),
                         can_message::Command::SetTorqueLimit(_torque) => (),
                         can_message::Command::SetCanId(new_can_id) => can_id = new_can_id,
-                        can_message::Command::RequestStatus => (),
+                        can_message::Command::RequestStatus => {
+                            let message = StatusMessage {
+                                motor_can_id: can_id,
+                                host_can_id: 0x00,
+                                raw_position: 0,
+                                raw_speed: 0,
+                                raw_torque: 0,
+                                raw_temperature: 0,
+                            };
+                            if let Ok(frame) = message.try_into() {
+                                can_tx.write(&frame).await;
+                            }
+                        }
                     }
                 }
             }
@@ -272,13 +271,12 @@ async fn main(spawner: Spawner) {
         can::filter::ExtendedFilter::accept_all_into_fifo1(),
     );
     let p_can = can_conf.into_normal_mode();
-    let (can_tx, can_rx, _properties) = p_can.split();
 
     let mut timer = pwm::create_timer(p.PA8, p.PA9, p.PA10, p.TIM1);
     pwm::initialize(&mut timer);
     timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    unwrap!(spawner.spawn(foc_task(p_i2c, can_tx, timer)));
-    unwrap!(spawner.spawn(can_rx_task(can_rx)));
+    unwrap!(spawner.spawn(foc_task(p_i2c, timer)));
+    unwrap!(spawner.spawn(can_task(p_can)));
 }
