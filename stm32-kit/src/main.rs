@@ -10,7 +10,7 @@ mod pwm;
 use crate::{
     as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
-    can_message::{Command, StatusMessage},
+    can_message::{Command, MotorStatus, StatusMessage},
 };
 
 use {defmt_rtt as _, panic_probe as _};
@@ -38,7 +38,7 @@ use foc::{
 };
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 1> = Channel::new();
-static STATUS_CHANNEL: Channel<ThreadModeRawMutex, StatusMessage, 1> = Channel::new();
+static STATUS_CHANNEL: Channel<ThreadModeRawMutex, MotorStatus, 1> = Channel::new();
 
 #[embassy_executor::task]
 async fn foc_task(
@@ -181,7 +181,7 @@ async fn can_task(p_can: Can<'static>) {
     let mut can_id: u8 = 0x0F;
     let command_sender = COMMAND_CHANNEL.sender();
     let status_receiver = STATUS_CHANNEL.receiver();
-    let mut status: Option<StatusMessage> = None;
+    let mut status: Option<MotorStatus> = None;
     loop {
         for _ in 0..3 {
             if let Ok(s) = status_receiver.try_receive() {
@@ -199,11 +199,16 @@ async fn can_task(p_can: Can<'static>) {
                         can_message::Command::SetCanId(new_can_id) => {
                             can_id = new_can_id;
                         }
-                        can_message::Command::RequestStatus => {
-                            if let Some(s) = status
-                                && let Ok(frame) = s.try_into()
-                            {
-                                can_tx.write(&frame).await;
+                        can_message::Command::RequestStatus(host_id) => {
+                            if let Some(s) = status {
+                                let message = StatusMessage {
+                                    motor_can_id: can_id,
+                                    host_can_id: host_id,
+                                    motor_status: s,
+                                };
+                                if let Ok(frame) = message.try_into() {
+                                    can_tx.write(&frame).await;
+                                }
                             }
                         }
                         cmd => command_sender.send(cmd).await,
