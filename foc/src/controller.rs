@@ -20,6 +20,7 @@ pub enum Direction {
 pub enum Command {
     Angle(Radian),
     Velocity(RadianPerSecond),
+    Torque(f32),
     Impedance(ImpedanceParameter),
 }
 
@@ -196,6 +197,7 @@ impl FocController {
                 new_state.velocity_error = velocity_error;
                 param.spring * angle_error.0 + param.damping * velocity_error.0 + param.torque
             }
+            Some(Command::Torque(t)) => *t,
             None => 0.0,
         };
 
