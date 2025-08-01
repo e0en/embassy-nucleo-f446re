@@ -16,12 +16,20 @@ pub enum Direction {
     CounterClockWise,
 }
 
+pub struct Target {
+    pub angle: Radian,
+    pub velocity: RadianPerSecond,
+    pub torque: f32,
+    pub spring: f32,
+    pub damping: f32,
+}
+
 #[derive(Clone, Copy)]
-pub enum Command {
-    Angle(Radian),
-    Velocity(RadianPerSecond),
-    Torque(f32),
-    Impedance(ImpedanceParameter),
+pub enum RunMode {
+    Angle,
+    Velocity,
+    Torque,
+    Impedance,
 }
 
 #[derive(Clone, Copy)]
@@ -48,13 +56,17 @@ pub struct FocController {
     pub bias_angle: Radian,
     pub sensor_direction: Direction,
     pub state: Option<FocState>,
-    command: Option<Command>,
     psu_voltage: f32,
+    torque_limit: Option<f32>,
+    current_limit: Option<f32>,
+    velocity_limit: Option<RadianPerSecond>,
     angle_pid: PIDController,
     velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
     velocity_filter: LowPassFilter,
     pole_pair_count: u16,
+    mode: RunMode,
+    target: Target,
 }
 
 impl FocController {
@@ -69,20 +81,31 @@ impl FocController {
         Self {
             bias_angle: Radian(0.0),
             sensor_direction: Direction::Clockwise,
-            command: None,
             state: None,
             psu_voltage,
+            torque_limit: None,
+            current_limit: None,
+            velocity_limit: None,
             angle_pid: PIDController::new(angle_pid_gains, max_voltage, max_voltage_ramp),
             velocity_pid: PIDController::new(velocity_pid_gains, max_voltage, max_voltage_ramp),
             velocity_filter: LowPassFilter::new(0.01),
             _velocity_output_limit: 1000.0,
             pole_pair_count,
+            mode: RunMode::Impedance,
+            target: Target {
+                angle: Radian(0.0),
+                velocity: RadianPerSecond(0.0),
+                torque: 0.0,
+                spring: 0.0,
+                damping: 0.0,
+            },
         }
     }
     pub async fn align_sensor<'a, FSensor, FMotor, FWait, FutUnit>(
         &mut self,
         align_voltage: f32,
         mut read_sensor: FSensor,
+
         mut set_motor: FMotor,
         wait_function: FWait,
     ) -> Result<(), FocError>
@@ -153,9 +176,42 @@ impl FocController {
         Radian(angle)
     }
 
-    pub fn set_command(&mut self, command: Command) {
-        self.command = Some(command);
+    pub fn set_run_mode(&mut self, mode: RunMode) {
+        self.mode = mode;
     }
+
+    pub fn set_target_angle(&mut self, angle: Radian) {
+        self.target.angle = angle;
+    }
+
+    pub fn set_target_velocity(&mut self, velocity: RadianPerSecond) {
+        self.target.velocity = velocity;
+    }
+
+    pub fn set_target_torque(&mut self, torque: f32) {
+        self.target.torque = torque;
+    }
+
+    pub fn set_spring(&mut self, spring: f32) {
+        self.target.spring = spring;
+    }
+
+    pub fn set_damping(&mut self, damping: f32) {
+        self.target.damping = damping;
+    }
+
+    pub fn set_velocity_limit(&mut self, velocity: RadianPerSecond) {
+        self.velocity_limit = Some(velocity);
+    }
+
+    pub fn set_torque_limit(&mut self, torque: f32) {
+        self.torque_limit = Some(torque);
+    }
+
+    pub fn set_current_limit(&mut self, current: f32) {
+        self.current_limit = Some(current);
+    }
+
     pub fn get_duty_cycle(
         &mut self,
         angle_reading: &AngleReading,
@@ -174,35 +230,48 @@ impl FocController {
         new_state.dt = s.dt;
         let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
         new_state.filtered_velocity = velocity;
-        let mut v_ref = match &self.command {
-            Some(Command::Angle(target_angle)) => {
-                let angle_error = *target_angle - s.angle;
+        let mut v_ref = match &self.mode {
+            RunMode::Angle => {
+                let angle_error = self.target.angle - s.angle;
                 new_state.angle_error = Some(angle_error);
-                let target_velocity = self.angle_pid.update(angle_error.0, s.dt);
+                let mut target_velocity = self.angle_pid.update(angle_error.0, s.dt);
+                if let Some(v) = self.velocity_limit {
+                    target_velocity = target_velocity.min(v.0).max(-v.0);
+                }
                 let velocity_error = RadianPerSecond(target_velocity) - velocity;
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error.0, s.dt)
             }
-            Some(Command::Velocity(target_velocity)) => {
-                let velocity_error = *target_velocity - velocity;
+            RunMode::Velocity => {
+                let velocity_error = self.target.velocity - velocity;
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error.0, s.dt)
             }
-            Some(Command::Impedance(param)) => {
-                let angle_error = param.angle - s.angle;
-                let velocity_error = param.velocity - velocity;
+            RunMode::Impedance => {
+                let angle_error = self.target.angle - s.angle;
+                let velocity_error = self.target.velocity - velocity;
                 new_state.angle_error = Some(angle_error);
                 new_state.velocity_error = velocity_error;
-                param.spring * angle_error.0 + param.damping * velocity_error.0 + param.torque
+                self.target.spring * angle_error.0
+                    + self.target.damping * velocity_error.0
+                    + self.target.torque
             }
-            Some(Command::Torque(t)) => *t,
-            None => 0.0,
+            RunMode::Torque => self.target.torque,
         };
 
         if self.sensor_direction == Direction::CounterClockWise {
             v_ref *= -1.0;
+        }
+
+        if let Some(c) = self.current_limit {
+            v_ref = v_ref.min(c).max(-c);
+        }
+
+        // TODO: implement actual torque calculation
+        if let Some(t) = self.torque_limit {
+            v_ref = v_ref.min(t).max(-t);
         }
 
         new_state.v_ref = v_ref;

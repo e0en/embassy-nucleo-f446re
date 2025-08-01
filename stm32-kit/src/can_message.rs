@@ -1,5 +1,7 @@
 use embassy_stm32::can::{self, enums::FrameCreateError};
+use foc::controller::RunMode;
 
+#[derive(Copy, Clone)]
 pub struct StatusMessage {
     pub motor_can_id: u8,
     pub host_can_id: u8,
@@ -9,17 +11,10 @@ pub struct StatusMessage {
     pub raw_temperature: u16,
 }
 
-pub enum ControlMode {
-    Position,
-    Speed,
-    Current,
-}
-
 pub enum Command {
     Stop,
     Enable,
     SetCanId(u8),
-    SetMode(ControlMode),
 
     SetSpeedLimit(f32),
     SetCurrentLimit(f32),
@@ -28,6 +23,7 @@ pub enum Command {
     SetPosition(f32),
     SetSpeed(f32),
     SetTorque(f32),
+    SetRunMode(RunMode),
     RequestStatus,
 }
 
@@ -77,11 +73,12 @@ impl TryFrom<can::Frame> for CommandMessage {
             0x12 => {
                 let address = (data[1] as u16) << 8 | data[0] as u16;
                 match address {
-                    0x7005 => match data[0] {
-                        0x01 => Command::SetMode(ControlMode::Position),
-                        0x02 => Command::SetMode(ControlMode::Speed),
-                        0x03 => Command::SetMode(ControlMode::Current),
-                        _ => return Err(CommandError::WrongRegister),
+                    0x7005 => match data[2] {
+                        0x00 => Command::SetRunMode(RunMode::Impedance),
+                        0x01 => Command::SetRunMode(RunMode::Angle),
+                        0x02 => Command::SetRunMode(RunMode::Velocity),
+                        0x03 => Command::SetRunMode(RunMode::Torque),
+                        _ => return Err(CommandError::WrongCommand),
                     },
                     0x7006 => Command::SetTorque(value),
                     0x700A => Command::SetSpeed(value),

@@ -711,6 +711,7 @@ dependencies = [
  "defmt-rtt",
  "embassy-executor",
  "embassy-stm32",
+ "embassy-sync",
  "embassy-time",
  "embedded-can",
  "foc",

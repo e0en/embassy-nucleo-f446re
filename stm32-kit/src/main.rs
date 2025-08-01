@@ -10,13 +10,14 @@ mod pwm;
 use crate::{
     as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
-    can_message::{ControlMode, StatusMessage},
+    can_message::{Command, StatusMessage},
 };
 
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embassy_executor::Spawner;
+use embassy_stm32::time::khz;
 use embassy_stm32::{
     Config, bind_interrupts,
     can::{self, Can},
@@ -25,16 +26,19 @@ use embassy_stm32::{
     timer::low_level,
 };
 use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
-
-use embassy_stm32::time::khz;
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use embassy_time::{Duration, Instant, Timer};
+
+use foc::pwm_output::PwmOutput;
 use foc::{
     angle_input::AngleInput,
-    controller::{Direction, FocController},
+    controller::{Direction, FocController, RunMode},
     pwm_output::DutyCycle3Phase,
-    units::Second,
+    units::{Radian, RadianPerSecond, Second},
 };
-use foc::{controller::Command, pwm_output::PwmOutput};
+
+static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 1> = Channel::new();
+static STATUS_CHANNEL: Channel<ThreadModeRawMutex, StatusMessage, 1> = Channel::new();
 
 #[embassy_executor::task]
 async fn foc_task(
@@ -92,13 +96,12 @@ async fn foc_task(
         }
     };
 
-    foc.set_command(Command::Impedance(foc::controller::ImpedanceParameter {
-        angle: foc::units::Radian(0.0),
-        velocity: foc::units::RadianPerSecond(0.0),
-        spring: 4.0,
-        damping: -0.09,
-        torque: 0.0,
-    }));
+    foc.set_target_angle(Radian(0.0));
+    foc.set_target_velocity(RadianPerSecond(0.0));
+    foc.set_target_torque(0.0);
+    foc.set_spring(4.0);
+    foc.set_damping(-0.09);
+    foc.set_run_mode(RunMode::Impedance);
 
     match as5600::set_digital_output_mode(&mut p_i2c).await {
         Ok(_) => info!("Digital output mode set successfully"),
@@ -113,10 +116,25 @@ async fn foc_task(
         Err(e) => error!("Failed to read magnet status: {:?}", e),
     }
 
+    let command_channel = COMMAND_CHANNEL.receiver();
+    let _status_channel = STATUS_CHANNEL.sender();
+
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
     loop {
         count += 1;
+        if let Ok(command) = command_channel.try_receive() {
+            match command {
+                Command::SetRunMode(m) => foc.set_run_mode(m),
+                Command::SetPosition(p) => foc.set_target_angle(Radian(p)),
+                Command::SetSpeed(v) => foc.set_target_velocity(RadianPerSecond(v)),
+                Command::SetTorque(t) => foc.set_target_torque(t),
+                Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
+                Command::SetCurrentLimit(i) => foc.set_current_limit(i),
+                Command::SetTorqueLimit(t) => foc.set_torque_limit(t),
+                _ => (),
+            }
+        }
         match sensor.read_async(&mut p_i2c).await {
             Ok(reading) => match foc.get_duty_cycle(&reading) {
                 Ok(duty) => {
@@ -161,7 +179,15 @@ async fn foc_task(
 async fn can_task(p_can: Can<'static>) {
     let (mut can_tx, mut can_rx, _properties) = p_can.split();
     let mut can_id: u8 = 0x0F;
+    let command_sender = COMMAND_CHANNEL.sender();
+    let status_receiver = STATUS_CHANNEL.receiver();
+    let mut status: Option<StatusMessage> = None;
     loop {
+        for _ in 0..3 {
+            if let Ok(s) = status_receiver.try_receive() {
+                status = Some(s);
+            }
+        }
         match can_rx.read().await {
             Ok(m) => {
                 if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {
@@ -170,32 +196,18 @@ async fn can_task(p_can: Can<'static>) {
                     }
                     // TODO: send request to the main FOC task
                     match message.command {
-                        can_message::Command::Enable => (),
-                        can_message::Command::Stop => (),
-                        can_message::Command::SetMode(ControlMode::Position) => (),
-                        can_message::Command::SetMode(ControlMode::Speed) => (),
-                        can_message::Command::SetMode(ControlMode::Current) => (),
-                        can_message::Command::SetPosition(_pos) => (),
-                        can_message::Command::SetSpeed(_speed) => (),
-                        can_message::Command::SetTorque(_torque) => (),
-                        can_message::Command::SetSpeedLimit(_speed) => (),
-                        can_message::Command::SetCurrentLimit(_current) => (),
-                        can_message::Command::SetTorqueLimit(_torque) => (),
-                        can_message::Command::SetCanId(new_can_id) => can_id = new_can_id,
+                        can_message::Command::SetCanId(new_can_id) => {
+                            can_id = new_can_id;
+                        }
                         can_message::Command::RequestStatus => {
-                            let message = StatusMessage {
-                                motor_can_id: can_id,
-                                host_can_id: 0x00,
-                                raw_position: 0,
-                                raw_speed: 0,
-                                raw_torque: 0,
-                                raw_temperature: 0,
-                            };
-                            if let Ok(frame) = message.try_into() {
+                            if let Some(s) = status
+                                && let Ok(frame) = s.try_into()
+                            {
                                 can_tx.write(&frame).await;
                             }
                         }
-                    }
+                        cmd => command_sender.send(cmd).await,
+                    };
                 }
             }
             Err(_) => Timer::after(Duration::from_micros(1)).await,

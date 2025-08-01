@@ -22,6 +22,9 @@ embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0a
   "tick-hz-1_000_000",
   "defmt",
 ], optional = true }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
+  "defmt",
+], optional = true }
 
 cortex-m = { version = "^0.7", features = [
   "critical-section-single-core",
@@ -39,6 +42,7 @@ default = [
   "embassy-stm32",
   "embassy-executor",
   "embassy-time",
+  "embassy-sync",
   "cortex-m",
   "cortex-m-rt",
   "defmt",
