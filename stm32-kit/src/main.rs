@@ -7,8 +7,6 @@ mod clock;
 mod i2c;
 mod pwm;
 
-use libm::sqrtf;
-
 use crate::{
     as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
@@ -117,24 +115,12 @@ async fn foc_task(
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
-    let mut velocity_logs = [0.0; 1000];
-    let mut ring_start: usize = 0;
-    let mut ring_size: usize = 0;
     loop {
         count += 1;
         match sensor.read_async(&mut p_i2c).await {
             Ok(reading) => match foc.get_duty_cycle(&reading) {
                 Ok(duty) => {
                     driver.run(duty);
-                    if let Some(state) = foc.state {
-                        let ring_end = (ring_start + ring_size) % 1000;
-                        velocity_logs[ring_end] = state.filtered_velocity.0;
-                        if ring_size < 1000 {
-                            ring_size += 1;
-                        } else {
-                            ring_start = (ring_start + 1) % 1000;
-                        }
-                    }
 
                     let now = Instant::now();
                     if (now - last_logged_at) > Duration::from_millis(250) {
@@ -142,31 +128,12 @@ async fn foc_task(
 
                         last_logged_at = now;
 
-                        let mut mean = 0.0;
-                        let mut stdev = 0.0;
-
-                        if ring_size > 0 {
-                            for i in 0..ring_size {
-                                let i_ring = (ring_start + i) % 1000;
-                                mean += velocity_logs[i_ring];
-                            }
-                            mean /= ring_size as f32;
-                            for i in 0..ring_size {
-                                let i_ring = (ring_start + i) % 1000;
-                                stdev +=
-                                    (velocity_logs[i_ring] - mean) * (velocity_logs[i_ring] - mean);
-                            }
-                            stdev /= ring_size as f32;
-                        }
-                        stdev = sqrtf(stdev);
-
                         if let Some(state) = foc.state {
                             info!(
-                                "a = {}, vf = {}, err = {}, stdev = {}, dt = {}, v_ref = {}",
+                                "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",
                                 state.angle_error.map(|x| x.0),
                                 state.filtered_velocity.0,
                                 state.velocity_error.0,
-                                stdev,
                                 state.dt.0,
                                 state.v_ref,
                             );
