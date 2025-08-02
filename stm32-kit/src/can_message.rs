@@ -76,8 +76,9 @@ impl TryFrom<can::Frame> for CommandMessage {
         let command_content = (raw_id[2] as u16) << 8 | raw_id[1] as u16;
         let command_id = raw_id[3];
         let data = message.data();
-        let value: f32 = 0.0;
-        value.to_le_bytes().copy_from_slice(&data[4..]);
+        let mut value_buffer = [0x00u8; 4];
+        value_buffer.copy_from_slice(&data[4..8]);
+        let value = f32::from_le_bytes(value_buffer);
 
         let command = match command_id {
             0x03 => Command::Enable,
