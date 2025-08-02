@@ -191,16 +191,15 @@ async fn can_task(p_can: Can<'static>) {
     let command_sender = COMMAND_CHANNEL.sender();
     let status_receiver = STATUS_CHANNEL.receiver();
     let mut status: Option<MotorStatus> = None;
-    let mut angle = 0.0;
     loop {
         for _ in 0..3 {
             if let Ok(s) = status_receiver.try_receive() {
                 status = Some(s);
+            } else {
+                break;
             }
         }
-        command_sender.send(Command::SetAngle(angle)).await;
-        Timer::after(Duration::from_secs(1)).await;
-        angle += 1.0;
+        info!("no more status message");
         match can_rx.read().await {
             Ok(m) => {
                 if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {
