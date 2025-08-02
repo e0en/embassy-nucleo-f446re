@@ -29,6 +29,7 @@ use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use embassy_time::{Duration, Instant, Timer};
 
+use embedded_can::Id;
 use foc::pwm_output::PwmOutput;
 use foc::{
     angle_input::AngleInput,
@@ -225,6 +226,12 @@ async fn can_task(p_can: Can<'static>) {
                         }
                         cmd => command_sender.send(cmd).await,
                     };
+                } else {
+                    let id = match m.frame.header().id() {
+                        Id::Standard(x) => x.as_raw() as u32,
+                        Id::Extended(x) => x.as_raw(),
+                    };
+                    warn!("parse failed: {}#{}", id, m.frame.data());
                 }
             }
             Err(_) => Timer::after(Duration::from_micros(1)).await,
