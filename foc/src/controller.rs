@@ -43,6 +43,8 @@ pub struct ImpedanceParameter {
 
 #[derive(Clone, Copy)]
 pub struct FocState {
+    pub is_running: bool,
+    pub mode: RunMode,
     pub filtered_velocity: RadianPerSecond,
     pub velocity_error: RadianPerSecond,
     pub velocity_integral: f32,
@@ -243,6 +245,8 @@ impl FocController {
         angle_reading: &AngleReading,
     ) -> Result<DutyCycle3Phase, FocError> {
         let mut new_state = FocState {
+            is_running: self.is_running,
+            mode: self.mode,
             angle_error: None,
             filtered_velocity: RadianPerSecond(0.0),
             velocity_error: RadianPerSecond(0.0),
