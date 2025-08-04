@@ -109,7 +109,6 @@ impl FocController {
         &mut self,
         align_voltage: f32,
         mut read_sensor: FSensor,
-
         mut set_motor: FMotor,
         wait_function: FWait,
     ) -> Result<(), FocError>

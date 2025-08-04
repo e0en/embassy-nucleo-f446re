@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+mod as5047p;
 mod as5600;
 mod bldc_driver;
 mod can_message;
@@ -8,6 +9,7 @@ mod i2c;
 mod pwm;
 
 use crate::{
+    as5047p::As5047P,
     as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
     can_message::{Command, MotorStatus, StatusMessage},
@@ -17,15 +19,17 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::time::khz;
 use embassy_stm32::{
     Config, bind_interrupts,
     can::{self, Can},
+    gpio,
     i2c::{Error, I2c, Master},
+    mode::Async,
     peripherals,
     timer::low_level,
 };
 use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
+use embassy_stm32::{spi as stm32_spi, time::khz};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use embassy_time::{Duration, Instant, Timer};
 
@@ -41,15 +45,41 @@ use foc::{
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 1> = Channel::new();
 static STATUS_CHANNEL: Channel<ThreadModeRawMutex, MotorStatus, 1> = Channel::new();
 
+type SpiMutex = embassy_sync::mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+    Option<stm32_spi::Spi<'static, Async>>,
+>;
+type I2cMutex = embassy_sync::mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+    Option<stm32_i2c::I2c<'static, Async, Master>>,
+>;
+
+static I2C: I2cMutex = I2cMutex::new(None);
+static SPI: SpiMutex = SpiMutex::new(None);
+
 #[embassy_executor::task]
-async fn foc_task(
-    mut p_i2c: I2c<'static, embassy_stm32::mode::Async, Master>,
-    pwm_timer: low_level::Timer<'static, TIM1>,
-) {
+async fn spi_task(p_spi: &'static SpiMutex, cs_pin: gpio::Output<'static>) {
+    let mut sensor = As5047P::new(p_spi, cs_pin);
+    sensor.initialize().await;
+    loop {
+        let diag = sensor.read_diagnostics().await.unwrap();
+        if diag.is_okay() {
+            if let Ok(theta) = sensor.read_raw_angle().await {
+                info!("raw_angle = {}", theta);
+            }
+        } else {
+            warn!("{:?}", diag);
+        }
+        Timer::after(Duration::from_millis(100)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn foc_task(p_i2c: &'static I2cMutex, pwm_timer: low_level::Timer<'static, TIM1>) {
     let mut driver = PwmDriver::new(pwm_timer);
 
-    let mut sensor = As5600::new();
-    match sensor.initialize(&mut p_i2c).await {
+    let mut sensor = As5600::new(p_i2c);
+    match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
         Err(e) => error!("Sensor initialization failed, {}", e),
     }
@@ -73,8 +103,7 @@ async fn foc_task(
 
     let mut read_sensor = {
         let s = &mut sensor;
-        let b = &mut p_i2c;
-        async || s.read_async(b).await.unwrap()
+        async || s.read_async().await.unwrap()
     };
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
     let wait_seconds =
@@ -105,13 +134,13 @@ async fn foc_task(
     foc.set_run_mode(RunMode::Impedance);
     foc.enable();
 
-    match as5600::set_digital_output_mode(&mut p_i2c).await {
+    match sensor.set_digital_output_mode().await {
         Ok(_) => info!("Digital output mode set successfully"),
         Err(Error::Timeout) => error!("I2C operation timed out"),
         Err(e) => error!("Failed to set digital output mode: {:?}", e),
     }
 
-    match as5600::read_magnet_status(&mut p_i2c).await {
+    match sensor.read_magnet_status().await {
         Ok(MagnetStatus::Ok) => info!("Magnet is ok"),
         Ok(status) => warn!("Magnet status: {:?}", status),
         Err(Error::Timeout) => error!("I2C operation timed out"),
@@ -145,7 +174,7 @@ async fn foc_task(
                 _ => (),
             }
         }
-        match sensor.read_async(&mut p_i2c).await {
+        match sensor.read_async().await {
             Ok(reading) => match foc.get_duty_cycle(&reading) {
                 Ok(duty) => {
                     driver.run(duty);
@@ -255,17 +284,35 @@ async fn main(spawner: Spawner) {
     clock::print_clock_info(&p.RCC);
 
     // Initialize I2c
-    let i2c_config = embassy_stm32::i2c::Config::default();
-    let p_i2c = I2c::new(
-        p.I2C1,
-        p.PA15,
-        p.PB7,
-        Irqs,
-        p.DMA1_CH1,
-        p.DMA1_CH2,
-        khz(400),
-        i2c_config,
-    );
+    {
+        let i2c_config = embassy_stm32::i2c::Config::default();
+        let p_i2c = I2c::new(
+            p.I2C1,
+            p.PA15,
+            p.PB7,
+            Irqs,
+            p.DMA1_CH1,
+            p.DMA1_CH2,
+            khz(400),
+            i2c_config,
+        );
+        *(I2C.lock().await) = Some(p_i2c);
+    }
+
+    let mut spi_config = stm32_spi::Config::default();
+    spi_config.miso_pull = gpio::Pull::None;
+    spi_config.mode = stm32_spi::MODE_1;
+    spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
+    spi_config.frequency = khz(100);
+    spi_config.rise_fall_speed = gpio::Speed::VeryHigh;
+    let cs_out = gpio::Output::new(p.PA1, gpio::Level::High, gpio::Speed::VeryHigh);
+
+    {
+        let p_spi = stm32_spi::Spi::new(
+            p.SPI1, p.PB3, p.PB5, p.PB4, p.DMA1_CH3, p.DMA1_CH4, spi_config,
+        );
+        *(SPI.lock().await) = Some(p_spi);
+    }
 
     let mut can_conf = can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
     can_conf.set_bitrate(1_000_000);
@@ -280,6 +327,7 @@ async fn main(spawner: Spawner) {
     timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    unwrap!(spawner.spawn(foc_task(p_i2c, timer)));
+    unwrap!(spawner.spawn(spi_task(&SPI, cs_out)));
+    unwrap!(spawner.spawn(foc_task(&I2C, timer)));
     unwrap!(spawner.spawn(can_task(p_can)));
 }

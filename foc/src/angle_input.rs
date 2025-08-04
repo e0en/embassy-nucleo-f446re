@@ -7,11 +7,7 @@ pub struct AngleReading {
 }
 
 pub trait AngleInput {
-    type Bus;
     type ReadError;
 
-    fn read_async(
-        &mut self,
-        comm: &mut Self::Bus,
-    ) -> impl Future<Output = Result<AngleReading, Self::ReadError>> + Send;
+    fn read_async(&mut self) -> impl Future<Output = Result<AngleReading, Self::ReadError>>;
 }
