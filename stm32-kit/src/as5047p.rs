@@ -1,11 +1,11 @@
-use defmt::{error, info};
+use defmt::{error, info, warn};
 use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
 use foc::angle_input::{AngleInput, AngleReading};
 use foc::units::{Radian, RadianPerSecond, Second};
 
-const RAW_ANGLE_MAX: u16 = 1 << 12;
+const RAW_ANGLE_MAX: u16 = 1 << 14;
 const RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / (RAW_ANGLE_MAX as f32);
 
 pub struct As5047P<'d> {
@@ -38,15 +38,6 @@ impl From<spi::Error> for Error {
         Error::LowLevel(value)
     }
 }
-#[inline(always)]
-fn busy_wait_cycles(mut n: u32) {
-    while n != 0 {
-        cortex_m::asm::nop();
-        n -= 1;
-    }
-}
-// G431 @ 170 MHz: 1 µs ≈ 170 cycles
-const TL_TCSH_CYCLES: u32 = 200; // ≈1.2 µs margin
 
 impl<'d> As5047P<'d> {
     pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
@@ -63,13 +54,13 @@ impl<'d> As5047P<'d> {
     pub async fn initialize(&mut self) {
         // startup time = 10ms
         Timer::after(Duration::from_millis(20)).await;
-        self.read_address(0x00).await.unwrap();
-        self.read_address(0x00).await.unwrap();
         if let Ok(err_flag) = self.read_and_reset_error_flag().await {
             info!("{:?}", err_flag);
         }
         if let Ok(diag) = self.read_diagnostics().await {
-            info!("{:?}", diag);
+            if !diag.is_okay() {
+                warn!("{:?}", diag);
+            }
         } else {
             error!("initialization error");
         }
@@ -131,10 +122,8 @@ impl<'d> As5047P<'d> {
     ) -> Result<[u8; 2], Error> {
         let mut result = [0x00u8; 2];
         self.cs_pin.set_low();
-        busy_wait_cycles(TL_TCSH_CYCLES);
         spi_peripheral.transfer(&mut result, &bytes).await?;
         self.cs_pin.set_high();
-        busy_wait_cycles(TL_TCSH_CYCLES);
         Ok(result)
     }
 }

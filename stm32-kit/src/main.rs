@@ -26,6 +26,7 @@ use embassy_stm32::{
     i2c::{Error, I2c, Master},
     mode::Async,
     peripherals,
+    time::mhz,
     timer::low_level,
 };
 use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
@@ -59,13 +60,26 @@ static SPI: SpiMutex = SpiMutex::new(None);
 
 #[embassy_executor::task]
 async fn spi_task(p_spi: &'static SpiMutex, cs_pin: gpio::Output<'static>) {
+    let mut count = 0u32;
+    let mut raw_angle = 0u16;
     let mut sensor = As5047P::new(p_spi, cs_pin);
     sensor.initialize().await;
+    let mut last_log = Instant::now();
+
     loop {
         if let Ok(theta) = sensor.read_raw_angle().await {
-            info!("raw_angle = {}", theta);
+            raw_angle = theta;
         }
-        Timer::after(Duration::from_millis(100)).await;
+        count += 1;
+        if count.is_multiple_of(1_000) {
+            let now = Instant::now();
+            let elapsed = now - last_log;
+            let seconds = (elapsed.as_micros() as f64 / 1e6f64) as f32;
+            let hz = count as f32 / seconds;
+            count = 0;
+            info!("angle = {}, hz = {}", raw_angle, hz);
+            last_log = now;
+        }
     }
 }
 
@@ -298,7 +312,7 @@ async fn main(spawner: Spawner) {
     spi_config.miso_pull = gpio::Pull::None;
     spi_config.mode = stm32_spi::MODE_1;
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
-    spi_config.frequency = khz(1000);
+    spi_config.frequency = mhz(1);
     spi_config.rise_fall_speed = gpio::Speed::VeryHigh;
     let cs_out = gpio::Output::new(p.PA1, gpio::Level::High, gpio::Speed::VeryHigh);
 
