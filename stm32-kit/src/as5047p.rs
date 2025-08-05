@@ -38,6 +38,15 @@ impl From<spi::Error> for Error {
         Error::LowLevel(value)
     }
 }
+#[inline(always)]
+fn busy_wait_cycles(mut n: u32) {
+    while n != 0 {
+        cortex_m::asm::nop();
+        n -= 1;
+    }
+}
+// G431 @ 170 MHz: 1 µs ≈ 170 cycles
+const TL_TCSH_CYCLES: u32 = 200; // ≈1.2 µs margin
 
 impl<'d> As5047P<'d> {
     pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
@@ -53,8 +62,9 @@ impl<'d> As5047P<'d> {
 
     pub async fn initialize(&mut self) {
         // startup time = 10ms
-        Timer::after(Duration::from_millis(15)).await;
-
+        Timer::after(Duration::from_millis(20)).await;
+        self.read_address(0x00).await.unwrap();
+        self.read_address(0x00).await.unwrap();
         if let Ok(err_flag) = self.read_and_reset_error_flag().await {
             info!("{:?}", err_flag);
         }
@@ -97,8 +107,9 @@ impl<'d> As5047P<'d> {
     async fn read_address(&mut self, address: u16) -> Result<u16, Error> {
         if let Some(spi_peripheral) = self.spi_mutex.lock().await.as_mut() {
             let cmd = to_read_command(&address);
+            let nop = to_read_command(&0x00);
             self.transfer(cmd, spi_peripheral).await?;
-            let response_be_bytes = self.nop_read(spi_peripheral).await?;
+            let response_be_bytes = self.transfer(nop, spi_peripheral).await?;
             let response = u16::from_be_bytes(response_be_bytes);
             if response.count_ones() % 2 != 0 {
                 return Err(Error::Parity);
@@ -117,22 +128,14 @@ impl<'d> As5047P<'d> {
         &mut self,
         bytes: [u8; 2],
         spi_peripheral: &mut spi::Spi<'a, Async>,
-    ) -> Result<(), Error> {
-        self.cs_pin.set_low();
-        spi_peripheral.write(&bytes).await?;
-        self.cs_pin.set_high();
-        Ok(())
-    }
-
-    async fn nop_read<'a>(
-        &mut self,
-        spi_peripheral: &mut spi::Spi<'a, Async>,
     ) -> Result<[u8; 2], Error> {
-        let mut dummy_nop = to_read_command(&0x00u16); // also doubles as response bytes
+        let mut result = [0x00u8; 2];
         self.cs_pin.set_low();
-        spi_peripheral.transfer_in_place(&mut dummy_nop).await?;
+        busy_wait_cycles(TL_TCSH_CYCLES);
+        spi_peripheral.transfer(&mut result, &bytes).await?;
         self.cs_pin.set_high();
-        Ok(dummy_nop)
+        busy_wait_cycles(TL_TCSH_CYCLES);
+        Ok(result)
     }
 }
 
@@ -222,6 +225,7 @@ pub struct Diagnostics {
     pub agc: u8,
 }
 
+#[allow(dead_code)]
 impl Diagnostics {
     pub fn is_okay(&self) -> bool {
         !self.magnet_weak
@@ -230,5 +234,10 @@ impl Diagnostics {
             && self.lf
             && self.agc > 0
             && self.agc < 255
+            && !self.is_all_zero()
+    }
+
+    pub fn is_all_zero(&self) -> bool {
+        !self.magnet_weak && !self.magnet_strong && !self.cof && !self.lf && self.agc == 0
     }
 }

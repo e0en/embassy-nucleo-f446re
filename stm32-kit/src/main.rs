@@ -62,13 +62,8 @@ async fn spi_task(p_spi: &'static SpiMutex, cs_pin: gpio::Output<'static>) {
     let mut sensor = As5047P::new(p_spi, cs_pin);
     sensor.initialize().await;
     loop {
-        let diag = sensor.read_diagnostics().await.unwrap();
-        if diag.is_okay() {
-            if let Ok(theta) = sensor.read_raw_angle().await {
-                info!("raw_angle = {}", theta);
-            }
-        } else {
-            warn!("{:?}", diag);
+        if let Ok(theta) = sensor.read_raw_angle().await {
+            info!("raw_angle = {}", theta);
         }
         Timer::after(Duration::from_millis(100)).await;
     }
@@ -303,7 +298,7 @@ async fn main(spawner: Spawner) {
     spi_config.miso_pull = gpio::Pull::None;
     spi_config.mode = stm32_spi::MODE_1;
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
-    spi_config.frequency = khz(100);
+    spi_config.frequency = khz(1000);
     spi_config.rise_fall_speed = gpio::Speed::VeryHigh;
     let cs_out = gpio::Output::new(p.PA1, gpio::Level::High, gpio::Speed::VeryHigh);
 
