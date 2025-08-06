@@ -1,16 +1,13 @@
 #![no_std]
 #![no_main]
 mod as5047p;
-mod as5600;
 mod bldc_driver;
 mod can_message;
 mod clock;
-mod i2c;
 mod pwm;
 
 use crate::{
     as5047p::As5047P,
-    as5600::{As5600, MagnetStatus},
     bldc_driver::PwmDriver,
     can_message::{Command, MotorStatus, StatusMessage},
 };
@@ -19,18 +16,17 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embassy_executor::Spawner;
+use embassy_stm32::spi as stm32_spi;
 use embassy_stm32::{
     Config, bind_interrupts,
     can::{self, Can},
     gpio,
-    i2c::{Error, I2c, Master},
     mode::Async,
     peripherals,
     time::mhz,
     timer::low_level,
 };
 use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
-use embassy_stm32::{spi as stm32_spi, time::khz};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use embassy_time::{Duration, Instant, Timer};
 
@@ -50,50 +46,22 @@ type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
     Option<stm32_spi::Spi<'static, Async>>,
 >;
-type I2cMutex = embassy_sync::mutex::Mutex<
-    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
-    Option<stm32_i2c::I2c<'static, Async, Master>>,
->;
 
-static I2C: I2cMutex = I2cMutex::new(None);
 static SPI: SpiMutex = SpiMutex::new(None);
 
 #[embassy_executor::task]
-async fn spi_task(p_spi: &'static SpiMutex, cs_pin: gpio::Output<'static>) {
-    let mut count = 0u32;
-    let mut raw_angle = 0u16;
-    let mut sensor = As5047P::new(p_spi, cs_pin);
-    if let Err(e) = sensor.initialize().await {
-        error!("Initialization failed: {:?}", e);
-        return;
-    }
-    let mut last_log = Instant::now();
-
-    loop {
-        if let Ok(theta) = sensor.read_raw_angle().await {
-            raw_angle = theta;
-        }
-        count += 1;
-        if count.is_multiple_of(1_000) {
-            let now = Instant::now();
-            let elapsed = now - last_log;
-            let seconds = (elapsed.as_micros() as f64 / 1e6f64) as f32;
-            let hz = count as f32 / seconds;
-            count = 0;
-            info!("angle = {}, hz = {}", raw_angle, hz);
-            last_log = now;
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn foc_task(p_i2c: &'static I2cMutex, pwm_timer: low_level::Timer<'static, TIM1>) {
+async fn foc_task(
+    p_spi: &'static SpiMutex,
+    cs_pin: gpio::Output<'static>,
+    pwm_timer: low_level::Timer<'static, TIM1>,
+) {
     let mut driver = PwmDriver::new(pwm_timer);
 
-    let mut sensor = As5600::new(p_i2c);
+    let mut sensor = As5047P::new(p_spi, cs_pin);
+
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
-        Err(e) => error!("Sensor initialization failed, {}", e),
+        Err(e) => error!("Sensor initialization failed, {:?}", e),
     }
 
     let mut foc = FocController::new(
@@ -145,19 +113,6 @@ async fn foc_task(p_i2c: &'static I2cMutex, pwm_timer: low_level::Timer<'static,
     foc.set_damping(-0.09);
     foc.set_run_mode(RunMode::Impedance);
     foc.enable();
-
-    match sensor.set_digital_output_mode().await {
-        Ok(_) => info!("Digital output mode set successfully"),
-        Err(Error::Timeout) => error!("I2C operation timed out"),
-        Err(e) => error!("Failed to set digital output mode: {:?}", e),
-    }
-
-    match sensor.read_magnet_status().await {
-        Ok(MagnetStatus::Ok) => info!("Magnet is ok"),
-        Ok(status) => warn!("Magnet status: {:?}", status),
-        Err(Error::Timeout) => error!("I2C operation timed out"),
-        Err(e) => error!("Failed to read magnet status: {:?}", e),
-    }
 
     let command_channel = COMMAND_CHANNEL.receiver();
     let _status_channel = STATUS_CHANNEL.sender();
@@ -218,7 +173,6 @@ async fn foc_task(p_i2c: &'static I2cMutex, pwm_timer: low_level::Timer<'static,
                     foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
                 },
             },
-            Err(Error::Timeout) => error!("I2C operation timed out"),
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
@@ -295,22 +249,6 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
-    // Initialize I2c
-    {
-        let i2c_config = embassy_stm32::i2c::Config::default();
-        let p_i2c = I2c::new(
-            p.I2C1,
-            p.PA15,
-            p.PB7,
-            Irqs,
-            p.DMA1_CH1,
-            p.DMA1_CH2,
-            khz(400),
-            i2c_config,
-        );
-        *(I2C.lock().await) = Some(p_i2c);
-    }
-
     let mut spi_config = stm32_spi::Config::default();
     spi_config.miso_pull = gpio::Pull::None;
     spi_config.mode = stm32_spi::MODE_1;
@@ -339,7 +277,6 @@ async fn main(spawner: Spawner) {
     timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    unwrap!(spawner.spawn(spi_task(&SPI, cs_out)));
-    unwrap!(spawner.spawn(foc_task(&I2C, timer)));
+    unwrap!(spawner.spawn(foc_task(&SPI, cs_out, timer)));
     unwrap!(spawner.spawn(can_task(p_can)));
 }

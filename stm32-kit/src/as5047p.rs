@@ -89,11 +89,11 @@ impl<'d> As5047P<'d> {
     }
 
     async fn read_address(&mut self, address: u16) -> Result<u16, Error> {
-        if let Some(spi_peripheral) = self.spi_mutex.lock().await.as_mut() {
+        if let Some(bus) = self.spi_mutex.lock().await.as_mut() {
             let cmd = to_read_command(&address);
             let nop = to_read_command(&0x00);
-            self.transfer(cmd, spi_peripheral).await?;
-            let response_be_bytes = self.transfer(nop, spi_peripheral).await?;
+            self.transfer(cmd, bus).await?;
+            let response_be_bytes = self.transfer(nop, bus).await?;
             let response = u16::from_be_bytes(response_be_bytes);
             if response.count_ones() % 2 != 0 {
                 return Err(Error::Parity);
