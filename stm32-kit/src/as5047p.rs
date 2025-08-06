@@ -1,4 +1,3 @@
-use defmt::{error, info, warn};
 use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
@@ -18,7 +17,7 @@ pub struct As5047P<'d> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum Error {
     NoBus,
     CommandFrame,
@@ -51,19 +50,13 @@ impl<'d> As5047P<'d> {
         }
     }
 
-    pub async fn initialize(&mut self) {
+    pub async fn initialize(&mut self) -> Result<Diagnostics, Error> {
         // startup time = 10ms
         Timer::after(Duration::from_millis(20)).await;
-        if let Ok(err_flag) = self.read_and_reset_error_flag().await {
-            info!("{:?}", err_flag);
-        }
-        if let Ok(diag) = self.read_diagnostics().await {
-            if !diag.is_okay() {
-                warn!("{:?}", diag);
-            }
-        } else {
-            error!("initialization error");
-        }
+        // ignore the first error response
+        let _ = self.read_and_reset_error_flag().await;
+        self.read_and_reset_error_flag().await?;
+        self.read_diagnostics().await
     }
 
     pub async fn read_raw_angle(&mut self) -> Result<u16, Error> {
@@ -129,7 +122,7 @@ impl<'d> As5047P<'d> {
 }
 
 fn to_read_command(address: &u16) -> [u8; 2] {
-    let cmd = 0x0400u16 | (address & 0x3FFFu16);
+    let cmd = 0x4000u16 | (address & 0x3FFFu16);
     let parity = cmd.count_ones() % 2;
     (cmd | (parity as u16) << 15).to_be_bytes()
 }

@@ -63,7 +63,10 @@ async fn spi_task(p_spi: &'static SpiMutex, cs_pin: gpio::Output<'static>) {
     let mut count = 0u32;
     let mut raw_angle = 0u16;
     let mut sensor = As5047P::new(p_spi, cs_pin);
-    sensor.initialize().await;
+    if let Err(e) = sensor.initialize().await {
+        error!("Initialization failed: {:?}", e);
+        return;
+    }
     let mut last_log = Instant::now();
 
     loop {
