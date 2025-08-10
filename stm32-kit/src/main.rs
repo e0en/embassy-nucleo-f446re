@@ -255,11 +255,11 @@ async fn main(spawner: Spawner) {
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
     spi_config.frequency = mhz(1);
     spi_config.rise_fall_speed = gpio::Speed::VeryHigh;
-    let cs_out = gpio::Output::new(p.PA1, gpio::Level::High, gpio::Speed::VeryHigh);
+    let cs_out = gpio::Output::new(p.PB6, gpio::Level::High, gpio::Speed::VeryHigh);
 
     {
         let p_spi = stm32_spi::Spi::new(
-            p.SPI1, p.PB3, p.PB5, p.PB4, p.DMA1_CH3, p.DMA1_CH4, spi_config,
+            p.SPI1, p.PA5, p.PA7, p.PA6, p.DMA1_CH3, p.DMA1_CH4, spi_config,
         );
         *(SPI.lock().await) = Some(p_spi);
     }
