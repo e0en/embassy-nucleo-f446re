@@ -272,7 +272,7 @@ async fn main(spawner: Spawner) {
     );
     let p_can = can_conf.into_normal_mode();
 
-    let mut timer = pwm::create_timer(p.PA8, p.PA9, p.PA10, p.TIM1);
+    let mut timer = pwm::create_6pwm_timer(p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15, p.TIM1);
     pwm::initialize(&mut timer);
     timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());

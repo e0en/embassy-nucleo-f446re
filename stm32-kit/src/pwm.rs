@@ -1,10 +1,13 @@
-use embassy_stm32::Peri;
-use embassy_stm32::gpio::OutputType;
+use embassy_stm32::gpio::{OutputType, Speed};
 use embassy_stm32::timer::{
-    Channel1Pin, Channel2Pin, Channel3Pin, GeneralInstance4Channel, low_level, simple_pwm::PwmPin,
+    AdvancedInstance4Channel, Channel1ComplementaryPin, Channel1Pin, Channel2ComplementaryPin,
+    Channel2Pin, Channel3ComplementaryPin, Channel3Pin, GeneralInstance4Channel, low_level,
+    simple_pwm::PwmPin,
 };
+use embassy_stm32::{Peri, gpio};
 
-pub fn create_timer<'a, TIM, T1, T2, T3>(
+#[allow(dead_code)]
+pub fn create_3pwm_timer<'a, TIM, T1, T2, T3>(
     p1: Peri<T1>,
     p2: Peri<T2>,
     p3: Peri<T3>,
@@ -25,9 +28,44 @@ where
     timer
 }
 
+#[allow(dead_code)]
+pub fn create_6pwm_timer<'a, TIM, T1, T2, T3, T1N, T2N, T3N>(
+    p1: Peri<T1>,
+    p2: Peri<T2>,
+    p3: Peri<T3>,
+    p1n: Peri<T1N>,
+    p2n: Peri<T2N>,
+    p3n: Peri<T3N>,
+    p_timer: Peri<'a, TIM>,
+) -> low_level::Timer<'a, TIM>
+where
+    TIM: AdvancedInstance4Channel,
+    T1: Channel1Pin<TIM>,
+    T2: Channel2Pin<TIM>,
+    T3: Channel3Pin<TIM>,
+    T1N: Channel1ComplementaryPin<TIM>,
+    T2N: Channel2ComplementaryPin<TIM>,
+    T3N: Channel3ComplementaryPin<TIM>,
+{
+    let _pin1 = PwmPin::new_ch1(p1, OutputType::PushPull);
+    let _pin2 = PwmPin::new_ch2(p2, OutputType::PushPull);
+    let _pin3 = PwmPin::new_ch3(p3, OutputType::PushPull);
+
+    let o = gpio::Output::new(p1n, gpio::Level::Low, Speed::VeryHigh);
+    core::mem::forget(o);
+    let o = gpio::Output::new(p2n, gpio::Level::Low, Speed::VeryHigh);
+    core::mem::forget(o);
+    let o = gpio::Output::new(p3n, gpio::Level::Low, Speed::VeryHigh);
+    core::mem::forget(o);
+
+    let timer = low_level::Timer::new(p_timer);
+    timer.set_counting_mode(low_level::CountingMode::CenterAlignedUpInterrupts);
+    timer
+}
+
 pub fn initialize<'a, TIM>(timer: &mut low_level::Timer<'a, TIM>)
 where
-    TIM: GeneralInstance4Channel,
+    TIM: AdvancedInstance4Channel,
 {
     timer.enable_outputs();
     timer.start();
@@ -42,6 +80,7 @@ where
         timer.enable_channel(ch, true);
         timer.set_output_compare_mode(ch, low_level::OutputCompareMode::PwmMode1);
         timer.set_output_compare_preload(ch, true);
+        timer.enable_complementary_channel(ch, true);
     });
 }
 
