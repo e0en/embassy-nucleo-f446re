@@ -8,7 +8,7 @@ foc = { path = "../foc", default-features = false }
 embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
   "defmt",
   "time-driver-any",
-  "stm32g431kb",
+  "stm32g431rb",
   "memory-x",
   "unstable-pac",
 ], optional = true }
