@@ -5,24 +5,24 @@ edition = "2024"
 
 [dependencies]
 foc = { path = "../foc", default-features = false }
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "76e369b8aa5641b6f3f4440824f559def6cf6192", features = [
   "defmt",
   "time-driver-any",
   "stm32g431rb",
   "memory-x",
   "unstable-pac",
 ], optional = true }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "76e369b8aa5641b6f3f4440824f559def6cf6192", features = [
   "arch-cortex-m",
   "executor-thread",
   "defmt",
 ], optional = true }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "76e369b8aa5641b6f3f4440824f559def6cf6192", features = [
   "defmt-timestamp-uptime",
   "tick-hz-1_000_000",
   "defmt",
 ], optional = true }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "56572ef0adffd6258adc10fb424e37a8b4ddc19c", features = [
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "76e369b8aa5641b6f3f4440824f559def6cf6192", features = [
   "defmt",
 ], optional = true }
 

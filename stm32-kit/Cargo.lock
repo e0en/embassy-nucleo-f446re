@@ -216,8 +216,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-embedded-hal"
-version = "0.3.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.4.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "defmt 1.0.1",
  "embassy-futures",
@@ -234,8 +234,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-executor"
-version = "0.7.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.8.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -246,8 +246,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-executor-macros"
-version = "0.6.2"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.7.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -258,12 +258,12 @@ dependencies = [
 [[package]]
 name = "embassy-futures"
 version = "0.1.1"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 
 [[package]]
 name = "embassy-hal-internal"
-version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.3.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -274,7 +274,7 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "defmt 1.0.1",
 ]
@@ -282,7 +282,7 @@ dependencies = [
 [[package]]
 name = "embassy-stm32"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "aligned",
  "bit_field",
@@ -330,21 +330,21 @@ dependencies = [
 [[package]]
 name = "embassy-sync"
 version = "0.7.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "cfg-if",
  "critical-section",
  "defmt 1.0.1",
  "embedded-io-async",
+ "futures-core",
  "futures-sink",
- "futures-util",
  "heapless",
 ]
 
 [[package]]
 name = "embassy-time"
 version = "0.4.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -354,21 +354,21 @@ dependencies = [
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "futures-util",
+ "futures-core",
 ]
 
 [[package]]
 name = "embassy-time-driver"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "document-features",
 ]
 
 [[package]]
 name = "embassy-time-queue-utils"
-version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.2.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "embassy-executor",
  "heapless",
@@ -376,8 +376,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-driver"
-version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.2.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "defmt 1.0.1",
  "embedded-io-async",
@@ -385,8 +385,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
-version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=56572ef0adffd6258adc10fb424e37a8b4ddc19c#56572ef0adffd6258adc10fb424e37a8b4ddc19c"
+version = "0.3.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=76e369b8aa5641b6f3f4440824f559def6cf6192#76e369b8aa5641b6f3f4440824f559def6cf6192"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",
@@ -722,10 +722,11 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "16.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-27ef8fba3483187e852eaf3796d827259f61e8ec#c8e4a666a1b1e0c934585599c278cc66dad04ce5"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-cad609e02a866422ffdbb8e07be26311cfdd07d9#2bd01b743c9a9f1b21441750e8c05d02a8ac4f7f"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
+ "defmt 0.3.100",
 ]
 
 [[package]]

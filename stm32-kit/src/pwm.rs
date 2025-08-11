@@ -1,10 +1,10 @@
 use embassy_stm32::gpio::{OutputType, Speed};
 use embassy_stm32::timer::{
-    AdvancedInstance4Channel, Channel1ComplementaryPin, Channel1Pin, Channel2ComplementaryPin,
-    Channel2Pin, Channel3ComplementaryPin, Channel3Pin, GeneralInstance4Channel, low_level,
+    AdvancedInstance4Channel, GeneralInstance4Channel, TimerComplementaryPin, TimerPin, low_level,
     simple_pwm::PwmPin,
 };
-use embassy_stm32::{Peri, gpio};
+use embassy_stm32::timer::{Ch1, Ch2, Ch3};
+use embassy_stm32::{Peri, gpio, pac};
 
 #[allow(dead_code)]
 pub fn create_3pwm_timer<'a, TIM, T1, T2, T3>(
@@ -15,13 +15,13 @@ pub fn create_3pwm_timer<'a, TIM, T1, T2, T3>(
 ) -> low_level::Timer<'a, TIM>
 where
     TIM: GeneralInstance4Channel,
-    T1: Channel1Pin<TIM>,
-    T2: Channel2Pin<TIM>,
-    T3: Channel3Pin<TIM>,
+    T1: TimerPin<TIM, Ch1>,
+    T2: TimerPin<TIM, Ch2>,
+    T3: TimerPin<TIM, Ch3>,
 {
-    let _pin1 = PwmPin::new_ch1(p1, OutputType::PushPull);
-    let _pin2 = PwmPin::new_ch2(p2, OutputType::PushPull);
-    let _pin3 = PwmPin::new_ch3(p3, OutputType::PushPull);
+    let _pin1 = PwmPin::new(p1, OutputType::PushPull);
+    let _pin2 = PwmPin::new(p2, OutputType::PushPull);
+    let _pin3 = PwmPin::new(p3, OutputType::PushPull);
 
     let timer = low_level::Timer::new(p_timer);
     timer.set_counting_mode(low_level::CountingMode::CenterAlignedUpInterrupts);
@@ -40,16 +40,16 @@ pub fn create_6pwm_timer<'a, TIM, T1, T2, T3, T1N, T2N, T3N>(
 ) -> low_level::Timer<'a, TIM>
 where
     TIM: AdvancedInstance4Channel,
-    T1: Channel1Pin<TIM>,
-    T2: Channel2Pin<TIM>,
-    T3: Channel3Pin<TIM>,
-    T1N: Channel1ComplementaryPin<TIM>,
-    T2N: Channel2ComplementaryPin<TIM>,
-    T3N: Channel3ComplementaryPin<TIM>,
+    T1: TimerPin<TIM, Ch1>,
+    T2: TimerPin<TIM, Ch2>,
+    T3: TimerPin<TIM, Ch3>,
+    T1N: TimerComplementaryPin<TIM, Ch1>,
+    T2N: TimerComplementaryPin<TIM, Ch2>,
+    T3N: TimerComplementaryPin<TIM, Ch3>,
 {
-    let _pin1 = PwmPin::new_ch1(p1, OutputType::PushPull);
-    let _pin2 = PwmPin::new_ch2(p2, OutputType::PushPull);
-    let _pin3 = PwmPin::new_ch3(p3, OutputType::PushPull);
+    let _pin1 = PwmPin::new(p1, OutputType::PushPull);
+    let _pin2 = PwmPin::new(p2, OutputType::PushPull);
+    let _pin3 = PwmPin::new(p3, OutputType::PushPull);
 
     let o = gpio::Output::new(p1n, gpio::Level::Low, Speed::VeryHigh);
     core::mem::forget(o);
@@ -58,18 +58,14 @@ where
     let o = gpio::Output::new(p3n, gpio::Level::Low, Speed::VeryHigh);
     core::mem::forget(o);
 
-    let timer = low_level::Timer::new(p_timer);
-    timer.set_counting_mode(low_level::CountingMode::CenterAlignedUpInterrupts);
-    timer
+    low_level::Timer::new(p_timer)
 }
 
 pub fn initialize<'a, TIM>(timer: &mut low_level::Timer<'a, TIM>)
 where
     TIM: AdvancedInstance4Channel,
 {
-    timer.enable_outputs();
-    timer.start();
-
+    timer.stop();
     [
         embassy_stm32::timer::Channel::Ch1,
         embassy_stm32::timer::Channel::Ch2,
@@ -82,6 +78,33 @@ where
         timer.set_output_compare_preload(ch, true);
         timer.enable_complementary_channel(ch, true);
     });
+
+    timer.regs_advanced().cr1().modify(|w| {
+        w.set_opm(false); // not one-pulse
+        w.set_udis(false); // do not suppress UEV
+        w.set_urs(pac::timer::vals::Urs::COUNTER_ONLY); // only real over/underflow causes UEV (stable TRGO)
+        w.set_cms(pac::timer::vals::Cms::CENTER_ALIGNED3);
+        w.set_dir(pac::timer::vals::Dir::DOWN); // start by counting down
+    });
+
+    // set timer max compare value
+    timer
+        .regs_advanced()
+        .arr()
+        .write(|r| r.set_arr((1 << 12) - 1));
+
+    timer
+        .regs_advanced()
+        .smcr()
+        .modify(|w| w.set_sms(pac::timer::vals::Sms::DISABLED));
+    timer
+        .regs_advanced()
+        .cr2()
+        .modify(|w| w.set_mms(pac::timer::vals::Mms::UPDATE));
+
+    timer.regs_advanced().rcr().write(|w| w.set_rep(0)); // no down-sample while debugging
+    timer.regs_advanced().sr().write(|w| w.set_uif(false));
+    timer.start();
 }
 
 pub fn set_duty_cycle<'a, TIM>(timer: &mut low_level::Timer<'a, TIM>, ch1: u32, ch2: u32, ch3: u32)

@@ -1,10 +1,13 @@
 #![no_std]
 #![no_main]
+mod adc;
 mod as5047p;
 mod bldc_driver;
 mod can_message;
 mod clock;
 mod pwm;
+
+use core::sync::atomic::Ordering;
 
 use crate::{
     as5047p::As5047P,
@@ -20,13 +23,13 @@ use embassy_stm32::spi as stm32_spi;
 use embassy_stm32::{
     Config, bind_interrupts,
     can::{self, Can},
-    gpio,
+    gpio, i2c as stm32_i2c,
     mode::Async,
     peripherals,
+    peripherals::TIM1,
     time::mhz,
     timer::low_level,
 };
-use embassy_stm32::{i2c as stm32_i2c, peripherals::TIM1};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use embassy_time::{Duration, Instant, Timer};
 
@@ -54,6 +57,7 @@ async fn foc_task(
     p_spi: &'static SpiMutex,
     cs_pin: gpio::Output<'static>,
     pwm_timer: low_level::Timer<'static, TIM1>,
+    _p_adc: adc::DummyAdc,
 ) {
     let mut driver = PwmDriver::new(pwm_timer);
 
@@ -121,6 +125,13 @@ async fn foc_task(
     let mut count: usize = 0;
     loop {
         count += 1;
+
+        let ia = adc::IA_RAW.load(Ordering::Relaxed);
+        let ib = adc::IB_RAW.load(Ordering::Relaxed);
+        let ic = adc::IC_RAW.load(Ordering::Relaxed);
+        info!("{}, {}, {}", ia, ib, ic);
+        Timer::after_millis(100).await;
+
         if let Ok(command) = command_channel.try_receive() {
             match command {
                 Command::Enable => foc.enable(),
@@ -254,7 +265,7 @@ async fn main(spawner: Spawner) {
     spi_config.mode = stm32_spi::MODE_1;
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
     spi_config.frequency = mhz(1);
-    spi_config.rise_fall_speed = gpio::Speed::VeryHigh;
+    spi_config.gpio_speed = gpio::Speed::VeryHigh;
     let cs_out = gpio::Output::new(p.PB6, gpio::Level::High, gpio::Speed::VeryHigh);
 
     {
@@ -272,11 +283,17 @@ async fn main(spawner: Spawner) {
     );
     let p_can = can_conf.into_normal_mode();
 
+    let _drvoff_pin = gpio::Output::new(p.PB3, gpio::Level::Low, gpio::Speed::Medium);
+    let _n_sleep_pin = gpio::Input::new(p.PB5, gpio::Pull::None);
+
+    let p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PA2);
+    adc::calibrate();
+    adc::initialize();
+
     let mut timer = pwm::create_6pwm_timer(p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15, p.TIM1);
     pwm::initialize(&mut timer);
-    timer.set_max_compare_value((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    unwrap!(spawner.spawn(foc_task(&SPI, cs_out, timer)));
+    unwrap!(spawner.spawn(foc_task(&SPI, cs_out, timer, p_adc)));
     unwrap!(spawner.spawn(can_task(p_can)));
 }
