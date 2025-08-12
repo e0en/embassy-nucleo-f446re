@@ -4,6 +4,7 @@ use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::adc::AdcChannel;
 use embassy_stm32::gpio;
 use embassy_stm32::interrupt;
+use embassy_stm32::interrupt::InterruptExt;
 use embassy_stm32::pac;
 use embassy_stm32::peripherals::ADC1;
 
@@ -136,13 +137,12 @@ pub fn initialize(ch1: u8, ch2: u8, ch3: u8) {
         w.set_ovr(true);
     });
 
-    // NVIC unmask
+    // enable interrupt
+    embassy_stm32::interrupt::ADC1_2.set_priority(interrupt::Priority::P0);
     unsafe {
-        cortex_m::peripheral::NVIC::unmask(embassy_stm32::interrupt::ADC1_2);
-        cortex_m::Peripherals::steal()
-            .NVIC
-            .set_priority(embassy_stm32::interrupt::ADC1_2, 0);
+        embassy_stm32::interrupt::ADC1_2.enable();
     }
+
     adc1.ier().modify(|w| w.set_jeosie(true));
 
     // timer TRGO will retrigger
