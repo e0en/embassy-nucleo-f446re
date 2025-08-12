@@ -102,9 +102,9 @@ pub fn initialize(ch1: u8, ch2: u8, ch3: u8) {
 
     // set sample times
     adc1.smpr().modify(|w| {
-        w.set_smp(ch1 as usize, stm32_adc::SampleTime::CYCLES47_5);
-        w.set_smp(ch2 as usize, stm32_adc::SampleTime::CYCLES47_5);
-        w.set_smp(ch3 as usize, stm32_adc::SampleTime::CYCLES47_5);
+        w.set_smp(ch1 as usize, stm32_adc::SampleTime::CYCLES2_5);
+        w.set_smp(ch2 as usize, stm32_adc::SampleTime::CYCLES2_5);
+        w.set_smp(ch3 as usize, stm32_adc::SampleTime::CYCLES2_5);
     });
 
     // set injected group
