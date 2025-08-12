@@ -1,20 +1,17 @@
-use embassy_stm32::timer::GeneralInstance4Channel;
+use crate::pwm::set_duty_cycle;
 use embassy_stm32::timer::low_level;
 use foc::pwm_output::{DutyCycle3Phase, PwmOutput};
 
-use crate::pwm::set_duty_cycle;
+use embassy_stm32::timer::AdvancedInstance4Channel;
 
-pub struct PwmDriver<'a, TIM>
-where
-    TIM: GeneralInstance4Channel,
-{
+pub struct PwmDriver<'a, TIM: AdvancedInstance4Channel> {
     pwm_timer: low_level::Timer<'a, TIM>,
     max_pwm_duty_cycle: u32,
 }
 
 impl<'a, TIM> PwmDriver<'a, TIM>
 where
-    TIM: GeneralInstance4Channel,
+    TIM: AdvancedInstance4Channel,
 {
     pub fn new(pwm_timer: low_level::Timer<'a, TIM>) -> Self {
         let max_pwm_duty_cycle = pwm_timer.get_max_compare_value() + 1;
@@ -27,7 +24,7 @@ where
 
 impl<'a, TIM> PwmOutput for PwmDriver<'a, TIM>
 where
-    TIM: GeneralInstance4Channel,
+    TIM: AdvancedInstance4Channel,
 {
     fn run(&mut self, signal: DutyCycle3Phase) {
         let d1 = (signal.t1 * (self.max_pwm_duty_cycle as f32)) as u32;

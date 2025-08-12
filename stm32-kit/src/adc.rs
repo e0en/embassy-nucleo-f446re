@@ -45,11 +45,10 @@ fn ADC1_2() {
     let adc1 = pac::ADC1;
     let isr = adc1.isr().read();
     if isr.jeos() {
-        let ia_old = IA_RAW.load(Ordering::Relaxed);
         // Read in rank order
-        let ia = adc1.jdr(1).read().0 as u16 + ia_old + 1; // rank1 -> CH1
-        let ib = adc1.jdr(2).read().0 as u16; // rank2 -> CH2
-        let ic = adc1.jdr(3).read().0 as u16; // rank2 -> CH2
+        let ia = adc1.jdr(1).read().0 as u16;
+        let ib = adc1.jdr(2).read().0 as u16;
+        let ic = adc1.jdr(3).read().0 as u16;
         IA_RAW.store(ia, Ordering::Relaxed);
         IB_RAW.store(ib, Ordering::Relaxed);
         IC_RAW.store(ic, Ordering::Relaxed);
@@ -89,7 +88,7 @@ pub fn calibrate() {
     while !adc1.isr().read().adrdy() {}
 }
 
-pub fn initialize() {
+pub fn initialize(ch1: u8, ch2: u8, ch3: u8) {
     let adc1 = pac::ADC1;
 
     // disable ADC
@@ -103,17 +102,17 @@ pub fn initialize() {
 
     // set sample times
     adc1.smpr().modify(|w| {
-        w.set_smp(1, stm32_adc::SampleTime::CYCLES47_5);
-        w.set_smp(2, stm32_adc::SampleTime::CYCLES47_5);
-        w.set_smp(3, stm32_adc::SampleTime::CYCLES47_5);
+        w.set_smp(ch1 as usize, stm32_adc::SampleTime::CYCLES47_5);
+        w.set_smp(ch2 as usize, stm32_adc::SampleTime::CYCLES47_5);
+        w.set_smp(ch3 as usize, stm32_adc::SampleTime::CYCLES47_5);
     });
 
     // set injected group
     adc1.jsqr().modify(|w| {
-        w.set_jl(2); // = 3 channels
-        w.set_jsq(1, 1);
-        w.set_jsq(2, 2);
-        w.set_jsq(3, 3);
+        w.set_jl(3); // = 3 channels
+        w.set_jsq(1, ch1);
+        w.set_jsq(2, ch2);
+        w.set_jsq(3, ch3);
         w.set_jexten(stm32_adc::vals::Exten::RISING_EDGE);
         w.set_jextsel(JEXT_TIM1_TRGO);
     });
