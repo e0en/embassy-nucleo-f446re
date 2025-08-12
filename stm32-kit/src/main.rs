@@ -129,6 +129,7 @@ async fn foc_task(
         let ia = adc::IA_RAW.load(Ordering::Relaxed);
         let ib = adc::IB_RAW.load(Ordering::Relaxed);
         let ic = adc::IC_RAW.load(Ordering::Relaxed);
+        let cnt = adc::CNT.load(Ordering::Relaxed);
 
         if let Ok(command) = command_channel.try_receive() {
             match command {
@@ -161,7 +162,7 @@ async fn foc_task(
 
                         last_logged_at = now;
 
-                        info!("{}, {}, {}", ia, ib, ic);
+                        info!("{}, {}, {} / {}", ia, ib, ic, cnt);
                         if let Some(state) = foc.state {
                             info!(
                                 "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",
@@ -290,7 +291,7 @@ async fn main(spawner: Spawner) {
     adc::initialize(1, 2, 8);
 
     let mut timer = pwm::Pwm6Timer::new(p.TIM1, p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15);
-    timer.initialize();
+    timer.initialize((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
     unwrap!(spawner.spawn(foc_task(&SPI, cs_out, timer, p_adc)));

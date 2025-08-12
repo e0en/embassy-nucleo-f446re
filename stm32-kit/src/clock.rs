@@ -26,7 +26,7 @@ pub fn set_clock(config: &mut Config) {
 
     pac::ADC12_COMMON.ccr().modify(|w| {
         w.set_ckmode(pac::adccommon::vals::Ckmode::ASYNCHRONOUS);
-        w.set_presc(pac::adccommon::vals::Presc::DIV8);
+        w.set_presc(pac::adccommon::vals::Presc::DIV1);
     });
 
     config.rcc = rcc_config;

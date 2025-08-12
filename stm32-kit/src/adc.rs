@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use embassy_stm32::Peri;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::adc::AdcChannel;
@@ -12,6 +12,7 @@ const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected gro
 pub static IA_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IB_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IC_RAW: AtomicU16 = AtomicU16::new(0);
+pub static CNT: AtomicU32 = AtomicU32::new(0);
 
 pub struct DummyAdc {
     _inner: stm32_adc::Adc<'static, ADC1>,
@@ -42,6 +43,9 @@ impl DummyAdc {
 fn ADC1_2() {
     // this runs on ADC1_2 event.
 
+    let tim1 = pac::TIM1;
+    let t = tim1.cnt().read().0;
+
     let adc1 = pac::ADC1;
     let isr = adc1.isr().read();
     if isr.jeos() {
@@ -52,6 +56,7 @@ fn ADC1_2() {
         IA_RAW.store(ia, Ordering::Relaxed);
         IB_RAW.store(ib, Ordering::Relaxed);
         IC_RAW.store(ic, Ordering::Relaxed);
+        CNT.store(t, Ordering::Relaxed);
 
         // Clear JEOS
         adc1.isr().write(|w| w.set_jeos(true));
@@ -134,6 +139,9 @@ pub fn initialize(ch1: u8, ch2: u8, ch3: u8) {
     // NVIC unmask
     unsafe {
         cortex_m::peripheral::NVIC::unmask(embassy_stm32::interrupt::ADC1_2);
+        cortex_m::Peripherals::steal()
+            .NVIC
+            .set_priority(embassy_stm32::interrupt::ADC1_2, 0);
     }
     adc1.ier().modify(|w| w.set_jeosie(true));
 

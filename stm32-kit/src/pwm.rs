@@ -102,7 +102,7 @@ impl<
             .cr2()
             .modify(|w| w.set_mms(pac::timer::vals::Mms::UPDATE));
 
-        self.timer.regs_advanced().rcr().write(|w| w.set_rep(10)); // no down-sample while debugging
+        self.timer.regs_advanced().rcr().write(|w| w.set_rep(1)); // one trigger at every 2 updates
         self.timer.regs_advanced().sr().write(|w| w.set_uif(false));
 
         self.timer.enable_outputs();
@@ -187,7 +187,7 @@ impl<
         self.timer.get_frequency()
     }
 
-    pub fn initialize(&mut self) {
+    pub fn initialize(&mut self, max_compare_value: u16) {
         self.timer.stop();
         [
             embassy_stm32::timer::Channel::Ch1,
@@ -215,7 +215,7 @@ impl<
         self.timer
             .regs_advanced()
             .arr()
-            .write(|r| r.set_arr((1 << 12) - 1));
+            .write(|r| r.set_arr(max_compare_value));
 
         self.timer
             .regs_advanced()
@@ -226,7 +226,8 @@ impl<
             .cr2()
             .modify(|w| w.set_mms(pac::timer::vals::Mms::UPDATE));
 
-        self.timer.regs_advanced().rcr().write(|w| w.set_rep(10));
+        self.timer.regs_advanced().rcr().write(|w| w.set_rep(1));
+        self.timer.regs_advanced().cnt().modify(|w| w.set_cnt(0));
         self.timer.regs_advanced().sr().write(|w| w.set_uif(false));
 
         self.timer.enable_outputs();
