@@ -24,7 +24,7 @@ use embassy_stm32::{
     can::{self, Can},
     gpio, i2c as stm32_i2c,
     mode::Async,
-    peripherals::{self, TIM1},
+    peripherals::{self, ADC1, TIM1},
     time::mhz,
 };
 use embassy_stm32::{
@@ -58,7 +58,7 @@ async fn foc_task(
     p_spi: &'static SpiMutex,
     cs_pin: gpio::Output<'static>,
     pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
-    _p_adc: adc::DummyAdc,
+    _p_adc: adc::DummyAdc<ADC1>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer.timer);
     let mut sensor = As5047P::new(p_spi, cs_pin);
@@ -286,9 +286,9 @@ async fn main(spawner: Spawner) {
     let _drvoff_pin = gpio::Output::new(p.PB3, gpio::Level::Low, gpio::Speed::Medium);
     let _n_sleep_pin = gpio::Input::new(p.PB5, gpio::Pull::None);
 
-    let p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PC2);
-    adc::calibrate();
-    adc::initialize(1, 2, 8);
+    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PC2);
+    p_adc.calibrate();
+    p_adc.initialize(1, 2, 8);
 
     let mut timer = pwm::Pwm6Timer::new(p.TIM1, p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15);
     timer.initialize((1 << 12) - 1);

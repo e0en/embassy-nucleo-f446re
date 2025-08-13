@@ -6,7 +6,6 @@ use embassy_stm32::gpio;
 use embassy_stm32::interrupt;
 use embassy_stm32::interrupt::InterruptExt;
 use embassy_stm32::pac;
-use embassy_stm32::peripherals::ADC1;
 
 const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
 
@@ -15,29 +14,64 @@ pub static IB_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IC_RAW: AtomicU16 = AtomicU16::new(0);
 pub static CNT: AtomicU32 = AtomicU32::new(0);
 
-pub struct DummyAdc {
-    _inner: stm32_adc::Adc<'static, ADC1>,
+pub struct DummyAdc<Tadc: stm32_adc::Instance> {
+    _inner: Peri<'static, Tadc>,
 }
 
-impl DummyAdc {
+impl<Tadc> DummyAdc<Tadc>
+where
+    Tadc: stm32_adc::Instance + AdcSelector,
+{
     pub fn new<P1, P2, P3>(
-        p_adc: Peri<'static, ADC1>,
+        p_adc: Peri<'static, Tadc>,
         _ch1_pin: Peri<'static, P1>,
         _ch2_pin: Peri<'static, P2>,
         _ch3_pin: Peri<'static, P3>,
     ) -> Self
     where
-        Peri<'static, P1>: AdcChannel<ADC1>,
-        Peri<'static, P2>: AdcChannel<ADC1>,
-        Peri<'static, P3>: AdcChannel<ADC1>,
+        Peri<'static, P1>: AdcChannel<Tadc>,
+        Peri<'static, P2>: AdcChannel<Tadc>,
+        Peri<'static, P3>: AdcChannel<Tadc>,
         P1: gpio::Pin,
         P2: gpio::Pin,
         P3: gpio::Pin,
     {
-        Self {
-            _inner: stm32_adc::Adc::new(p_adc),
-        }
+        Self { _inner: p_adc }
     }
+
+    pub fn calibrate(&mut self) {
+        let p_adc = get_pac_adc(&self._inner);
+        calibrate(p_adc);
+    }
+
+    pub fn initialize(&mut self, ch1: u8, ch2: u8, ch3: u8) {
+        let p_adc = get_pac_adc(&self._inner);
+        initialize(p_adc, ch1, ch2, ch3);
+    }
+}
+
+// Trait to map ADC types to their PAC objects at compile time
+pub trait AdcSelector {
+    fn get_pac_adc() -> pac::adc::Adc;
+}
+
+impl AdcSelector for embassy_stm32::peripherals::ADC1 {
+    fn get_pac_adc() -> pac::adc::Adc {
+        pac::ADC1
+    }
+}
+
+impl AdcSelector for embassy_stm32::peripherals::ADC2 {
+    fn get_pac_adc() -> pac::adc::Adc {
+        pac::ADC2
+    }
+}
+
+fn get_pac_adc<'a, T>(_p_adc: &Peri<'a, T>) -> pac::adc::Adc
+where
+    T: stm32_adc::Instance + AdcSelector,
+{
+    T::get_pac_adc()
 }
 
 #[interrupt]
@@ -64,9 +98,7 @@ fn ADC1_2() {
     }
 }
 
-pub fn calibrate() {
-    let adc1 = pac::ADC1;
-
+pub fn calibrate(adc1: pac::adc::Adc) {
     // disable deep power down of ADC, enable ADC analog regulator
     adc1.cr().modify(|w| {
         w.set_deeppwd(false);
@@ -94,9 +126,7 @@ pub fn calibrate() {
     while !adc1.isr().read().adrdy() {}
 }
 
-pub fn initialize(ch1: u8, ch2: u8, ch3: u8) {
-    let adc1 = pac::ADC1;
-
+pub fn initialize(adc1: pac::adc::Adc, ch1: u8, ch2: u8, ch3: u8) {
     // disable ADC
     if adc1.cr().read().aden() {
         adc1.cr().modify(|w| w.set_addis(true));
@@ -126,7 +156,7 @@ pub fn initialize(ch1: u8, ch2: u8, ch3: u8) {
     adc1.cfgr().modify(|w| {
         w.set_jqdis(true); // use JSQR directly
         w.set_jdiscen(false); // no discontinuous
-        w.set_jauto(false);
+        w.set_jauto(false); // use manual rank-group mapping
         w.set_cont(false); // hardware-triggered single sequence per trigger
     });
 
