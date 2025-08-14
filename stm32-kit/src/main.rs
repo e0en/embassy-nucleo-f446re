@@ -7,8 +7,6 @@ mod can_message;
 mod clock;
 mod pwm;
 
-use core::sync::atomic::Ordering;
-
 use crate::{
     as5047p::As5047P,
     bldc_driver::PwmDriver,
@@ -126,10 +124,7 @@ async fn foc_task(
     loop {
         count += 1;
 
-        let ia = adc::IA_RAW.load(Ordering::Relaxed);
-        let ib = adc::IB_RAW.load(Ordering::Relaxed);
-        let ic = adc::IC_RAW.load(Ordering::Relaxed);
-        let cnt = adc::CNT.load(Ordering::Relaxed);
+        let (ia, ib, ic) = _p_adc.read();
 
         if let Ok(command) = command_channel.try_receive() {
             match command {
@@ -162,7 +157,7 @@ async fn foc_task(
 
                         last_logged_at = now;
 
-                        info!("{}, {}, {} / {}", ia, ib, ic, cnt);
+                        info!("{}, {}, {}", ia, ib, ic);
                         if let Some(state) = foc.state {
                             info!(
                                 "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",

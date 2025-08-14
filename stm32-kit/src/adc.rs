@@ -39,6 +39,13 @@ where
         Self { _inner: p_adc }
     }
 
+    pub fn read(&self) -> (u16, u16, u16) {
+        let ia = IA_RAW.load(Ordering::Relaxed);
+        let ib = IB_RAW.load(Ordering::Relaxed);
+        let ic = IC_RAW.load(Ordering::Relaxed);
+        (ia, ib, ic)
+    }
+
     pub fn calibrate(&mut self) {
         let p_adc = get_pac_adc(&self._inner);
         calibrate(p_adc);
