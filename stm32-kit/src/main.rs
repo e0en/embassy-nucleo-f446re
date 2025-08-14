@@ -7,8 +7,6 @@ mod can_message;
 mod clock;
 mod pwm;
 
-use core::sync::atomic::Ordering;
-
 use crate::{
     as5047p::As5047P,
     bldc_driver::PwmDriver,
@@ -24,7 +22,7 @@ use embassy_stm32::{
     can::{self, Can},
     gpio, i2c as stm32_i2c,
     mode::Async,
-    peripherals::{self, ADC1, TIM1},
+    peripherals::{self, ADC1, DMA1_CH5, TIM1},
     time::mhz,
 };
 use embassy_stm32::{
@@ -58,7 +56,7 @@ async fn foc_task(
     p_spi: &'static SpiMutex,
     cs_pin: gpio::Output<'static>,
     pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
-    _p_adc: adc::DummyAdc<ADC1>,
+    mut _p_adc: adc::DummyAdc<ADC1, DMA1_CH5>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer.timer);
     let mut sensor = As5047P::new(p_spi, cs_pin);
@@ -121,15 +119,12 @@ async fn foc_task(
     let command_channel = COMMAND_CHANNEL.receiver();
     let _status_channel = STATUS_CHANNEL.sender();
 
+    let mut buf = [0u16; adc::DMA_BUFFER_SIZE / 2];
+
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
     loop {
         count += 1;
-
-        let ia = adc::IA_RAW.load(Ordering::Relaxed);
-        let ib = adc::IB_RAW.load(Ordering::Relaxed);
-        let ic = adc::IC_RAW.load(Ordering::Relaxed);
-        let cnt = adc::CNT.load(Ordering::Relaxed);
 
         if let Ok(command) = command_channel.try_receive() {
             match command {
@@ -151,6 +146,8 @@ async fn foc_task(
                 _ => (),
             }
         }
+
+        _p_adc.read(&mut buf);
         match sensor.read_async().await {
             Ok(reading) => match foc.get_duty_cycle(&reading) {
                 Ok(duty) => {
@@ -162,7 +159,8 @@ async fn foc_task(
 
                         last_logged_at = now;
 
-                        info!("{}, {}, {} / {}", ia, ib, ic, cnt);
+                        info!("{:?}", buf);
+
                         if let Some(state) = foc.state {
                             info!(
                                 "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",
@@ -286,7 +284,7 @@ async fn main(spawner: Spawner) {
     let _drvoff_pin = gpio::Output::new(p.PB3, gpio::Level::Low, gpio::Speed::Medium);
     let _n_sleep_pin = gpio::Input::new(p.PB5, gpio::Pull::None);
 
-    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PC2);
+    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.DMA1_CH5, p.PA0, p.PA1, p.PC2);
     p_adc.calibrate();
     p_adc.initialize(1, 2, 8);
 

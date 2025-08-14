@@ -1,29 +1,29 @@
-use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use core::marker::PhantomData;
 use embassy_stm32::Peri;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::adc::AdcChannel;
+use embassy_stm32::adc::RxDma;
+use embassy_stm32::dma;
 use embassy_stm32::gpio;
-use embassy_stm32::interrupt;
-use embassy_stm32::interrupt::InterruptExt;
 use embassy_stm32::pac;
 
-const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
+pub const DMA_BUFFER_SIZE: usize = 3 * 2;
+const TIM1_TRGO: u8 = 9; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
 
-pub static IA_RAW: AtomicU16 = AtomicU16::new(0);
-pub static IB_RAW: AtomicU16 = AtomicU16::new(0);
-pub static IC_RAW: AtomicU16 = AtomicU16::new(0);
-pub static CNT: AtomicU32 = AtomicU32::new(0);
-
-pub struct DummyAdc<Tadc: stm32_adc::Instance> {
+pub struct DummyAdc<Tadc: stm32_adc::Instance, Tdma: dma::Channel + RxDma<Tadc>> {
     _inner: Peri<'static, Tadc>,
+    dma_buffer: dma::ReadableRingBuffer<'static, u16>,
+    _phantom1: PhantomData<Tdma>,
 }
 
-impl<Tadc> DummyAdc<Tadc>
+impl<Tadc, Tdma> DummyAdc<Tadc, Tdma>
 where
     Tadc: stm32_adc::Instance + AdcSelector,
+    Tdma: dma::Channel + RxDma<Tadc>,
 {
     pub fn new<P1, P2, P3>(
         p_adc: Peri<'static, Tadc>,
+        p_dma: Peri<'static, Tdma>,
         _ch1_pin: Peri<'static, P1>,
         _ch2_pin: Peri<'static, P2>,
         _ch3_pin: Peri<'static, P3>,
@@ -36,7 +36,32 @@ where
         P2: gpio::Pin,
         P3: gpio::Pin,
     {
-        Self { _inner: p_adc }
+        let dma_buffer: &mut [u16; DMA_BUFFER_SIZE] =
+            cortex_m::singleton!(: [u16; DMA_BUFFER_SIZE] = [0u16; DMA_BUFFER_SIZE]).unwrap();
+        let request = p_dma.request();
+        let mut dma_opts = dma::TransferOptions::default();
+        dma_opts.circular = true;
+        dma_opts.priority = dma::Priority::VeryHigh;
+        dma_opts.complete_transfer_ir = true;
+
+        let peri_addr = {
+            let p = get_pac_adc(&p_adc);
+            p.dr().as_ptr() as *mut u16
+        };
+
+        let dma_buffer = unsafe {
+            dma::ReadableRingBuffer::new(p_dma, request, peri_addr, dma_buffer, dma_opts)
+        };
+
+        Self {
+            _inner: p_adc,
+            dma_buffer,
+            _phantom1: PhantomData,
+        }
+    }
+
+    pub fn read(&mut self, buf: &mut [u16]) {
+        let _ = self.dma_buffer.read(buf);
     }
 
     pub fn calibrate(&mut self) {
@@ -47,6 +72,7 @@ where
     pub fn initialize(&mut self, ch1: u8, ch2: u8, ch3: u8) {
         let p_adc = get_pac_adc(&self._inner);
         initialize(p_adc, ch1, ch2, ch3);
+        self.dma_buffer.start();
     }
 }
 
@@ -72,30 +98,6 @@ where
     T: stm32_adc::Instance + AdcSelector,
 {
     T::get_pac_adc()
-}
-
-#[interrupt]
-fn ADC1_2() {
-    // this runs on ADC1_2 event.
-
-    let tim1 = pac::TIM1;
-    let t = tim1.cnt().read().0;
-
-    let adc1 = pac::ADC1;
-    let isr = adc1.isr().read();
-    if isr.jeos() {
-        // Read in rank order
-        let ia = adc1.jdr(1).read().0 as u16;
-        let ib = adc1.jdr(2).read().0 as u16;
-        let ic = adc1.jdr(3).read().0 as u16;
-        IA_RAW.store(ia, Ordering::Relaxed);
-        IB_RAW.store(ib, Ordering::Relaxed);
-        IC_RAW.store(ic, Ordering::Relaxed);
-        CNT.store(t, Ordering::Relaxed);
-
-        // Clear JEOS
-        adc1.isr().write(|w| w.set_jeos(true));
-    }
 }
 
 pub fn calibrate(adc1: pac::adc::Adc) {
@@ -134,7 +136,7 @@ pub fn initialize(adc1: pac::adc::Adc, ch1: u8, ch2: u8, ch3: u8) {
     }
 
     // stop any ongoing adc measurements
-    adc1.cr().modify(|w| w.set_jadstart(false));
+    adc1.cr().modify(|w| w.set_adstart(false));
 
     // set sample times
     adc1.smpr().modify(|w| {
@@ -144,39 +146,45 @@ pub fn initialize(adc1: pac::adc::Adc, ch1: u8, ch2: u8, ch3: u8) {
     });
 
     // set injected group
-    adc1.jsqr().modify(|w| {
-        w.set_jl(3); // = 3 channels
-        w.set_jsq(1, ch1);
-        w.set_jsq(2, ch2);
-        w.set_jsq(3, ch3);
-        w.set_jexten(stm32_adc::vals::Exten::RISING_EDGE);
-        w.set_jextsel(JEXT_TIM1_TRGO);
+    adc1.sqr1().modify(|w| {
+        w.set_l(2); // = 3 channels
+        w.set_sq(0, ch1);
+        w.set_sq(1, ch2);
+        w.set_sq(2, ch3);
     });
 
     adc1.cfgr().modify(|w| {
-        w.set_jqdis(true); // use JSQR directly
-        w.set_jdiscen(false); // no discontinuous
-        w.set_jauto(false); // use manual rank-group mapping
+        w.set_jqdis(true);
+
         w.set_cont(false); // hardware-triggered single sequence per trigger
+        w.set_discen(false); // no discontinuous
+        w.set_align(false);
+        w.set_ovrmod(stm32_adc::vals::Ovrmod::OVERWRITE);
+        w.set_dmacfg(stm32_adc::vals::Dmacfg::CIRCULAR);
+        w.set_dmaen(stm32_adc::vals::Dmaen::ENABLE);
+
+        w.set_exten(stm32_adc::vals::Exten::RISING_EDGE);
+        w.set_extsel(TIM1_TRGO);
     });
 
-    // clear W1C flags
     adc1.isr().write(|w| {
-        w.set_jeos(true);
+        w.set_eoc(true);
+        w.set_eos(true);
         w.set_jeoc(true);
-        w.set_ovr(true);
+        w.set_jeos(true);
     });
 
-    // enable interrupt
-    embassy_stm32::interrupt::ADC1_2.set_priority(interrupt::Priority::P0);
-    unsafe {
-        embassy_stm32::interrupt::ADC1_2.enable();
-    }
-
-    adc1.ier().modify(|w| w.set_jeosie(true));
+    // no interrupt handler calls
+    adc1.ier().modify(|w| {
+        w.set_jeocie(false);
+        w.set_jeosie(false);
+        w.set_eocie(false);
+        w.set_eosie(false);
+        w.set_ovrie(false);
+    });
 
     // timer TRGO will retrigger
-    adc1.cr().modify(|w| w.set_jadstart(true));
+    adc1.cr().modify(|w| w.set_adstart(true));
 
     // re-enable ADC
     adc1.cr().modify(|w| w.set_aden(true));
