@@ -54,12 +54,13 @@ static SPI: SpiMutex = SpiMutex::new(None);
 #[embassy_executor::task]
 async fn foc_task(
     p_spi: &'static SpiMutex,
-    cs_pin: gpio::Output<'static>,
+    cs_sensor_pin: gpio::Output<'static>,
+    _cs_drv_pin: gpio::Output<'static>,
     pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
     _p_adc: adc::DummyAdc<ADC1>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer.timer);
-    let mut sensor = As5047P::new(p_spi, cs_pin);
+    let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
 
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
@@ -279,7 +280,7 @@ async fn main(spawner: Spawner) {
     let p_can = can_conf.into_normal_mode();
 
     let _drvoff_pin = gpio::Output::new(p.PB3, gpio::Level::Low, gpio::Speed::Medium);
-    let _n_sleep_pin = gpio::Input::new(p.PB5, gpio::Pull::None);
+    let cs_drv = gpio::Output::new(p.PB5, gpio::Level::High, gpio::Speed::VeryHigh);
 
     let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PC2);
     p_adc.calibrate();
@@ -289,6 +290,6 @@ async fn main(spawner: Spawner) {
     timer.initialize((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    unwrap!(spawner.spawn(foc_task(&SPI, cs_out, timer, p_adc)));
+    unwrap!(spawner.spawn(foc_task(&SPI, cs_out, cs_drv, timer, p_adc)));
     unwrap!(spawner.spawn(can_task(p_can)));
 }
