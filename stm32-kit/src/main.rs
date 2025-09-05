@@ -5,12 +5,14 @@ mod as5047p;
 mod bldc_driver;
 mod can_message;
 mod clock;
+mod drv8316;
 mod pwm;
 
 use crate::{
     as5047p::As5047P,
     bldc_driver::PwmDriver,
     can_message::{Command, MotorStatus, StatusMessage},
+    drv8316::Drv8316,
 };
 
 use {defmt_rtt as _, panic_probe as _};
@@ -55,12 +57,29 @@ static SPI: SpiMutex = SpiMutex::new(None);
 async fn foc_task(
     p_spi: &'static SpiMutex,
     cs_sensor_pin: gpio::Output<'static>,
-    _cs_drv_pin: gpio::Output<'static>,
+    cs_drv_pin: gpio::Output<'static>,
     pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
-    _p_adc: adc::DummyAdc<ADC1>,
+    p_adc: adc::DummyAdc<ADC1>,
 ) {
     let mut driver = PwmDriver::new(pwm_timer.timer);
     let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
+    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
+    Timer::after_millis(1).await; // ready time of gate driver
+
+    gate_driver.unlock_registers().await.unwrap();
+
+    gate_driver
+        .set_csa_gain(drv8316::CsaGain::Gain0_15V)
+        .await
+        .unwrap();
+    let config = drv8316::BuckRegulatorConfig {
+        enable: true,
+        voltage: drv8316::BuckVoltage::V5_0,
+        current_limit: drv8316::BuckCurrentLimit::Limit200mA,
+    };
+    gate_driver.configure_buck_regulator(config).await.unwrap();
+
+    gate_driver.lock_registers().await.unwrap();
 
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
@@ -125,7 +144,7 @@ async fn foc_task(
     loop {
         count += 1;
 
-        let (ia, ib, ic) = _p_adc.read();
+        let (ia, ib, ic) = p_adc.read();
 
         if let Ok(command) = command_channel.try_receive() {
             match command {
@@ -257,7 +276,7 @@ async fn main(spawner: Spawner) {
     clock::print_clock_info(&p.RCC);
 
     let mut spi_config = stm32_spi::Config::default();
-    spi_config.miso_pull = gpio::Pull::None;
+    spi_config.miso_pull = gpio::Pull::Up;
     spi_config.mode = stm32_spi::MODE_1;
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
     spi_config.frequency = mhz(1);
