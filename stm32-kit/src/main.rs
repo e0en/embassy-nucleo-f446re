@@ -9,6 +9,7 @@ mod drv8316;
 mod pwm;
 
 use crate::{
+    adc::AdcSelector,
     as5047p::As5047P,
     bldc_driver::PwmDriver,
     can_message::{Command, MotorStatus, StatusMessage},
@@ -28,6 +29,7 @@ use embassy_stm32::{
     time::mhz,
 };
 use embassy_stm32::{
+    adc as stm32_adc,
     peripherals::{PA8, PA9, PA10, PB13, PB14, PB15},
     spi as stm32_spi,
 };
@@ -53,33 +55,13 @@ type SpiMutex = embassy_sync::mutex::Mutex<
 
 static SPI: SpiMutex = SpiMutex::new(None);
 
-#[embassy_executor::task]
-async fn foc_task(
-    p_spi: &'static SpiMutex,
-    cs_sensor_pin: gpio::Output<'static>,
-    cs_drv_pin: gpio::Output<'static>,
-    pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
-    p_adc: adc::DummyAdc<ADC1>,
-) {
-    let mut driver = PwmDriver::new(pwm_timer.timer);
-    let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
-    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
-    Timer::after_millis(1).await; // ready time of gate driver
-
-    let csa_gain = drv8316::CsaGain::Gain0_3V;
-
-    gate_driver.unlock_registers().await.unwrap();
-
-    gate_driver.set_csa_gain(csa_gain).await.unwrap();
-    let config = drv8316::BuckRegulatorConfig {
-        enable: true,
-        voltage: drv8316::BuckVoltage::V5_0,
-        current_limit: drv8316::BuckCurrentLimit::Limit200mA,
-    };
-    gate_driver.configure_buck_regulator(config).await.unwrap();
-
-    gate_driver.lock_registers().await.unwrap();
-
+async fn get_average_adc<T>(
+    p_adc: &mut adc::DummyAdc<T>,
+    csa_gain: drv8316::CsaGain,
+) -> (f32, f32, f32)
+where
+    T: stm32_adc::Instance + AdcSelector,
+{
     let mut ia_avg = 0.0;
     let mut ib_avg = 0.0;
     let mut ic_avg = 0.0;
@@ -94,7 +76,41 @@ async fn foc_task(
     ia_avg /= 100.0;
     ib_avg /= 100.0;
     ic_avg /= 100.0;
+    (ia_avg, ib_avg, ic_avg)
+}
 
+#[embassy_executor::task]
+async fn foc_task(
+    p_spi: &'static SpiMutex,
+    cs_sensor_pin: gpio::Output<'static>,
+    cs_drv_pin: gpio::Output<'static>,
+    pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
+    mut p_adc: adc::DummyAdc<ADC1>,
+) {
+    let mut driver = PwmDriver::new(pwm_timer.timer);
+    let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
+    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
+    Timer::after_millis(1).await; // ready time of gate driver
+
+    let csa_gain = drv8316::CsaGain::Gain0_3V;
+
+    gate_driver.unlock_registers().await.unwrap();
+    gate_driver.set_csa_gain(csa_gain).await.unwrap();
+    let config = drv8316::BuckRegulatorConfig {
+        enable: true,
+        voltage: drv8316::BuckVoltage::V5_0,
+        current_limit: drv8316::BuckCurrentLimit::Limit200mA,
+    };
+    gate_driver.configure_buck_regulator(config).await.unwrap();
+    gate_driver.lock_registers().await.unwrap();
+
+    driver.run(DutyCycle3Phase {
+        t1: 0.0,
+        t2: 0.0,
+        t3: 0.0,
+    });
+    Timer::after_millis(10).await;
+    let (ia_avg, ib_avg, ic_avg) = get_average_adc(&mut p_adc, csa_gain).await;
     info!("ia_avg={}, ib_avg={}, ic_avg={}", ia_avg, ib_avg, ic_avg);
 
     match sensor.initialize().await {
