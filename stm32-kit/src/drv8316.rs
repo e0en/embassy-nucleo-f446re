@@ -237,3 +237,28 @@ type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
     Option<spi::Spi<'static, Async>>,
 >;
+
+pub fn convert_csa_readings(
+    ia_raw: u16,
+    ib_raw: u16,
+    ic_raw: u16,
+    gain: CsaGain,
+) -> (f32, f32, f32) {
+    let mut ia =
+        0.995832 * (ia_raw as f32) - 0.028119 * (ib_raw as f32) - 0.014988 * (ic_raw as f32);
+    let mut ib =
+        0.037737 * (ia_raw as f32) + 1.007723 * (ib_raw as f32) - 0.033757 * (ic_raw as f32);
+    let mut ic =
+        0.009226 * (ia_raw as f32) + 0.029805 * (ib_raw as f32) - 1.003268 * (ic_raw as f32);
+    let gain_value = match gain {
+        CsaGain::Gain0_15V => 0.15,
+        CsaGain::Gain0_3V => 0.3,
+        CsaGain::Gain0_6V => 0.6,
+        CsaGain::Gain1_2V => 1.2,
+    };
+
+    ia *= 3.3 / 4096.0 / gain_value;
+    ib *= 3.3 / 4096.0 / gain_value;
+    ic *= 3.3 / 4096.0 / gain_value;
+    (ia, ib, ic)
+}

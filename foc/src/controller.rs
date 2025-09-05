@@ -242,6 +242,9 @@ impl FocController {
     pub fn get_duty_cycle(
         &mut self,
         angle_reading: &AngleReading,
+        _ia: f32,
+        _ib: f32,
+        _ic: f32,
     ) -> Result<DutyCycle3Phase, FocError> {
         let mut new_state = FocState {
             is_running: self.is_running,

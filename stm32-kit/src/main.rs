@@ -66,12 +66,11 @@ async fn foc_task(
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
     Timer::after_millis(1).await; // ready time of gate driver
 
+    let csa_gain = drv8316::CsaGain::Gain0_3V;
+
     gate_driver.unlock_registers().await.unwrap();
 
-    gate_driver
-        .set_csa_gain(drv8316::CsaGain::Gain0_15V)
-        .await
-        .unwrap();
+    gate_driver.set_csa_gain(csa_gain).await.unwrap();
     let config = drv8316::BuckRegulatorConfig {
         enable: true,
         voltage: drv8316::BuckVoltage::V5_0,
@@ -80,6 +79,23 @@ async fn foc_task(
     gate_driver.configure_buck_regulator(config).await.unwrap();
 
     gate_driver.lock_registers().await.unwrap();
+
+    let mut ia_avg = 0.0;
+    let mut ib_avg = 0.0;
+    let mut ic_avg = 0.0;
+    for _ in 0..100 {
+        let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+        let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+        ia_avg += ia;
+        ib_avg += ib;
+        ic_avg += ic;
+        Timer::after_millis(1).await;
+    }
+    ia_avg /= 100.0;
+    ib_avg /= 100.0;
+    ic_avg /= 100.0;
+
+    info!("ia_avg={}, ib_avg={}, ic_avg={}", ia_avg, ib_avg, ic_avg);
 
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
@@ -144,8 +160,6 @@ async fn foc_task(
     loop {
         count += 1;
 
-        let (ia, ib, ic) = p_adc.read();
-
         if let Ok(command) = command_channel.try_receive() {
             match command {
                 Command::Enable => foc.enable(),
@@ -167,38 +181,44 @@ async fn foc_task(
             }
         }
         match sensor.read_async().await {
-            Ok(reading) => match foc.get_duty_cycle(&reading) {
-                Ok(duty) => {
-                    driver.run(duty);
+            Ok(reading) => {
+                let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+                let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
 
-                    let now = Instant::now();
-                    if (now - last_logged_at) > Duration::from_millis(250) {
-                        let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
+                match foc.get_duty_cycle(&reading, ia, ib, ic) {
+                    Ok(duty) => {
+                        driver.run(duty);
 
-                        last_logged_at = now;
+                        let now = Instant::now();
+                        if (now - last_logged_at) > Duration::from_millis(250) {
+                            let second_since_last_log =
+                                (now - last_logged_at).as_micros() as f32 / 1e6;
 
-                        info!("{}, {}, {}", ia, ib, ic);
-                        if let Some(state) = foc.state {
-                            info!(
-                                "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",
-                                state.angle_error.map(|x| x.0),
-                                state.filtered_velocity.0,
-                                state.velocity_error.0,
-                                state.dt.0,
-                                state.v_ref,
-                            );
-                        }
+                            last_logged_at = now;
 
-                        info!("loop = {} Hz", count as f32 / second_since_last_log);
-                        count = 0;
-                    };
+                            info!("{}, {}, {}", ia - ia_avg, ib - ib_avg, ic - ic_avg);
+                            if let Some(state) = foc.state {
+                                info!(
+                                    "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",
+                                    state.angle_error.map(|x| x.0),
+                                    state.filtered_velocity.0,
+                                    state.velocity_error.0,
+                                    state.dt.0,
+                                    state.v_ref,
+                                );
+                            }
+
+                            info!("loop = {} Hz", count as f32 / second_since_last_log);
+                            count = 0;
+                        };
+                    }
+                    Err(e) => match e {
+                        foc::pwm::FocError::AlignError => error!("AlignError"),
+                        foc::pwm::FocError::CalculationError => error!("CalculationError"),
+                        foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
+                    },
                 }
-                Err(e) => match e {
-                    foc::pwm::FocError::AlignError => error!("AlignError"),
-                    foc::pwm::FocError::CalculationError => error!("CalculationError"),
-                    foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
-                },
-            },
+            }
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
