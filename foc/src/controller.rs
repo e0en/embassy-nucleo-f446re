@@ -353,7 +353,12 @@ impl FocController {
         new_state.i_q = i_beta * cos - i_alpha * sin;
         new_state.i_d = i_alpha * cos + i_beta * sin;
 
-        let duty_cycle = svpwm(v_ref, 0.0, electrical_angle, self.psu_voltage)?;
+        let duty_cycle = svpwm(
+            v_ref - new_state.i_q,
+            -new_state.i_d,
+            electrical_angle,
+            self.psu_voltage,
+        )?;
         self.state = Some(new_state);
         Ok(duty_cycle)
     }
