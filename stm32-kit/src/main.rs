@@ -27,6 +27,7 @@ use embassy_stm32::{
     mode::Async,
     peripherals::{self, ADC1, TIM1},
     time::mhz,
+    timer::AdvancedInstance4Channel,
 };
 use embassy_stm32::{
     adc as stm32_adc,
@@ -58,6 +59,7 @@ static SPI: SpiMutex = SpiMutex::new(None);
 async fn get_average_adc<T>(
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: drv8316::CsaGain,
+    n: usize,
 ) -> (f32, f32, f32)
 where
     T: stm32_adc::Instance + AdcSelector,
@@ -65,7 +67,7 @@ where
     let mut ia_avg = 0.0;
     let mut ib_avg = 0.0;
     let mut ic_avg = 0.0;
-    for _ in 0..100 {
+    for _ in 0..n {
         let (ia_raw, ib_raw, ic_raw) = p_adc.read();
         let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
         ia_avg += ia;
@@ -73,10 +75,66 @@ where
         ic_avg += ic;
         Timer::after_millis(1).await;
     }
-    ia_avg /= 100.0;
-    ib_avg /= 100.0;
-    ic_avg /= 100.0;
+    ia_avg /= n as f32;
+    ib_avg /= n as f32;
+    ic_avg /= n as f32;
     (ia_avg, ib_avg, ic_avg)
+}
+
+async fn get_phase_mapping<'a, T, TIM>(
+    p_adc: &mut adc::DummyAdc<T>,
+    driver: &mut PwmDriver<'a, TIM>,
+    csa_gain: drv8316::CsaGain,
+) -> Option<(usize, usize, usize)>
+where
+    T: stm32_adc::Instance + AdcSelector,
+    TIM: AdvancedInstance4Channel,
+{
+    let mut phase = DutyCycle3Phase {
+        t1: 0.0,
+        t2: 0.0,
+        t3: 0.0,
+    };
+
+    phase.t1 = 0.2;
+    driver.run(phase);
+    Timer::after_millis(200).await;
+    let (ia, ib, ic) = get_average_adc(p_adc, csa_gain, 100).await;
+    let phase_1 = max_index(ia, ib, ic)?;
+
+    phase.t1 = 0.0;
+    phase.t2 = 0.2;
+    driver.run(phase);
+    Timer::after_millis(200).await;
+    let (ia, ib, ic) = get_average_adc(p_adc, csa_gain, 100).await;
+    let phase_2 = max_index(ia, ib, ic)?;
+    if phase_2 == phase_1 {
+        return None;
+    }
+
+    phase.t2 = 0.0;
+    phase.t3 = 0.2;
+    driver.run(phase);
+    Timer::after_millis(200).await;
+    let (ia, ib, ic) = get_average_adc(p_adc, csa_gain, 100).await;
+    let phase_3 = max_index(ia, ib, ic)?;
+    if phase_3 == phase_1 || phase_3 == phase_2 {
+        return None;
+    }
+
+    Some((phase_1, phase_2, phase_3))
+}
+
+fn max_index(v1: f32, v2: f32, v3: f32) -> Option<usize> {
+    if v1 > v2 && v1 > v3 {
+        Some(0)
+    } else if v2 > v1 && v2 > v3 {
+        Some(1)
+    } else if v3 > v1 && v3 > v2 {
+        Some(2)
+    } else {
+        None
+    }
 }
 
 #[embassy_executor::task]
@@ -104,14 +162,8 @@ async fn foc_task(
     gate_driver.configure_buck_regulator(config).await.unwrap();
     gate_driver.lock_registers().await.unwrap();
 
-    driver.run(DutyCycle3Phase {
-        t1: 0.0,
-        t2: 0.0,
-        t3: 0.0,
-    });
-    Timer::after_millis(10).await;
-    let (ia_avg, ib_avg, ic_avg) = get_average_adc(&mut p_adc, csa_gain).await;
-    info!("ia_avg={}, ib_avg={}, ic_avg={}", ia_avg, ib_avg, ic_avg);
+    let current_sense_mapping = get_phase_mapping(&mut p_adc, &mut driver, csa_gain).await;
+    info!("mapping = {:?}", current_sense_mapping);
 
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
@@ -212,7 +264,7 @@ async fn foc_task(
 
                             last_logged_at = now;
 
-                            info!("{}, {}, {}", ia - ia_avg, ib - ib_avg, ic - ic_avg);
+                            info!("{}, {}, {}", ia, ib, ic);
                             if let Some(state) = foc.state {
                                 info!(
                                     "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",

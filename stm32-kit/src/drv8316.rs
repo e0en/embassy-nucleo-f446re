@@ -244,12 +244,13 @@ pub fn convert_csa_readings(
     ic_raw: u16,
     gain: CsaGain,
 ) -> (f32, f32, f32) {
-    let mut ia =
-        0.995832 * (ia_raw as f32) - 0.028119 * (ib_raw as f32) - 0.014988 * (ic_raw as f32);
-    let mut ib =
-        0.037737 * (ia_raw as f32) + 1.007723 * (ib_raw as f32) - 0.033757 * (ic_raw as f32);
-    let mut ic =
-        0.009226 * (ia_raw as f32) + 0.029805 * (ib_raw as f32) - 1.003268 * (ic_raw as f32);
+    let mut ia = (ia_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
+    let mut ib = (ib_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
+    let mut ic = (ic_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
+
+    ia = 0.995832 * ia - 0.028119 * ib - 0.014988 * ic;
+    ib = 0.037737 * ia + 1.007723 * ib - 0.033757 * ic;
+    ic = 0.009226 * ia + 0.029805 * ib + 1.003268 * ic;
     let gain_value = match gain {
         CsaGain::Gain0_15V => 0.15,
         CsaGain::Gain0_3V => 0.3,
@@ -257,8 +258,8 @@ pub fn convert_csa_readings(
         CsaGain::Gain1_2V => 1.2,
     };
 
-    ia *= 3.3 / 4096.0 / gain_value;
-    ib *= 3.3 / 4096.0 / gain_value;
-    ic *= 3.3 / 4096.0 / gain_value;
+    ia /= gain_value;
+    ib /= gain_value;
+    ic /= gain_value;
     (ia, ib, ic)
 }
