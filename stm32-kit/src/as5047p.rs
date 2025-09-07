@@ -42,7 +42,7 @@ impl<'d> As5047P<'d> {
     pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
         As5047P {
             previous_raw_angle: None,
-            previous_angle: Radian(0.0),
+            previous_angle: Radian::new(0.0),
             previous_time: Instant::from_secs(0),
             full_rotations: 0,
             spi_mutex,
@@ -143,7 +143,7 @@ impl<'d> AngleInput for As5047P<'d> {
             None => {
                 self.previous_time = now;
                 self.previous_raw_angle = Some(raw_angle);
-                self.previous_angle = Radian(raw_angle as f32 * RAW_TO_RADIAN);
+                self.previous_angle = Radian::new(raw_angle as f32 * RAW_TO_RADIAN);
                 Ok(AngleReading {
                     angle: self.previous_angle,
                     velocity: RadianPerSecond(0.0),
@@ -175,13 +175,13 @@ impl<'d> AngleInput for As5047P<'d> {
                         0
                     }
                 };
-                let angular_change = Radian((raw_angle_change as f32) * RAW_TO_RADIAN);
+                let angular_change = Radian::new((raw_angle_change as f32) * RAW_TO_RADIAN);
                 let mut angle = self.previous_angle + angular_change;
-                if angle.0 > 2.0 * core::f32::consts::PI {
-                    angle.0 -= 2.0 * core::f32::consts::PI;
+                if angle.angle > 2.0 * core::f32::consts::PI {
+                    angle.angle -= 2.0 * core::f32::consts::PI;
                     self.full_rotations += 1;
-                } else if angle.0 < -2.0 * core::f32::consts::PI {
-                    angle.0 += 2.0 * core::f32::consts::PI;
+                } else if angle.angle < -2.0 * core::f32::consts::PI {
+                    angle.angle += 2.0 * core::f32::consts::PI;
                     self.full_rotations -= 1;
                 }
                 let velocity = angular_change / dt;

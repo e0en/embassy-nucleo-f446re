@@ -85,7 +85,7 @@ async fn get_phase_mapping<'a, T, TIM>(
     p_adc: &mut adc::DummyAdc<T>,
     driver: &mut PwmDriver<'a, TIM>,
     csa_gain: drv8316::CsaGain,
-) -> Option<(usize, usize, usize)>
+) -> Option<(u8, u8, u8)>
 where
     T: stm32_adc::Instance + AdcSelector,
     TIM: AdvancedInstance4Channel,
@@ -125,7 +125,7 @@ where
     Some((phase_1, phase_2, phase_3))
 }
 
-fn max_index(v1: f32, v2: f32, v3: f32) -> Option<usize> {
+fn max_index(v1: f32, v2: f32, v3: f32) -> Option<u8> {
     if v1 > v2 && v1 > v3 {
         Some(0)
     } else if v2 > v1 && v2 > v3 {
@@ -162,9 +162,6 @@ async fn foc_task(
     gate_driver.configure_buck_regulator(config).await.unwrap();
     gate_driver.lock_registers().await.unwrap();
 
-    let current_sense_mapping = get_phase_mapping(&mut p_adc, &mut driver, csa_gain).await;
-    info!("mapping = {:?}", current_sense_mapping);
-
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
         Err(e) => error!("Sensor initialization failed, {:?}", e),
@@ -187,6 +184,13 @@ async fn foc_task(
         1000.0,
     );
 
+    if let Some(m) = get_phase_mapping(&mut p_adc, &mut driver, csa_gain).await {
+        foc.current_mapping = m;
+    } else {
+        error!("Current phase mapping failed");
+        return;
+    }
+
     let mut read_sensor = {
         let s = &mut sensor;
         async || s.read_async().await.unwrap()
@@ -202,7 +206,7 @@ async fn foc_task(
         Ok(_) => {
             info!(
                 "Sensor aligned {} {}",
-                foc.bias_angle.0,
+                foc.bias_angle.angle,
                 foc.sensor_direction == Direction::Clockwise
             );
         }
@@ -212,7 +216,7 @@ async fn foc_task(
         }
     };
 
-    foc.set_target_angle(Radian(0.0));
+    foc.set_target_angle(Radian::new(0.0));
     foc.set_target_velocity(RadianPerSecond(0.0));
     foc.set_target_torque(0.0);
     foc.set_spring(4.0);
@@ -233,7 +237,7 @@ async fn foc_task(
                 Command::Enable => foc.enable(),
                 Command::Stop => foc.stop(),
                 Command::SetRunMode(m) => foc.set_run_mode(m),
-                Command::SetAngle(p) => foc.set_target_angle(Radian(p)),
+                Command::SetAngle(p) => foc.set_target_angle(Radian::new(p)),
                 Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(v)),
                 Command::SetTorque(t) => foc.set_target_torque(t),
                 Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
@@ -267,12 +271,14 @@ async fn foc_task(
                             info!("{}, {}, {}", ia, ib, ic);
                             if let Some(state) = foc.state {
                                 info!(
-                                    "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}",
-                                    state.angle_error.map(|x| x.0),
+                                    "a = {}, vf = {}, err = {}, dt = {}, v_ref = {}, iq = {}, id = {}",
+                                    state.angle_error.map(|x| x.angle),
                                     state.filtered_velocity.0,
                                     state.velocity_error.0,
                                     state.dt.0,
                                     state.v_ref,
+                                    state.i_q,
+                                    state.i_d,
                                 );
                             }
 
