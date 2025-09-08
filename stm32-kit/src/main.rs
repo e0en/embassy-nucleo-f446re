@@ -168,8 +168,16 @@ async fn foc_task(
     }
 
     let mut foc = FocController::new(
+        foc::controller::MotorSetup {
+            pole_pair_count: 11,
+            phase_resistance: 9.0,
+        },
         16.0,
-        11,
+        foc::pid::PID {
+            p: 5.0,
+            i: 1000.0,
+            d: 0.0,
+        },
         foc::pid::PID {
             p: 16.0,
             i: 0.0,

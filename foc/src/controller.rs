@@ -44,6 +44,12 @@ pub struct ImpedanceParameter {
 }
 
 #[derive(Clone, Copy)]
+pub struct MotorSetup {
+    pub pole_pair_count: u8,
+    pub phase_resistance: f32,
+}
+
+#[derive(Clone, Copy)]
 pub struct FocState {
     pub is_running: bool,
     pub mode: RunMode,
@@ -59,6 +65,7 @@ pub struct FocState {
 }
 
 pub struct FocController {
+    pub motor: MotorSetup,
     pub bias_angle: Radian,
     pub sensor_direction: Direction,
     pub current_mapping: (u8, u8, u8),
@@ -67,11 +74,14 @@ pub struct FocController {
     torque_limit: Option<f32>,
     current_limit: Option<f32>,
     velocity_limit: Option<RadianPerSecond>,
+    current_q_pid: PIDController,
+    current_d_pid: PIDController,
     angle_pid: PIDController,
     velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
+    current_q_filter: LowPassFilter,
+    current_d_filter: LowPassFilter,
     velocity_filter: LowPassFilter,
-    pole_pair_count: u16,
     mode: RunMode,
     target: Target,
     is_running: bool,
@@ -79,14 +89,18 @@ pub struct FocController {
 
 impl FocController {
     pub fn new(
+        motor: MotorSetup,
         psu_voltage: f32,
-        pole_pair_count: u16,
+        current_pid_gains: PID,
         angle_pid_gains: PID,
         velocity_pid_gains: PID,
         max_voltage: f32,
         max_voltage_ramp: f32,
     ) -> Self {
+        let max_current = max_voltage / motor.phase_resistance;
+        let max_current_ramp = max_voltage_ramp;
         Self {
+            motor,
             bias_angle: Radian::new(0.0),
             sensor_direction: Direction::Clockwise,
             current_mapping: (0, 1, 2),
@@ -95,11 +109,14 @@ impl FocController {
             torque_limit: None,
             current_limit: None,
             velocity_limit: None,
+            current_q_pid: PIDController::new(current_pid_gains, max_current, max_current_ramp),
+            current_d_pid: PIDController::new(current_pid_gains, max_current, max_current_ramp),
             angle_pid: PIDController::new(angle_pid_gains, max_voltage, max_voltage_ramp),
             velocity_pid: PIDController::new(velocity_pid_gains, max_voltage, max_voltage_ramp),
+            current_q_filter: LowPassFilter::new(0.001),
+            current_d_filter: LowPassFilter::new(0.001),
             velocity_filter: LowPassFilter::new(0.01),
             _velocity_output_limit: 1000.0,
-            pole_pair_count,
             mode: RunMode::Impedance,
             target: Target {
                 angle: Radian::new(0.0),
@@ -178,7 +195,8 @@ impl FocController {
     }
 
     fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
-        let mut full_angle = (mechanical_angle - self.bias_angle) * (self.pole_pair_count as f32);
+        let mut full_angle =
+            (mechanical_angle - self.bias_angle) * (self.motor.pole_pair_count as f32);
         if self.sensor_direction == Direction::CounterClockWise {
             full_angle = full_angle * -1.0;
         }
@@ -350,12 +368,16 @@ impl FocController {
 
         // park transform
         let (sin, cos) = electrical_angle.get_sin_cos();
-        new_state.i_q = i_beta * cos - i_alpha * sin;
-        new_state.i_d = i_alpha * cos + i_beta * sin;
+        let mut i_q = i_beta * cos - i_alpha * sin;
+        let mut i_d = i_alpha * cos + i_beta * sin;
+        i_q = self.current_q_filter.apply(i_q, s.dt);
+        i_d = self.current_d_filter.apply(i_d, s.dt);
+        new_state.i_q = self.current_q_pid.update(v_ref - i_q, s.dt);
+        new_state.i_d = self.current_d_pid.update(-i_d, s.dt);
 
         let duty_cycle = svpwm(
-            v_ref - new_state.i_q,
-            -new_state.i_d,
+            new_state.i_q,
+            new_state.i_d,
             electrical_angle,
             self.psu_voltage,
         )?;

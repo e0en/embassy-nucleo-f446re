@@ -1,5 +1,6 @@
 use crate::units::Second;
 
+#[derive(Copy, Clone)]
 pub struct PID {
     pub p: f32,
     pub i: f32,
