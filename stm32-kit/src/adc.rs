@@ -9,7 +9,7 @@ use embassy_stm32::pac;
 
 const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
 
-const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES12_5;
+const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES24_5;
 
 pub static IA_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IB_RAW: AtomicU16 = AtomicU16::new(0);

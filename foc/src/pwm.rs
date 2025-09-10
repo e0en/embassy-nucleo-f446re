@@ -1,6 +1,3 @@
-use libm::cosf;
-use libm::sinf;
-
 use crate::pwm_output::DutyCycle3Phase;
 use crate::units::Radian;
 
@@ -20,7 +17,7 @@ const HALF_SQRT3: f32 = 0.866_025_4;
 pub fn svpwm(
     v_q: f32,
     v_d: f32,
-    electrical_angle: Radian,
+    mut electrical_angle: Radian,
     v_max: f32,
 ) -> Result<DutyCycle3Phase, FocError> {
     // Calculate the duty cycles for the three phases based on the voltage and angle
@@ -36,16 +33,19 @@ pub fn svpwm(
     let v_d = v_d / v_max / 1.5;
     let v_q = v_q / v_max / 1.5;
 
-    let ca = cosf(electrical_angle.angle);
-    let sa = sinf(electrical_angle.angle);
-    let v_x = v_d * ca - v_q * sa;
-    let v_y = v_d * sa + v_q * ca;
+    let (sa, ca) = electrical_angle.get_sin_cos();
+
+    // inverse park transform
+    let v_alpha = v_d * ca - v_q * sa;
+    let v_beta = v_d * sa + v_q * ca;
 
     // use SimpleFOC's implementation
     // https://github.com/simplefoc/Arduino-FOC/blob/05672d28187320c10f74f8fa382e92b09cfadce0/src/BLDCMotor.cpp#L568-L602
-    let u_a = v_x;
-    let u_b = -v_x / 2.0 + HALF_SQRT3 * v_y;
-    let u_c = -v_x / 2.0 - HALF_SQRT3 * v_y;
+
+    // inverse clarke transform
+    let u_a = v_alpha;
+    let u_b = -v_alpha / 2.0 + HALF_SQRT3 * v_beta;
+    let u_c = -v_alpha / 2.0 - HALF_SQRT3 * v_beta;
 
     let u_max = u_a.max(u_b.max(u_c));
     let u_min = u_a.min(u_b.min(u_c));
@@ -62,7 +62,7 @@ pub fn svpwm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libm::floorf;
+    use libm::{cosf, floorf, sinf};
     const INV_SQRT3: f32 = 0.577_350_26;
 
     fn svpwm_reference(

@@ -57,9 +57,20 @@ pub struct FocState {
     pub velocity_error: RadianPerSecond,
     pub velocity_integral: f32,
     pub angle_error: Option<Radian>,
-    pub v_ref: f32,
+    pub i_ref: f32,
+
+    pub ia: f32,
+    pub ib: f32,
+    pub ic: f32,
+    pub i_alpha: f32,
+    pub i_beta: f32,
     pub i_q: f32,
     pub i_d: f32,
+    pub v_q: f32,
+    pub v_d: f32,
+
+    pub i_q_error: f32,
+    pub i_q_integral: f32,
     pub electrical_angle: Radian,
     pub dt: Second,
 }
@@ -79,8 +90,6 @@ pub struct FocController {
     angle_pid: PIDController,
     velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
-    current_q_filter: LowPassFilter,
-    current_d_filter: LowPassFilter,
     velocity_filter: LowPassFilter,
     mode: RunMode,
     target: Target,
@@ -97,8 +106,6 @@ impl FocController {
         max_voltage: f32,
         max_voltage_ramp: f32,
     ) -> Self {
-        let max_current = max_voltage / motor.phase_resistance;
-        let max_current_ramp = max_voltage_ramp;
         Self {
             motor,
             bias_angle: Radian::new(0.0),
@@ -109,12 +116,10 @@ impl FocController {
             torque_limit: None,
             current_limit: None,
             velocity_limit: None,
-            current_q_pid: PIDController::new(current_pid_gains, max_current, max_current_ramp),
-            current_d_pid: PIDController::new(current_pid_gains, max_current, max_current_ramp),
+            current_q_pid: PIDController::new(current_pid_gains, max_voltage, max_voltage_ramp),
+            current_d_pid: PIDController::new(current_pid_gains, max_voltage, max_voltage_ramp),
             angle_pid: PIDController::new(angle_pid_gains, max_voltage, max_voltage_ramp),
             velocity_pid: PIDController::new(velocity_pid_gains, max_voltage, max_voltage_ramp),
-            current_q_filter: LowPassFilter::new(0.001),
-            current_d_filter: LowPassFilter::new(0.001),
             velocity_filter: LowPassFilter::new(0.01),
             _velocity_output_limit: 1000.0,
             mode: RunMode::Impedance,
@@ -194,7 +199,7 @@ impl FocController {
         Ok(())
     }
 
-    fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
+    pub fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
         let mut full_angle =
             (mechanical_angle - self.bias_angle) * (self.motor.pole_pair_count as f32);
         if self.sensor_direction == Direction::CounterClockWise {
@@ -210,6 +215,13 @@ impl FocController {
 
     pub fn enable(&mut self) {
         self.is_running = true;
+    }
+
+    pub fn reset(&mut self) {
+        self.current_q_pid.reset();
+        self.current_d_pid.reset();
+        self.angle_pid.reset();
+        self.velocity_pid.reset();
     }
 
     pub fn set_run_mode(&mut self, mode: RunMode) {
@@ -264,7 +276,7 @@ impl FocController {
         self.angle_pid.gains.p = kp;
     }
 
-    fn map_currents(&self, ia: f32, ib: f32, ic: f32) -> (f32, f32, f32) {
+    pub fn map_currents(&self, ia: f32, ib: f32, ic: f32) -> (f32, f32, f32) {
         let (ma, mb, mc) = self.current_mapping;
         (
             self.get_current_at(ma, ia, ib, ic),
@@ -297,16 +309,28 @@ impl FocController {
             velocity_integral: 0.0,
             dt: Second(0.0),
             electrical_angle: Radian::new(0.0),
+
+            ia: 0.0,
+            ib: 0.0,
+            ic: 0.0,
+
+            i_alpha: 0.0,
+            i_beta: 0.0,
             i_q: 0.0,
             i_d: 0.0,
-            v_ref: 0.0,
+            v_q: 0.0,
+            v_d: 0.0,
+
+            i_q_error: 0.0,
+            i_q_integral: 0.0,
+            i_ref: 0.0,
         };
 
         let s = angle_reading;
         new_state.dt = s.dt;
         let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
         new_state.filtered_velocity = velocity;
-        let mut v_ref = match &self.mode {
+        let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
                 new_state.angle_error = Some(angle_error);
@@ -338,50 +362,83 @@ impl FocController {
         };
 
         if self.sensor_direction == Direction::CounterClockWise {
-            v_ref *= -1.0;
+            i_ref *= -1.0;
         }
 
         if let Some(c) = self.current_limit {
-            v_ref = v_ref.min(c).max(-c);
+            i_ref = i_ref.min(c).max(-c);
         }
 
         // TODO: implement actual torque calculation
         if let Some(t) = self.torque_limit {
-            v_ref = v_ref.min(t).max(-t);
+            i_ref = i_ref.min(t).max(-t);
         }
 
         if !self.is_running {
-            v_ref = 0.0;
+            i_ref = 0.0;
         }
 
-        new_state.v_ref = v_ref;
-        let mut electrical_angle = self.to_electrical_angle(s.angle);
+        new_state.i_ref = i_ref;
+        let electrical_angle = self.to_electrical_angle(s.angle);
         new_state.electrical_angle = electrical_angle;
 
         let (ia, ib, ic) = self.map_currents(ia, ib, ic);
-        let mid = (ia + ib + ic) / 3.0;
-        let a = ia - mid;
-        let b = ib - mid;
+
+        new_state.ia = ia;
+        new_state.ib = ib;
+        new_state.ic = ic;
+
         // clarke transform
-        let i_alpha = a - mid;
-        let i_beta = INV_SQRT3 * a + 2.0 * INV_SQRT3 * b;
+        let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
+        new_state.i_alpha = i_alpha;
+        new_state.i_beta = i_beta;
 
         // park transform
-        let (sin, cos) = electrical_angle.get_sin_cos();
-        let mut i_q = i_beta * cos - i_alpha * sin;
-        let mut i_d = i_alpha * cos + i_beta * sin;
-        i_q = self.current_q_filter.apply(i_q, s.dt);
-        i_d = self.current_d_filter.apply(i_d, s.dt);
-        new_state.i_q = self.current_q_pid.update(v_ref - i_q, s.dt);
-        new_state.i_d = self.current_d_pid.update(-i_d, s.dt);
+        let current_angle = electrical_angle - 1.6;
+        let (i_q, i_d) = park_transform(i_alpha, i_beta, current_angle);
+        new_state.i_q = i_q;
+        new_state.i_d = i_d;
 
-        let duty_cycle = svpwm(
-            new_state.i_q,
-            new_state.i_d,
-            electrical_angle,
-            self.psu_voltage,
-        )?;
+        let mut v_q = self.current_q_pid.update(i_ref - new_state.i_q, s.dt);
+        let mut v_d = self.current_d_pid.update(-new_state.i_d, s.dt);
+
+        new_state.i_q_error = self.current_q_pid.last_error;
+        new_state.i_q_integral = self.current_q_pid.integral;
+
+        new_state.v_q = v_q;
+        new_state.v_d = v_d;
+
+        v_q = i_ref * self.motor.phase_resistance;
+        v_d = 0.0;
+
+        let duty_cycle = svpwm(v_q, v_d, electrical_angle, self.psu_voltage)?;
         self.state = Some(new_state);
         Ok(duty_cycle)
     }
+
+    pub fn get_vq_duty_cycle(
+        &mut self,
+        v_q: f32,
+        angle: Radian,
+    ) -> Result<DutyCycle3Phase, FocError> {
+        let duty_cycle = svpwm(v_q, 0.0, self.to_electrical_angle(angle), self.psu_voltage)?;
+        Ok(duty_cycle)
+    }
+}
+
+pub fn clarke_transform(ia: f32, ib: f32, ic: f32) -> (f32, f32) {
+    let mid = (ia + ib + ic) / 3.0;
+    let a = ia - mid;
+    let b = ib - mid;
+
+    let i_alpha = a;
+    let i_beta = INV_SQRT3 * a + 2.0 * INV_SQRT3 * b;
+    (i_alpha, i_beta)
+}
+
+pub fn park_transform(alpha: f32, beta: f32, mut angle: Radian) -> (f32, f32) {
+    let (sin, cos) = angle.get_sin_cos();
+    let i_q = beta * cos - alpha * sin;
+    let i_d = alpha * cos + beta * sin;
+    (i_q, i_d)
 }

@@ -1,6 +1,6 @@
 use core::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
-use libm::{cosf, fmodf, sinf};
+use libm::{fmodf, sincosf};
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Radian {
@@ -24,7 +24,7 @@ impl Radian {
     pub fn get_sin_cos(&mut self) -> (f32, f32) {
         match self.sin_cos {
             None => {
-                let (s, c) = (sinf(self.angle), cosf(self.angle));
+                let (s, c) = sincosf(self.angle);
                 self.sin_cos = Some((s, c));
                 (s, c)
             }

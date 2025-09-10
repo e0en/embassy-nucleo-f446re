@@ -25,4 +25,11 @@ impl DutyCycle3Phase {
 
 pub trait PwmOutput {
     fn run(&mut self, signal: DutyCycle3Phase);
+    fn stop(&mut self) {
+        self.run(DutyCycle3Phase {
+            t1: 0.0,
+            t2: 0.0,
+            t3: 0.0,
+        });
+    }
 }
