@@ -16,10 +16,16 @@ pub struct PIDController {
     pub integral: f32,
     pub last_error: f32,
     pub last_output: f32,
+
+    max_integral: f32,
 }
 
 impl PIDController {
     pub fn new(pid: PID, max_output: f32, max_rate: f32) -> Self {
+        let max_integral = match pid.i {
+            i if i <= 0.0 => max_output,
+            i => max_output / i,
+        };
         PIDController {
             gains: pid,
             max_output,
@@ -27,6 +33,7 @@ impl PIDController {
             integral: 0.0,
             last_error: 0.0,
             last_output: 0.0,
+            max_integral,
         }
     }
 
@@ -40,7 +47,7 @@ impl PIDController {
         let seconds = dt.0;
 
         self.integral += 0.5 * (error + self.last_error) * seconds;
-        self.integral = self.integral.min(self.max_output).max(-self.max_output);
+        self.integral = self.integral.min(self.max_integral).max(-self.max_integral);
 
         let d_term = if seconds > 0.0 {
             (error - self.last_error) / seconds
