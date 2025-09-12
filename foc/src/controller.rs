@@ -56,7 +56,7 @@ pub struct FocState {
     pub filtered_velocity: RadianPerSecond,
     pub velocity_error: RadianPerSecond,
     pub velocity_integral: f32,
-    pub angle_error: Option<Radian>,
+    pub angle_error: Radian,
     pub i_ref: f32,
 
     pub i_q: f32,
@@ -304,7 +304,7 @@ impl FocController {
         let mut new_state = FocState {
             is_running: self.is_running,
             mode: self.mode,
-            angle_error: None,
+            angle_error: Radian::new(0.0),
             filtered_velocity: RadianPerSecond(0.0),
             velocity_error: RadianPerSecond(0.0),
             velocity_integral: 0.0,
@@ -328,7 +328,7 @@ impl FocController {
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
-                new_state.angle_error = Some(angle_error);
+                new_state.angle_error = angle_error;
                 let mut target_velocity = self.angle_pid.update(angle_error.angle, s.dt);
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v.0).max(-v.0);
@@ -347,7 +347,7 @@ impl FocController {
             RunMode::Impedance => {
                 let angle_error = self.target.angle - s.angle;
                 let velocity_error = self.target.velocity - velocity;
-                new_state.angle_error = Some(angle_error);
+                new_state.angle_error = angle_error;
                 new_state.velocity_error = velocity_error;
                 self.target.spring * angle_error.angle
                     + self.target.damping * velocity_error.0
