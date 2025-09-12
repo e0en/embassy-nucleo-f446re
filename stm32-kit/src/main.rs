@@ -148,7 +148,6 @@ where
     }
     Timer::after_millis(100).await;
     let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
-    info!("{} {} {}", c.a, c.b, c.c);
     let phase_1 = max_index(c.a, c.b, c.c)?;
 
     phase = zero_phase();
@@ -159,7 +158,6 @@ where
     }
     Timer::after_millis(100).await;
     let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
-    info!("{} {} {}", c.a, c.b, c.c);
     let phase_2 = max_index(c.a, c.b, c.c)?;
     if phase_2 == phase_1 {
         return None;
@@ -174,7 +172,6 @@ where
     driver.run(phase);
     Timer::after_millis(100).await;
     let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
-    info!("{} {} {}", c.a, c.b, c.c);
     let phase_3 = max_index(c.a, c.b, c.c)?;
     if phase_3 == phase_1 || phase_3 == phase_2 {
         return None;
@@ -195,148 +192,61 @@ fn max_index(v1: f32, v2: f32, v3: f32) -> Option<u8> {
     }
 }
 
-#[embassy_executor::task]
-async fn iq_task(
-    p_spi: &'static SpiMutex,
-    cs_sensor_pin: gpio::Output<'static>,
-    cs_drv_pin: gpio::Output<'static>,
-    mut drvoff_pin: gpio::Output<'static>,
-    pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
-    mut p_adc: adc::DummyAdc<ADC1>,
-) {
-    drvoff_pin.set_high();
+async fn align_current<'a, T, TIM>(
+    p_adc: &mut adc::DummyAdc<T>,
+    driver: &mut PwmDriver<'a, TIM>,
+    csa_gain: drv8316::CsaGain,
+    current_offset: PhaseCurrent,
+    sensor: &mut As5047P<'a>,
+    foc: &FocController,
+) -> Option<f32>
+where
+    T: stm32_adc::Instance + AdcSelector,
+    TIM: AdvancedInstance4Channel,
+{
+    // assumption: mechanical angle and voltage (electrical) angle are aligned
+    let a_duty = 0.2;
 
-    let mut driver = PwmDriver::new(pwm_timer.timer);
-    let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
-    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
-    Timer::after_millis(1).await; // ready time of gate driver
-
-    let csa_gain = drv8316::CsaGain::Gain0_3V;
-
-    gate_driver.unlock_registers().await.unwrap();
-    gate_driver.set_csa_gain(csa_gain).await.unwrap();
-    let config = drv8316::BuckRegulatorConfig {
-        enable: true,
-        voltage: drv8316::BuckVoltage::V5_0,
-        current_limit: drv8316::BuckCurrentLimit::Limit200mA,
-    };
-    gate_driver.configure_buck_regulator(config).await.unwrap();
-    gate_driver.lock_registers().await.unwrap();
-    Timer::after_millis(1).await; // wait for register value update
-
-    let psu_voltage = 16.0;
-    let mut foc = FocController::new(
-        foc::controller::MotorSetup {
-            pole_pair_count: 11,
-            phase_resistance: 9.0,
-        },
-        psu_voltage,
-        foc::pid::PID {
-            p: 0.0,
-            i: 50.0,
-            d: 0.0,
-        },
-        foc::pid::PID {
-            p: 16.0,
-            i: 0.0,
-            d: 0.0,
-        },
-        foc::pid::PID {
-            p: 0.2,
-            i: 12.0,
-            d: 0.0,
-        },
-        12.0,
-        1000.0,
-    );
-
-    driver.stop();
-    drvoff_pin.set_low();
-
-    let align_voltage: f32 = 4.0;
-    let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
-    if let Some(m) = get_phase_mapping(
-        &mut p_adc,
-        &mut driver,
-        csa_gain,
-        current_offset,
-        align_voltage / foc.motor.phase_resistance,
-    )
-    .await
-    {
-        info!("phase mapping = {} {} {}", m.0, m.1, m.2);
-        foc.current_mapping = m;
-    } else {
-        error!("Current phase mapping failed");
-        driver.stop();
-        drvoff_pin.set_high();
-        return;
-    }
-
-    match sensor.initialize().await {
-        Ok(_) => info!("Sensor initialized"),
-        Err(e) => error!("Sensor initialization failed, {:?}", e),
-    }
-
-    let mut read_sensor = {
-        let s = &mut sensor;
-        async || s.read_async().await.unwrap()
-    };
-    let set_motor = |d: DutyCycle3Phase| driver.run(d);
-    let wait_seconds =
-        async |s: Second| Timer::after(Duration::from_millis((s.0 * 1e3) as u64)).await;
-
-    match foc
-        .align_sensor(align_voltage, &mut read_sensor, set_motor, wait_seconds)
-        .await
-    {
-        Ok(_) => {
-            info!(
-                "Sensor aligned {} {}",
-                foc.bias_angle.angle,
-                foc.sensor_direction == Direction::Clockwise
-            );
-        }
-        Err(_) => {
-            error!("Sensor align failed");
-            return;
-        }
-    };
-
-    let mut a_duty = 0.1;
+    // start with zero voltage
     let mut duty = zero_phase();
-    loop {
-        duty.t1 = a_duty;
-        driver.run(duty);
-        Timer::after_millis(100).await;
+    duty.t1 = a_duty;
+    driver.run(duty);
+    Timer::after_millis(100).await;
 
-        for _ in 0..10 {
-            let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-            let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-            let (ia, ib, ic) = foc.map_currents(
-                ia - current_offset.a,
-                ib - current_offset.b,
-                ic - current_offset.c,
-            );
-            if let Ok(reading) = sensor.read_async().await {
-                let angle = reading.angle;
-                let e_angle = foc.to_electrical_angle(angle);
+    // set voltage phase to zero
+    // measure current phase n_measure times and take average
+    let n_max_try = 100;
+    let n_measure = 100;
+    let mut n_success = 0;
+    let mut avg_angle = 0.0;
+    for _ in 0..n_max_try {
+        let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+        let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+        let (ia, ib, ic) = foc.map_currents(
+            ia - current_offset.a,
+            ib - current_offset.b,
+            ic - current_offset.c,
+        );
+        if let Ok(reading) = sensor.read_async().await {
+            let angle = reading.angle;
+            let e_angle = foc.to_electrical_angle(angle);
 
-                let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
-                let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle);
-                let i_angle = atan2f(-i_d, i_q);
+            let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
+            let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle);
+            let i_angle = atan2f(i_q, i_d);
+            avg_angle += i_angle - e_angle.angle;
+            n_success += 1;
 
-                info!(
-                    "{}: {}, {}, {} / {}, {} / {}, {}",
-                    a_duty, ia, ib, ic, i_q, i_d, e_angle.angle, i_angle
-                );
+            if n_success >= n_measure {
+                break;
             }
-            Timer::after_millis(100).await;
         }
-        a_duty += 0.05;
-        if a_duty > 0.6 {
-            a_duty = 0.0;
-        }
+        Timer::after_millis(1).await;
+    }
+
+    match n_success {
+        0 => None,
+        _ => Some(avg_angle / (n_success as f32)),
     }
 }
 
@@ -377,8 +287,8 @@ async fn foc_task(
         },
         psu_voltage,
         foc::pid::PID {
-            p: 0.0,
-            i: 50.0,
+            p: 10.0,
+            i: 1000.0,
             d: 0.0,
         },
         foc::pid::PID {
@@ -387,8 +297,8 @@ async fn foc_task(
             d: 0.0,
         },
         foc::pid::PID {
-            p: 0.2,
-            i: 12.0,
+            p: 0.01,
+            i: 0.02,
             d: 0.0,
         },
         12.0,
@@ -398,7 +308,7 @@ async fn foc_task(
     driver.stop();
     drvoff_pin.set_low();
 
-    let align_voltage: f32 = 4.0;
+    let align_voltage: f32 = 3.0;
     let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
     if let Some(m) = get_phase_mapping(
         &mut p_adc,
@@ -448,71 +358,42 @@ async fn foc_task(
         }
     };
 
+    if let Some(offset) = align_current(
+        &mut p_adc,
+        &mut driver,
+        csa_gain,
+        current_offset,
+        &mut sensor,
+        &foc,
+    )
+    .await
+    {
+        foc.set_current_phase_bias(offset);
+        info!("current phase bias = {}", offset);
+    }
+
     /*
     foc.set_run_mode(RunMode::Impedance);
     foc.set_target_angle(Radian::new(0.0));
     foc.set_target_velocity(RadianPerSecond(0.0));
     foc.set_target_torque(0.0);
     foc.set_spring(4.0);
-    foc.set_damping(-0.09);
+    foc.set_damping(0.0);
     */
 
     foc.set_run_mode(RunMode::Torque);
-    let mut target_torque = 0.5;
-    foc.set_target_torque(target_torque);
+    foc.set_target_torque(0.2);
+
+    foc.set_run_mode(RunMode::Velocity);
+    foc.set_target_velocity(RadianPerSecond(10.0));
+
+    foc.set_run_mode(RunMode::Angle);
+    foc.set_target_angle(Radian::new(0.0));
+
     foc.enable();
-
-    let mut last_avg_logged_at = Instant::from_secs(0);
-    let mut last_logged_at = Instant::from_secs(0);
-    for _ in 0..10 {
-        let mut i_q_avg = 0.0;
-        let mut i_d_avg = 0.0;
-        for _ in 0..100 {
-            match sensor.read_async().await {
-                Ok(reading) => {
-                    let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-                    let (ia, ib, ic) =
-                        drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-                    let (ia, ib, ic) = foc.map_currents(
-                        ia - current_offset.a,
-                        ib - current_offset.b,
-                        ic - current_offset.c,
-                    );
-
-                    let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
-                    let angle = foc.to_electrical_angle(reading.angle);
-                    let (i_q, i_d) = park_transform(i_alpha, i_beta, angle);
-                    if let Ok(duty) = foc.get_vq_duty_cycle(8.0, reading.angle) {
-                        driver.run(duty);
-                    }
-
-                    i_q_avg += i_q / 10_000.0;
-                    i_d_avg += i_d / 10_000.0;
-
-                    let current_angle = atan2f(-i_d, i_q);
-                    let now = Instant::now();
-                    if now - last_logged_at >= Duration::from_millis(200) {
-                        last_logged_at = now;
-                        info!("{}, {}, {}", i_q, i_d, current_angle);
-                    }
-                }
-                Err(e) => error!("Failed to read from sensor: {:?}", e),
-            }
-            let now = Instant::now();
-            if now - last_avg_logged_at >= Duration::from_millis(200) {
-                last_avg_logged_at = now;
-                let current_angle = atan2f(-i_d_avg, i_q_avg);
-                info!("AVG = {}, {}, {}", i_q_avg, i_d_avg, current_angle);
-            }
-
-            Timer::after(Duration::from_micros(1)).await;
-        }
-    }
 
     let command_channel = COMMAND_CHANNEL.receiver();
     let _status_channel = STATUS_CHANNEL.sender();
-
-    let mut last_toggled_at = Instant::from_secs(0);
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
@@ -554,27 +435,22 @@ async fn foc_task(
                         driver.run(duty);
 
                         let now = Instant::now();
-                        if (now - last_toggled_at) > Duration::from_secs(5) {
-                            if target_torque == 0.0 {
-                                target_torque = 1.0;
-                            } else {
-                                target_torque = 0.0;
-                            }
-                            foc.reset();
-                            foc.set_target_torque(target_torque);
-                            last_toggled_at = now;
-                        }
-                        if (now - last_logged_at) > Duration::from_millis(250) {
+                        if (now - last_logged_at) > Duration::from_millis(50) {
                             let second_since_last_log =
                                 (now - last_logged_at).as_micros() as f32 / 1e6;
 
                             last_logged_at = now;
 
                             if let Some(state) = foc.state {
-                                info!("ia={}, ib={}, ic={}", state.ia, state.ib, state.ic);
                                 info!(
-                                    "iq = {}, i_ref = {}, id = {}",
-                                    state.i_q, state.i_ref, state.i_d,
+                                    "a = {}, v = {}, v_err = {}, iq = {}, iq_error = {}, i_q_integral = {}, v_q = {}",
+                                    reading.angle.angle,
+                                    state.filtered_velocity.0,
+                                    state.velocity_error.0,
+                                    state.i_q,
+                                    state.i_q_error,
+                                    state.i_q_integral,
+                                    state.v_q,
                                 );
                             }
 

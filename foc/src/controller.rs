@@ -59,11 +59,6 @@ pub struct FocState {
     pub angle_error: Option<Radian>,
     pub i_ref: f32,
 
-    pub ia: f32,
-    pub ib: f32,
-    pub ic: f32,
-    pub i_alpha: f32,
-    pub i_beta: f32,
     pub i_q: f32,
     pub i_d: f32,
     pub v_q: f32,
@@ -78,6 +73,7 @@ pub struct FocState {
 pub struct FocController {
     pub motor: MotorSetup,
     pub bias_angle: Radian,
+    pub current_phase_bias: Radian,
     pub sensor_direction: Direction,
     pub current_mapping: (u8, u8, u8),
     pub state: Option<FocState>,
@@ -91,6 +87,8 @@ pub struct FocController {
     velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
     velocity_filter: LowPassFilter,
+    current_q_filter: LowPassFilter,
+    current_d_filter: LowPassFilter,
     mode: RunMode,
     target: Target,
     is_running: bool,
@@ -109,6 +107,7 @@ impl FocController {
         Self {
             motor,
             bias_angle: Radian::new(0.0),
+            current_phase_bias: Radian::new(0.0),
             sensor_direction: Direction::Clockwise,
             current_mapping: (0, 1, 2),
             state: None,
@@ -122,6 +121,8 @@ impl FocController {
             velocity_pid: PIDController::new(velocity_pid_gains, max_voltage, max_voltage_ramp),
             velocity_filter: LowPassFilter::new(0.01),
             _velocity_output_limit: 1000.0,
+            current_q_filter: LowPassFilter::new(0.003),
+            current_d_filter: LowPassFilter::new(0.003),
             mode: RunMode::Impedance,
             target: Target {
                 angle: Radian::new(0.0),
@@ -310,12 +311,6 @@ impl FocController {
             dt: Second(0.0),
             electrical_angle: Radian::new(0.0),
 
-            ia: 0.0,
-            ib: 0.0,
-            ic: 0.0,
-
-            i_alpha: 0.0,
-            i_beta: 0.0,
             i_q: 0.0,
             i_d: 0.0,
             v_q: 0.0,
@@ -384,32 +379,27 @@ impl FocController {
 
         let (ia, ib, ic) = self.map_currents(ia, ib, ic);
 
-        new_state.ia = ia;
-        new_state.ib = ib;
-        new_state.ic = ic;
-
         // clarke transform
         let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
-        new_state.i_alpha = i_alpha;
-        new_state.i_beta = i_beta;
 
         // park transform
-        let current_angle = electrical_angle - 1.6;
-        let (i_q, i_d) = park_transform(i_alpha, i_beta, current_angle);
+        let current_angle = electrical_angle + self.current_phase_bias;
+        let (mut i_q, mut i_d) = park_transform(i_alpha, i_beta, current_angle);
+
+        i_q = self.current_q_filter.apply(i_q, s.dt);
+        i_d = self.current_d_filter.apply(i_d, s.dt);
+
         new_state.i_q = i_q;
         new_state.i_d = i_d;
 
-        let mut v_q = self.current_q_pid.update(i_ref - new_state.i_q, s.dt);
-        let mut v_d = self.current_d_pid.update(-new_state.i_d, s.dt);
+        let v_q = self.current_q_pid.update(i_ref - i_q, s.dt);
+        let v_d = self.current_d_pid.update(-i_d, s.dt);
 
         new_state.i_q_error = self.current_q_pid.last_error;
         new_state.i_q_integral = self.current_q_pid.integral;
 
         new_state.v_q = v_q;
         new_state.v_d = v_d;
-
-        v_q = i_ref * self.motor.phase_resistance;
-        v_d = 0.0;
 
         let duty_cycle = svpwm(v_q, v_d, electrical_angle, self.psu_voltage)?;
         self.state = Some(new_state);
@@ -423,6 +413,10 @@ impl FocController {
     ) -> Result<DutyCycle3Phase, FocError> {
         let duty_cycle = svpwm(v_q, 0.0, self.to_electrical_angle(angle), self.psu_voltage)?;
         Ok(duty_cycle)
+    }
+
+    pub fn set_current_phase_bias(&mut self, angle: f32) {
+        self.current_phase_bias = Radian::new(angle);
     }
 }
 
