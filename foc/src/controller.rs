@@ -47,6 +47,7 @@ pub struct ImpedanceParameter {
 pub struct MotorSetup {
     pub pole_pair_count: u8,
     pub phase_resistance: f32,
+    pub max_velocity: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +58,10 @@ pub struct FocState {
     pub velocity_error: RadianPerSecond,
     pub velocity_integral: f32,
     pub angle_error: Radian,
+    pub angle_integral: f32,
+
+    pub target_angle: f32,
+    pub target_velocity: f32,
     pub i_ref: f32,
 
     pub i_q: f32,
@@ -104,6 +109,10 @@ impl FocController {
         max_voltage: f32,
         max_voltage_ramp: f32,
     ) -> Self {
+        let max_velocity = motor.max_velocity;
+        let max_velocity_ramp = 1000.0;
+        let max_current = max_voltage; // / motor.phase_resistance;
+        let max_current_ramp = max_voltage_ramp / motor.phase_resistance;
         Self {
             motor,
             bias_angle: Radian::new(0.0),
@@ -117,12 +126,12 @@ impl FocController {
             velocity_limit: None,
             current_q_pid: PIDController::new(current_pid_gains, max_voltage, max_voltage_ramp),
             current_d_pid: PIDController::new(current_pid_gains, max_voltage, max_voltage_ramp),
-            angle_pid: PIDController::new(angle_pid_gains, max_voltage, max_voltage_ramp),
-            velocity_pid: PIDController::new(velocity_pid_gains, max_voltage, max_voltage_ramp),
-            velocity_filter: LowPassFilter::new(0.01),
+            angle_pid: PIDController::new(angle_pid_gains, max_velocity, max_velocity_ramp),
+            velocity_pid: PIDController::new(velocity_pid_gains, max_current, max_current_ramp),
+            velocity_filter: LowPassFilter::new(0.005),
             _velocity_output_limit: 1000.0,
-            current_q_filter: LowPassFilter::new(0.003),
-            current_d_filter: LowPassFilter::new(0.003),
+            current_q_filter: LowPassFilter::new(0.001),
+            current_d_filter: LowPassFilter::new(0.001),
             mode: RunMode::Impedance,
             target: Target {
                 angle: Radian::new(0.0),
@@ -305,6 +314,10 @@ impl FocController {
             is_running: self.is_running,
             mode: self.mode,
             angle_error: Radian::new(0.0),
+            angle_integral: 0.0,
+            target_angle: 0.0,
+            target_velocity: 0.0,
+
             filtered_velocity: RadianPerSecond(0.0),
             velocity_error: RadianPerSecond(0.0),
             velocity_integral: 0.0,
@@ -324,21 +337,26 @@ impl FocController {
         let s = angle_reading;
         new_state.dt = s.dt;
         let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
+
+        new_state.target_angle = self.target.angle.angle;
         new_state.filtered_velocity = velocity;
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
                 new_state.angle_error = angle_error;
                 let mut target_velocity = self.angle_pid.update(angle_error.angle, s.dt);
+                new_state.angle_integral = self.angle_pid.integral;
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v.0).max(-v.0);
                 }
+                new_state.target_velocity = target_velocity;
                 let velocity_error = RadianPerSecond(target_velocity) - velocity;
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error.0, s.dt)
             }
             RunMode::Velocity => {
+                new_state.target_velocity = self.target.velocity.0;
                 let velocity_error = self.target.velocity - velocity;
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;

@@ -284,21 +284,22 @@ async fn foc_task(
         foc::controller::MotorSetup {
             pole_pair_count: 11,
             phase_resistance: 9.0,
+            max_velocity: 50.0,
         },
         psu_voltage,
         foc::pid::PID {
-            p: 10.0,
+            p: 0.5,
             i: 1000.0,
             d: 0.0,
         },
         foc::pid::PID {
-            p: 16.0,
+            p: 2.0,
             i: 0.0,
             d: 0.0,
         },
         foc::pid::PID {
-            p: 0.01,
-            i: 0.02,
+            p: 0.04,
+            i: 0.1,
             d: 0.0,
         },
         12.0,
@@ -379,16 +380,15 @@ async fn foc_task(
     foc.set_target_torque(0.0);
     foc.set_spring(4.0);
     foc.set_damping(0.0);
-    */
-
-    foc.set_run_mode(RunMode::Torque);
-    foc.set_target_torque(0.2);
-
-    foc.set_run_mode(RunMode::Velocity);
-    foc.set_target_velocity(RadianPerSecond(10.0));
 
     foc.set_run_mode(RunMode::Angle);
     foc.set_target_angle(Radian::new(0.0));
+
+    foc.set_run_mode(RunMode::Velocity);
+    foc.set_target_velocity(RadianPerSecond(40.0));
+    */
+    foc.set_run_mode(RunMode::Torque);
+    foc.set_target_torque(0.5);
 
     foc.enable();
 
@@ -397,6 +397,16 @@ async fn foc_task(
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
+
+    let mut last_toggled_at = Instant::from_secs(0);
+    const N_SAMPLE: usize = 2_000;
+    let mut samples = [0f32; N_SAMPLE];
+    let mut sample_count = 0;
+    let mut is_started = false;
+
+    let mut err_count = 0.0;
+    let mut err_mean = 0.0;
+
     loop {
         count += 1;
 
@@ -434,29 +444,79 @@ async fn foc_task(
                     Ok(duty) => {
                         driver.run(duty);
 
+                        if let Some(state) = foc.state {
+                            err_count += 1.0;
+                            err_mean += state.i_q_error;
+
+                            if is_started {
+                                samples[sample_count] = state.i_q;
+                                sample_count += 1;
+                                if sample_count >= N_SAMPLE {
+                                    is_started = false;
+                                    sample_count = 0;
+
+                                    for i_q in samples {
+                                        info!("{}", i_q);
+                                    }
+                                }
+                            }
+                        }
+
                         let now = Instant::now();
-                        if (now - last_logged_at) > Duration::from_millis(50) {
+                        if (now - last_logged_at) > Duration::from_millis(100) {
                             let second_since_last_log =
                                 (now - last_logged_at).as_micros() as f32 / 1e6;
 
                             last_logged_at = now;
+                            if err_count == 0.0 {
+                                err_count = 1.0;
+                            }
+                            err_mean /= err_count;
 
                             if let Some(state) = foc.state {
                                 info!(
-                                    "a = {}, v = {}, v_err = {}, iq = {}, iq_error = {}, i_q_integral = {}, v_q = {}",
+                                    "target: a = {}, v = {}, i_ref = {}",
+                                    state.target_angle, state.target_velocity, state.i_ref,
+                                );
+
+                                info!(
+                                    "a = {}, v = {}, iq = {}, v_q = {}",
                                     reading.angle.angle,
                                     state.filtered_velocity.0,
-                                    state.velocity_error.0,
                                     state.i_q,
-                                    state.i_q_error,
-                                    state.i_q_integral,
                                     state.v_q,
+                                );
+                                info!(
+                                    "err = {}, integral = {}, err_mean = {}",
+                                    state.i_q_error, state.i_q_integral, err_mean,
                                 );
                             }
 
-                            info!("loop = {} Hz", count as f32 / second_since_last_log);
+                            err_mean = 0.0;
+                            err_count = 0.0;
+
+                            info!(
+                                "loop = {} Hz ({})",
+                                count as f32 / second_since_last_log,
+                                count
+                            );
                             count = 0;
                         };
+
+                        if (now - last_toggled_at) > Duration::from_secs(5) {
+                            if let Some(state) = foc.state {
+                                if state.i_ref == 0.0 {
+                                    info!("---- on ----");
+                                    foc.set_target_torque(0.5);
+                                    is_started = true;
+                                } else {
+                                    info!("---- off ----");
+                                    foc.set_target_torque(0.0);
+                                    is_started = false;
+                                }
+                            }
+                            last_toggled_at = now;
+                        }
                     }
                     Err(e) => match e {
                         foc::pwm::FocError::AlignError => error!("AlignError"),
