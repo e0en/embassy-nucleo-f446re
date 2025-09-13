@@ -36,6 +36,9 @@ pub enum Command {
     SetVelocityGain(f32),
     SetAngleKp(f32),
 
+    SetCurrentKp(f32),
+    SetCurrentKi(f32),
+
     SetRunMode(RunMode),
     RequestStatus(u8),
 }
@@ -98,6 +101,8 @@ impl TryFrom<can::Frame> for CommandMessage {
                     0x700A => Command::SetVelocity(value),
                     0x700B => Command::SetTorqueLimit(value),
                     0x7016 => Command::SetAngle(value),
+                    0x2012 => Command::SetCurrentKp(value),
+                    0x2013 => Command::SetCurrentKi(value),
                     0x2014 => Command::SetVelocityKp(value),
                     0x2015 => Command::SetVelocityKi(value),
                     0x2016 => Command::SetAngleKp(value),

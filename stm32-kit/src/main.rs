@@ -415,6 +415,10 @@ async fn foc_task(
                 Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
                 Command::SetCurrentLimit(i) => foc.set_current_limit(i),
                 Command::SetTorqueLimit(t) => foc.set_torque_limit(t),
+
+                Command::SetCurrentKp(kp) => foc.set_current_kp(kp),
+                Command::SetCurrentKi(ki) => foc.set_current_ki(ki),
+
                 Command::SetVelocityKp(kp) => foc.set_velocity_kp(kp),
                 Command::SetVelocityKi(ki) => foc.set_velocity_ki(ki),
                 Command::SetVelocityGain(tf) => foc.set_velocity_gain(tf),

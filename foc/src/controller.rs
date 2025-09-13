@@ -270,6 +270,20 @@ impl FocController {
         self.current_limit = Some(current);
     }
 
+    pub fn set_current_kp(&mut self, kp: f32) {
+        self.current_q_pid.gains.p = kp;
+        self.current_d_pid.gains.p = kp;
+        self.current_q_pid.reset();
+        self.current_d_pid.reset();
+    }
+
+    pub fn set_current_ki(&mut self, ki: f32) {
+        self.current_q_pid.gains.i = ki;
+        self.current_d_pid.gains.i = ki;
+        self.current_q_pid.reset();
+        self.current_d_pid.reset();
+    }
+
     pub fn set_velocity_kp(&mut self, kp: f32) {
         self.velocity_pid.gains.p = kp;
     }
