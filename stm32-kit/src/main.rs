@@ -398,12 +398,6 @@ async fn foc_task(
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
 
-    let mut last_toggled_at = Instant::from_secs(0);
-    const N_SAMPLE: usize = 2_000;
-    let mut samples = [0f32; N_SAMPLE];
-    let mut sample_count = 0;
-    let mut is_started = false;
-
     let mut err_count = 0.0;
     let mut err_mean = 0.0;
 
@@ -447,19 +441,6 @@ async fn foc_task(
                         if let Some(state) = foc.state {
                             err_count += 1.0;
                             err_mean += state.i_q_error;
-
-                            if is_started {
-                                samples[sample_count] = state.i_q;
-                                sample_count += 1;
-                                if sample_count >= N_SAMPLE {
-                                    is_started = false;
-                                    sample_count = 0;
-
-                                    for i_q in samples {
-                                        info!("{}", i_q);
-                                    }
-                                }
-                            }
                         }
 
                         let now = Instant::now();
@@ -502,21 +483,6 @@ async fn foc_task(
                             );
                             count = 0;
                         };
-
-                        if (now - last_toggled_at) > Duration::from_secs(5) {
-                            if let Some(state) = foc.state {
-                                if state.i_ref == 0.0 {
-                                    info!("---- on ----");
-                                    foc.set_target_torque(0.5);
-                                    is_started = true;
-                                } else {
-                                    info!("---- off ----");
-                                    foc.set_target_torque(0.0);
-                                    is_started = false;
-                                }
-                            }
-                            last_toggled_at = now;
-                        }
                     }
                     Err(e) => match e {
                         foc::pwm::FocError::AlignError => error!("AlignError"),
@@ -635,7 +601,6 @@ async fn main(spawner: Spawner) {
     timer.initialize((1 << 12) - 1);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    // unwrap!(spawner.spawn(iq_task(&SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc)));
     unwrap!(spawner.spawn(foc_task(&SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc)));
     unwrap!(spawner.spawn(can_task(p_can)));
 }
