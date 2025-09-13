@@ -398,9 +398,6 @@ async fn foc_task(
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
 
-    let mut err_count = 0.0;
-    let mut err_mean = 0.0;
-
     loop {
         count += 1;
 
@@ -442,21 +439,12 @@ async fn foc_task(
                     Ok(duty) => {
                         driver.run(duty);
 
-                        if let Some(state) = foc.state {
-                            err_count += 1.0;
-                            err_mean += state.i_q_error;
-                        }
-
                         let now = Instant::now();
                         if (now - last_logged_at) > Duration::from_millis(100) {
                             let second_since_last_log =
                                 (now - last_logged_at).as_micros() as f32 / 1e6;
 
                             last_logged_at = now;
-                            if err_count == 0.0 {
-                                err_count = 1.0;
-                            }
-                            err_mean /= err_count;
 
                             if let Some(state) = foc.state {
                                 info!(
@@ -471,20 +459,9 @@ async fn foc_task(
                                     state.i_q,
                                     state.v_q,
                                 );
-                                info!(
-                                    "err = {}, integral = {}, err_mean = {}",
-                                    state.i_q_error, state.i_q_integral, err_mean,
-                                );
                             }
 
-                            err_mean = 0.0;
-                            err_count = 0.0;
-
-                            info!(
-                                "loop = {} Hz ({})",
-                                count as f32 / second_since_last_log,
-                                count
-                            );
+                            info!("loop = {} Hz", count as f32 / second_since_last_log);
                             count = 0;
                         };
                     }
