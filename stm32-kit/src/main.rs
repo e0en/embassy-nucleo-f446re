@@ -37,7 +37,7 @@ use embassy_stm32::{
     spi as stm32_spi,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, WithTimeout};
 
 use embedded_can::Id;
 use foc::{
@@ -52,8 +52,8 @@ use foc::{
 };
 use libm::atan2f;
 
-static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 1> = Channel::new();
-static STATUS_CHANNEL: Channel<ThreadModeRawMutex, MotorStatus, 1> = Channel::new();
+static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 3> = Channel::new();
+static STATUS_CHANNEL: Channel<ThreadModeRawMutex, MotorStatus, 64> = Channel::new();
 
 type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
@@ -393,10 +393,13 @@ async fn foc_task(
     foc.enable();
 
     let command_channel = COMMAND_CHANNEL.receiver();
-    let _status_channel = STATUS_CHANNEL.sender();
+    let status_channel = STATUS_CHANNEL.sender();
 
     let mut last_logged_at = Instant::from_secs(0);
     let mut count: usize = 0;
+
+    let mut monitor_period: u8 = 100;
+    let mut monitor_tick: u8 = 0;
 
     loop {
         count += 1;
@@ -422,6 +425,8 @@ async fn foc_task(
                 Command::SetAngleKp(kp) => foc.set_angle_kp(kp),
                 Command::SetSpring(k) => foc.set_spring(k),
                 Command::SetDamping(b) => foc.set_damping(b),
+
+                Command::SetMonitorInterval(period) => monitor_period = period,
                 _ => (),
             }
         }
@@ -438,6 +443,24 @@ async fn foc_task(
                 ) {
                     Ok(duty) => {
                         driver.run(duty);
+
+                        if let Some(state) = foc.state {
+                            monitor_tick += 1;
+                            if monitor_tick >= monitor_period {
+                                let motor_status = MotorStatus {
+                                    raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
+                                    raw_velocity: f32_to_u16(
+                                        state.filtered_velocity.0,
+                                        -100.0,
+                                        100.0,
+                                    ),
+                                    raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
+                                    raw_temperature: 0x00,
+                                };
+                                status_channel.send(motor_status).await;
+                                monitor_tick = 0;
+                            }
+                        }
 
                         let now = Instant::now();
                         if (now - last_logged_at) > Duration::from_millis(100) {
@@ -486,17 +509,32 @@ async fn can_task(p_can: Can<'static>) {
     let command_sender = COMMAND_CHANNEL.sender();
     let status_receiver = STATUS_CHANNEL.receiver();
     let mut status: Option<MotorStatus> = None;
+    let mut host_id: Option<u8> = Some(0);
+
+    let mut last_send_count = 0;
+    let mut send_count = 0;
+
     loop {
-        for _ in 0..3 {
-            if let Ok(s) = status_receiver.try_receive() {
+        loop {
+            if let Ok(s) = status_receiver.try_receive()
+                && let Some(h) = host_id
+            {
                 status = Some(s);
+                let message = StatusMessage {
+                    motor_can_id: can_id,
+                    host_can_id: h,
+                    motor_status: s,
+                };
+                if let Ok(frame) = message.try_into() {
+                    send_count += 1;
+                    can_tx.write(&frame).await;
+                }
             } else {
                 break;
             }
         }
-        info!("no more status message");
-        match can_rx.read().await {
-            Ok(m) => {
+        match can_rx.read().with_timeout(Duration::from_millis(1)).await {
+            Ok(Ok(m)) => {
                 if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {
                     if message.motor_can_id != can_id {
                         continue;
@@ -506,15 +544,31 @@ async fn can_task(p_can: Can<'static>) {
                         can_message::Command::SetCanId(new_can_id) => {
                             can_id = new_can_id;
                         }
-                        can_message::Command::RequestStatus(host_id) => {
+                        can_message::Command::RequestStatus(host_can_id) => {
+                            host_id = Some(host_can_id);
                             if let Some(s) = status {
                                 let message = StatusMessage {
                                     motor_can_id: can_id,
-                                    host_can_id: host_id,
+                                    host_can_id,
                                     motor_status: s,
                                 };
                                 if let Ok(frame) = message.try_into() {
-                                    can_tx.write(&frame).await;
+                                    send_count += 1;
+                                    match can_tx
+                                        .write(&frame)
+                                        .with_timeout(Duration::from_millis(50))
+                                        .await
+                                    {
+                                        Ok(Some(f)) => {
+                                            warn!("CAN tx error: {:?}", f);
+                                        }
+                                        Ok(None) => {
+                                            send_count += 1;
+                                        }
+                                        Err(e) => {
+                                            warn!("CAN tx timeout: {:?}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -528,7 +582,11 @@ async fn can_task(p_can: Can<'static>) {
                     warn!("parse failed: {}#{}", id, m.frame.data());
                 }
             }
-            Err(_) => Timer::after(Duration::from_micros(1)).await,
+            _ => Timer::after(Duration::from_micros(1)).await,
+        }
+        if send_count > (last_send_count + 100) {
+            info!("send count = {}", send_count);
+            last_send_count = send_count;
         }
     }
 }
@@ -584,4 +642,10 @@ async fn main(spawner: Spawner) {
 
     unwrap!(spawner.spawn(foc_task(&SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc)));
     unwrap!(spawner.spawn(can_task(p_can)));
+}
+
+fn f32_to_u16(x: f32, x_min: f32, x_max: f32) -> u16 {
+    let x = x.min(x_max).max(x_min);
+    let span = x_max - x_min;
+    ((x - x_min) / span * (u16::MAX as f32)) as u16
 }

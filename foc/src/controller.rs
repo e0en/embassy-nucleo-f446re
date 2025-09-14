@@ -54,7 +54,10 @@ pub struct MotorSetup {
 pub struct FocState {
     pub is_running: bool,
     pub mode: RunMode,
+
+    pub angle: Radian,
     pub filtered_velocity: RadianPerSecond,
+
     pub velocity_error: RadianPerSecond,
     pub velocity_integral: f32,
     pub angle_error: Radian,
@@ -332,6 +335,7 @@ impl FocController {
             target_angle: 0.0,
             target_velocity: 0.0,
 
+            angle: Radian::new(0.0),
             filtered_velocity: RadianPerSecond(0.0),
             velocity_error: RadianPerSecond(0.0),
             velocity_integral: 0.0,
@@ -352,6 +356,7 @@ impl FocController {
         new_state.dt = s.dt;
         let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
 
+        new_state.angle = s.angle;
         new_state.target_angle = self.target.angle.angle;
         new_state.filtered_velocity = velocity;
         let mut i_ref = match &self.mode {

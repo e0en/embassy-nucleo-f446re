@@ -41,6 +41,8 @@ pub enum Command {
 
     SetRunMode(RunMode),
     RequestStatus(u8),
+
+    SetMonitorInterval(u8),
 }
 
 pub enum CommandError {
@@ -118,6 +120,8 @@ impl TryFrom<can::Frame> for CommandMessage {
                 let host_id = (command_content & 0xFF) as u8;
                 Command::RequestStatus(host_id)
             }
+            0x16 => Command::SetMonitorInterval(command_content as u8),
+
             _ => return Err(CommandError::WrongCommand),
         };
         Ok(CommandMessage {
