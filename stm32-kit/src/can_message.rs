@@ -49,6 +49,7 @@ pub enum CommandError {
     IdFormat,
     WrongCommand,
     WrongRegister,
+    CanDataLength,
 }
 
 pub struct CommandMessage {
@@ -81,6 +82,9 @@ impl TryFrom<can::Frame> for CommandMessage {
         let command_content = (raw_id[2] as u16) << 8 | raw_id[1] as u16;
         let command_id = raw_id[3];
         let data = message.data();
+        if data.len() != 8 {
+            return Err(CommandError::CanDataLength);
+        }
         let mut value_buffer = [0x00u8; 4];
         value_buffer.copy_from_slice(&data[4..8]);
         let value = f32::from_le_bytes(value_buffer);
