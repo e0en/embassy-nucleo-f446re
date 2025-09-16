@@ -406,7 +406,9 @@ async fn foc_sensorless_task(
                     }
 
                     let now = Instant::now();
-                    if (now - last_logged_at) > Duration::from_millis(100) {
+                    if let Some(log_after) = last_logged_at.checked_add(Duration::from_millis(100))
+                        && now > log_after
+                    {
                         let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
 
                         last_logged_at = now;
@@ -656,7 +658,10 @@ async fn foc_task(
                         }
 
                         let now = Instant::now();
-                        if (now - last_logged_at) > Duration::from_millis(100) {
+                        if let Some(log_after) =
+                            last_logged_at.checked_add(Duration::from_millis(100))
+                            && now > log_after
+                        {
                             let second_since_last_log =
                                 (now - last_logged_at).as_micros() as f32 / 1e6;
 
