@@ -250,6 +250,199 @@ where
     }
 }
 
+#[allow(dead_code)]
+#[embassy_executor::task]
+async fn foc_sensorless_task(
+    p_spi: &'static SpiMutex,
+    cs_sensor_pin: gpio::Output<'static>,
+    cs_drv_pin: gpio::Output<'static>,
+    mut drvoff_pin: gpio::Output<'static>,
+    pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
+) {
+    drvoff_pin.set_high();
+
+    let mut driver = PwmDriver::new(pwm_timer.timer);
+    let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
+    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
+    Timer::after_millis(1).await; // ready time of gate driver
+
+    gate_driver.unlock_registers().await.unwrap();
+    let config = drv8316::BuckRegulatorConfig {
+        enable: true,
+        voltage: drv8316::BuckVoltage::V5_0,
+        current_limit: drv8316::BuckCurrentLimit::Limit200mA,
+    };
+    gate_driver.configure_buck_regulator(config).await.unwrap();
+    gate_driver.lock_registers().await.unwrap();
+    Timer::after_millis(1).await; // wait for register value update
+
+    let psu_voltage = 16.0;
+    let mut foc = FocController::new(
+        foc::controller::MotorSetup {
+            pole_pair_count: 11,
+            phase_resistance: 9.0,
+            max_velocity: 50.0,
+        },
+        psu_voltage,
+        foc::pid::PID {
+            p: 0.5,
+            i: 1000.0,
+            d: 0.0,
+        },
+        foc::pid::PID {
+            p: 16.0,
+            i: 0.0,
+            d: 0.0,
+        },
+        foc::pid::PID {
+            p: 0.2,
+            i: 12.0,
+            d: 0.0,
+        },
+        12.0,
+        1000.0,
+    );
+    foc.disable_current_sensing();
+
+    driver.stop();
+    drvoff_pin.set_low();
+
+    let align_voltage: f32 = 3.0;
+
+    match sensor.initialize().await {
+        Ok(_) => info!("Sensor initialized"),
+        Err(e) => error!("Sensor initialization failed, {:?}", e),
+    }
+
+    let mut read_sensor = {
+        let s = &mut sensor;
+        async || s.read_async().await.unwrap()
+    };
+    let set_motor = |d: DutyCycle3Phase| driver.run(d);
+    let wait_seconds =
+        async |s: Second| Timer::after(Duration::from_millis((s.0 * 1e3) as u64)).await;
+
+    match foc
+        .align_sensor(align_voltage, &mut read_sensor, set_motor, wait_seconds)
+        .await
+    {
+        Ok(_) => {
+            info!(
+                "Sensor aligned {} {}",
+                foc.bias_angle.angle,
+                foc.sensor_direction == Direction::Clockwise
+            );
+        }
+        Err(_) => {
+            error!("Sensor align failed");
+            return;
+        }
+    };
+
+    foc.set_run_mode(RunMode::Impedance);
+    foc.set_target_angle(Radian::new(0.0));
+    foc.set_target_velocity(RadianPerSecond(0.0));
+    foc.set_target_torque(0.0);
+    foc.set_spring(4.0);
+    foc.set_damping(0.0);
+
+    foc.enable();
+
+    let command_channel = COMMAND_CHANNEL.receiver();
+    let status_channel = STATUS_CHANNEL.sender();
+
+    let mut last_logged_at = Instant::from_secs(0);
+    let mut count: usize = 0;
+
+    let mut monitor_period: u8 = 100;
+    let mut monitor_tick: u8 = 0;
+
+    loop {
+        count += 1;
+
+        if let Ok(command) = command_channel.try_receive() {
+            match command {
+                Command::Enable => foc.enable(),
+                Command::Stop => foc.stop(),
+                Command::SetRunMode(m) => foc.set_run_mode(m),
+                Command::SetAngle(p) => foc.set_target_angle(Radian::new(p)),
+                Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(v)),
+                Command::SetTorque(t) => foc.set_target_torque(t),
+                Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
+                Command::SetCurrentLimit(i) => foc.set_current_limit(i),
+                Command::SetTorqueLimit(t) => foc.set_torque_limit(t),
+
+                Command::SetCurrentKp(kp) => foc.set_current_kp(kp),
+                Command::SetCurrentKi(ki) => foc.set_current_ki(ki),
+
+                Command::SetVelocityKp(kp) => foc.set_velocity_kp(kp),
+                Command::SetVelocityKi(ki) => foc.set_velocity_ki(ki),
+                Command::SetVelocityGain(tf) => foc.set_velocity_gain(tf),
+                Command::SetAngleKp(kp) => foc.set_angle_kp(kp),
+                Command::SetSpring(k) => foc.set_spring(k),
+                Command::SetDamping(b) => foc.set_damping(b),
+
+                Command::SetMonitorInterval(period) => monitor_period = period,
+                _ => (),
+            }
+        }
+        match sensor.read_async().await {
+            Ok(reading) => match foc.get_duty_cycle(&reading, 0.0, 0.0, 0.0) {
+                Ok(duty) => {
+                    driver.run(duty);
+
+                    if let Some(state) = foc.state {
+                        monitor_tick += 1;
+                        if monitor_tick >= monitor_period {
+                            let motor_status = MotorStatus {
+                                raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
+                                raw_velocity: f32_to_u16(state.filtered_velocity.0, -100.0, 100.0),
+                                raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
+                                raw_temperature: 0x00,
+                            };
+                            status_channel.send(motor_status).await;
+                            monitor_tick = 0;
+                        }
+                    }
+
+                    let now = Instant::now();
+                    if (now - last_logged_at) > Duration::from_millis(100) {
+                        let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
+
+                        last_logged_at = now;
+
+                        if let Some(state) = foc.state {
+                            info!(
+                                "target: a = {}, v = {}, i_ref = {}",
+                                state.target_angle, state.target_velocity, state.i_ref,
+                            );
+
+                            info!(
+                                "a = {}, v = {}, iq = {}, v_q = {}",
+                                reading.angle.angle,
+                                state.filtered_velocity.0,
+                                state.i_q,
+                                state.v_q,
+                            );
+                        }
+
+                        info!("loop = {} Hz", count as f32 / second_since_last_log);
+                        count = 0;
+                    };
+                }
+                Err(e) => match e {
+                    foc::pwm::FocError::AlignError => error!("AlignError"),
+                    foc::pwm::FocError::CalculationError => error!("CalculationError"),
+                    foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
+                },
+            },
+            Err(e) => error!("Failed to read from sensor: {:?}", e),
+        }
+
+        Timer::after(Duration::from_micros(1)).await;
+    }
+}
+
 #[embassy_executor::task]
 async fn foc_task(
     p_spi: &'static SpiMutex,
@@ -641,6 +834,7 @@ async fn main(spawner: Spawner) {
     info!("Timer frequency: {}", timer.get_frequency());
 
     unwrap!(spawner.spawn(foc_task(&SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc)));
+    //unwrap!(spawner.spawn(foc_sensorless_task(&SPI, cs_out, cs_drv, drvoff_pin, timer)));
     unwrap!(spawner.spawn(can_task(p_can)));
 }
 

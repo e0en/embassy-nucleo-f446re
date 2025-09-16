@@ -54,6 +54,7 @@ pub struct MotorSetup {
 pub struct FocState {
     pub is_running: bool,
     pub mode: RunMode,
+    pub use_current_sensing: bool,
 
     pub angle: Radian,
     pub filtered_velocity: RadianPerSecond,
@@ -85,6 +86,7 @@ pub struct FocController {
     pub sensor_direction: Direction,
     pub current_mapping: (u8, u8, u8),
     pub state: Option<FocState>,
+    pub use_current_sensing: bool,
     psu_voltage: f32,
     torque_limit: Option<f32>,
     current_limit: Option<f32>,
@@ -117,6 +119,7 @@ impl FocController {
         let max_current = max_voltage; // / motor.phase_resistance;
         let max_current_ramp = max_voltage_ramp / motor.phase_resistance;
         Self {
+            use_current_sensing: false,
             motor,
             bias_angle: Radian::new(0.0),
             current_phase_bias: Radian::new(0.0),
@@ -146,6 +149,15 @@ impl FocController {
             is_running: false,
         }
     }
+
+    pub fn enable_current_sensing(&mut self) {
+        self.use_current_sensing = true;
+    }
+
+    pub fn disable_current_sensing(&mut self) {
+        self.use_current_sensing = false;
+    }
+
     pub async fn align_sensor<'a, FSensor, FMotor, FWait, FutUnit>(
         &mut self,
         align_voltage: f32,
@@ -330,6 +342,8 @@ impl FocController {
         let mut new_state = FocState {
             is_running: self.is_running,
             mode: self.mode,
+            use_current_sensing: self.use_current_sensing,
+
             angle_error: Radian::new(0.0),
             angle_integral: 0.0,
             target_angle: 0.0,
@@ -412,29 +426,35 @@ impl FocController {
 
         new_state.i_ref = i_ref;
         let electrical_angle = self.to_electrical_angle(s.angle);
-        new_state.electrical_angle = electrical_angle;
+        let (v_q, v_d) = {
+            if self.use_current_sensing {
+                new_state.electrical_angle = electrical_angle;
 
-        let (ia, ib, ic) = self.map_currents(ia, ib, ic);
+                let (ia, ib, ic) = self.map_currents(ia, ib, ic);
 
-        // clarke transform
-        let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
+                // clarke transform
+                let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
 
-        // park transform
-        let current_angle = electrical_angle + self.current_phase_bias;
-        let (mut i_q, mut i_d) = park_transform(i_alpha, i_beta, current_angle);
+                // park transform
+                let current_angle = electrical_angle + self.current_phase_bias;
+                let (mut i_q, mut i_d) = park_transform(i_alpha, i_beta, current_angle);
 
-        i_q = self.current_q_filter.apply(i_q, s.dt);
-        i_d = self.current_d_filter.apply(i_d, s.dt);
+                i_q = self.current_q_filter.apply(i_q, s.dt);
+                i_d = self.current_d_filter.apply(i_d, s.dt);
 
-        new_state.i_q = i_q;
-        new_state.i_d = i_d;
+                new_state.i_q = i_q;
+                new_state.i_d = i_d;
 
-        let v_q = self.current_q_pid.update(i_ref - i_q, s.dt);
-        let v_d = self.current_d_pid.update(-i_d, s.dt);
+                let v_q = self.current_q_pid.update(i_ref - i_q, s.dt);
+                let v_d = self.current_d_pid.update(-i_d, s.dt);
 
-        new_state.i_q_error = self.current_q_pid.last_error;
-        new_state.i_q_integral = self.current_q_pid.integral;
-
+                new_state.i_q_error = self.current_q_pid.last_error;
+                new_state.i_q_integral = self.current_q_pid.integral;
+                (v_q, v_d)
+            } else {
+                (i_ref, 0.0)
+            }
+        };
         new_state.v_q = v_q;
         new_state.v_d = v_d;
 
