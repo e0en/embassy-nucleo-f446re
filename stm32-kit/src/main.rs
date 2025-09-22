@@ -709,9 +709,6 @@ async fn can_task(p_can: Can<'static>) {
     let mut status: Option<MotorStatus> = None;
     let mut host_id: Option<u8> = Some(0);
 
-    let mut last_send_count = 0;
-    let mut send_count = 0;
-
     loop {
         loop {
             if let Ok(s) = status_receiver.try_receive()
@@ -724,7 +721,6 @@ async fn can_task(p_can: Can<'static>) {
                     motor_status: s,
                 };
                 if let Ok(frame) = message.try_into() {
-                    send_count += 1;
                     can_tx.write(&frame).await;
                 }
             } else {
@@ -751,7 +747,6 @@ async fn can_task(p_can: Can<'static>) {
                                     motor_status: s,
                                 };
                                 if let Ok(frame) = message.try_into() {
-                                    send_count += 1;
                                     match can_tx
                                         .write(&frame)
                                         .with_timeout(Duration::from_millis(50))
@@ -760,9 +755,7 @@ async fn can_task(p_can: Can<'static>) {
                                         Ok(Some(f)) => {
                                             warn!("CAN tx error: {:?}", f);
                                         }
-                                        Ok(None) => {
-                                            send_count += 1;
-                                        }
+                                        Ok(None) => (),
                                         Err(e) => {
                                             warn!("CAN tx timeout: {:?}", e);
                                         }
@@ -781,10 +774,6 @@ async fn can_task(p_can: Can<'static>) {
                 }
             }
             _ => Timer::after(Duration::from_micros(1)).await,
-        }
-        if send_count > (last_send_count + 100) {
-            info!("send count = {}", send_count);
-            last_send_count = send_count;
         }
     }
 }
