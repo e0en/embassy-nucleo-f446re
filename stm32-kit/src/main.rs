@@ -339,13 +339,8 @@ async fn foc_sensorless_task(
         }
     };
 
-    foc.set_run_mode(RunMode::Impedance);
-    foc.set_target_angle(Radian::new(0.0));
-    foc.set_target_velocity(RadianPerSecond(0.0));
+    foc.set_run_mode(RunMode::Torque);
     foc.set_target_torque(0.0);
-    foc.set_spring(4.0);
-    foc.set_damping(0.0);
-
     foc.enable();
 
     let command_channel = COMMAND_CHANNEL.receiver();
