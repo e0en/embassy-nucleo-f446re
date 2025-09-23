@@ -42,7 +42,7 @@ use embassy_time::{Duration, Timer, WithTimeout};
 use embedded_can::Id;
 use foc::{
     angle_input::AngleInput,
-    controller::{Direction, FocController, RunMode},
+    controller::{Direction, FocController, FocState, RunMode},
     pwm_output::DutyCycle3Phase,
     units::{Radian, RadianPerSecond, Second},
 };
@@ -362,14 +362,9 @@ async fn foc_sensorless_task(
                     driver.run(duty);
 
                     if let Some(state) = foc.state {
+                        let motor_status = build_motor_status(state);
                         monitor_tick += 1;
                         if monitor_tick >= monitor_period {
-                            let motor_status = MotorStatus {
-                                raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
-                                raw_velocity: f32_to_u16(state.filtered_velocity.0, -100.0, 100.0),
-                                raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
-                                raw_temperature: 0x00,
-                            };
                             status_channel.send(motor_status).await;
                             monitor_tick = 0;
                         }
@@ -385,6 +380,15 @@ async fn foc_sensorless_task(
         }
 
         Timer::after(Duration::from_micros(1)).await;
+    }
+}
+
+fn build_motor_status(state: FocState) -> MotorStatus {
+    MotorStatus {
+        raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
+        raw_velocity: f32_to_u16(state.filtered_velocity.0, -100.0, 100.0),
+        raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
+        raw_temperature: 0x00,
     }
 }
 
@@ -546,16 +550,7 @@ async fn foc_task(
                         if let Some(state) = foc.state {
                             monitor_tick += 1;
                             if monitor_tick >= monitor_period {
-                                let motor_status = MotorStatus {
-                                    raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
-                                    raw_velocity: f32_to_u16(
-                                        state.filtered_velocity.0,
-                                        -100.0,
-                                        100.0,
-                                    ),
-                                    raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
-                                    raw_temperature: 0x00,
-                                };
+                                let motor_status = build_motor_status(state);
                                 status_channel.send(motor_status).await;
                                 monitor_tick = 0;
                             }
