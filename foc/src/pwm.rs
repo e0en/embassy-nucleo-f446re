@@ -1,5 +1,4 @@
 use crate::pwm_output::DutyCycle3Phase;
-use crate::units::Radian;
 
 use core::result::Result;
 use core::result::Result::Err;
@@ -17,7 +16,7 @@ const HALF_SQRT3: f32 = 0.866_025_4;
 pub fn svpwm(
     v_q: f32,
     v_d: f32,
-    mut electrical_angle: Radian,
+    electrical_angle: f32,
     v_max: f32,
 ) -> Result<DutyCycle3Phase, FocError> {
     // Calculate the duty cycles for the three phases based on the voltage and angle
@@ -33,7 +32,7 @@ pub fn svpwm(
     let v_d = v_d / v_max / 1.5;
     let v_q = v_q / v_max / 1.5;
 
-    let (sa, ca) = electrical_angle.get_sin_cos();
+    let (sa, ca) = libm::sincosf(electrical_angle);
 
     // inverse park transform
     let v_alpha = v_d * ca - v_q * sa;
@@ -67,7 +66,7 @@ mod tests {
 
     fn svpwm_reference(
         v_ref: f32,
-        electrical_angle: Radian,
+        electrical_angle: f32,
         v_max: f32,
     ) -> Result<DutyCycle3Phase, FocError> {
         // Calculate the duty cycles for the three phases based on the voltage and angle
@@ -78,7 +77,7 @@ mod tests {
 
         let v_normalized = v_ref / v_max;
 
-        let target_angle = electrical_angle.angle + core::f32::consts::FRAC_PI_2;
+        let target_angle = electrical_angle + core::f32::consts::FRAC_PI_2;
 
         // use electrical angle + pi/2 for maximum torque
         let v_x = v_normalized * cosf(target_angle);
@@ -153,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_svpwm_valid_parameters() {
-        let result = svpwm(1.0, 0.0, Radian::new(0.0), 2.0);
+        let result = svpwm(1.0, 0.0, 0.0, 2.0);
         assert!(result.is_ok());
 
         let duty_cycle = result.unwrap();
@@ -164,21 +163,21 @@ mod tests {
 
     #[test]
     fn test_svpwm_invalid_negative_vref() {
-        let result = svpwm(-1.0, 0.0, Radian::new(0.0), 2.0);
+        let result = svpwm(-1.0, 0.0, 0.0, 2.0);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
 
     #[test]
     fn test_svpwm_invalid_zero_vmax() {
-        let result = svpwm(1.0, 0.0, Radian::new(0.0), 0.0);
+        let result = svpwm(1.0, 0.0, 0.0, 0.0);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
 
     #[test]
     fn test_svpwm_invalid_vref_greater_than_vmax() {
-        let result = svpwm(3.0, 0.0, Radian::new(0.0), 2.0);
+        let result = svpwm(3.0, 0.0, 0.0, 2.0);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
@@ -189,7 +188,7 @@ mod tests {
 
         for sector in 0..6 {
             let angle = sector as f32 * pi_third + 0.1;
-            let result = svpwm(0.5, 0.0, Radian::new(angle), 1.0);
+            let result = svpwm(0.5, 0.0, angle, 1.0);
             assert!(result.is_ok(), "Failed for sector {sector}");
 
             let duty_cycle = result.unwrap();
@@ -226,7 +225,7 @@ mod tests {
         let v_ref = sqrt3_over_2;
         for sector in 0..6 {
             let angle = sector as f32 * pi_third + 0.1;
-            let result = svpwm(v_ref, 0.0, Radian::new(angle), 1.0);
+            let result = svpwm(v_ref, 0.0, angle, 1.0);
             assert!(
                 result.is_ok(),
                 "Failed for sector {sector} at theoretical max",
@@ -263,7 +262,7 @@ mod tests {
         let v_ref = 0.5;
         for sector in 0..6 {
             let angle = sector as f32 * core::f32::consts::PI / 3.0 + 0.1;
-            let result = svpwm(v_ref, 0.0, Radian::new(angle), 1.0);
+            let result = svpwm(v_ref, 0.0, angle, 1.0);
             assert!(result.is_ok(), "Failed for sector {sector}");
 
             let duty_cycle = result.unwrap();
@@ -289,7 +288,7 @@ mod tests {
                 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
                 1.6, 1.7, 1.8, 1.9,
             ] {
-                let angle = Radian::new(angle_div_pi * core::f32::consts::PI);
+                let angle = angle_div_pi * core::f32::consts::PI;
                 let duty_reference = svpwm_reference(v_ref, angle, v_max).unwrap();
                 let duty = svpwm(v_ref, 0.0, angle, v_max).unwrap();
 
@@ -299,7 +298,7 @@ mod tests {
                     duty_reference,
                     duty,
                     v_ref,
-                    angle.angle
+                    angle
                 );
 
                 assert!(
@@ -308,7 +307,7 @@ mod tests {
                     duty_reference,
                     duty,
                     v_ref,
-                    angle.angle
+                    angle
                 );
 
                 assert!(
@@ -317,7 +316,7 @@ mod tests {
                     duty_reference,
                     duty,
                     v_ref,
-                    angle.angle
+                    angle
                 );
             }
         }

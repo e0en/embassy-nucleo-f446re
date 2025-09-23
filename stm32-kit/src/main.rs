@@ -44,7 +44,6 @@ use foc::{
     angle_input::AngleInput,
     controller::{Direction, FocController, FocState, RunMode},
     pwm_output::DutyCycle3Phase,
-    units::{Radian, Second},
 };
 use foc::{
     controller::{clarke_transform, park_transform},
@@ -234,7 +233,7 @@ where
             let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
             let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle);
             let i_angle = atan2f(i_q, i_d);
-            avg_angle += i_angle - e_angle.angle;
+            avg_angle += i_angle - e_angle;
             n_success += 1;
 
             if n_success >= n_measure {
@@ -319,8 +318,7 @@ async fn foc_sensorless_task(
         async || s.read_async().await.unwrap()
     };
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
-    let wait_seconds =
-        async |s: Second| Timer::after(Duration::from_millis((s.0 * 1e3) as u64)).await;
+    let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
 
     match foc
         .align_sensor(align_voltage, &mut read_sensor, set_motor, wait_seconds)
@@ -329,7 +327,7 @@ async fn foc_sensorless_task(
         Ok(_) => {
             info!(
                 "Sensor aligned {} {}",
-                foc.bias_angle.angle,
+                foc.bias_angle,
                 foc.sensor_direction == Direction::Clockwise
             );
         }
@@ -395,7 +393,7 @@ async fn foc_sensorless_task(
 
 fn build_motor_status(state: FocState) -> MotorStatus {
     MotorStatus {
-        raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
+        raw_angle: f32_to_u16(state.angle, -100.0, 100.0),
         raw_velocity: f32_to_u16(state.filtered_velocity, -100.0, 100.0),
         raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
         raw_temperature: 0x00,
@@ -491,8 +489,7 @@ async fn foc_task(
         async || s.read_async().await.unwrap()
     };
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
-    let wait_seconds =
-        async |s: Second| Timer::after(Duration::from_millis((s.0 * 1e3) as u64)).await;
+    let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
 
     match foc
         .align_sensor(align_voltage, &mut read_sensor, set_motor, wait_seconds)
@@ -501,7 +498,7 @@ async fn foc_task(
         Ok(_) => {
             info!(
                 "Sensor aligned {} {}",
-                foc.bias_angle.angle,
+                foc.bias_angle,
                 foc.sensor_direction == Direction::Clockwise
             );
         }
@@ -673,7 +670,7 @@ fn handle_command(command: &Command, foc: &mut FocController) {
         Command::Enable => foc.enable(),
         Command::Stop => foc.stop(),
         Command::SetRunMode(m) => foc.set_run_mode(*m),
-        Command::SetAngle(p) => foc.set_target_angle(Radian::new(*p)),
+        Command::SetAngle(p) => foc.set_target_angle(*p),
         Command::SetVelocity(v) => foc.set_target_velocity(*v),
         Command::SetTorque(t) => foc.set_target_torque(*t),
         Command::SetSpeedLimit(v) => foc.set_velocity_limit(*v),

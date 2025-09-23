@@ -2,7 +2,6 @@
 pub mod lowpass_filter;
 pub mod pid;
 pub mod pwm;
-pub mod units;
 pub use pwm::svpwm;
 pub mod angle_input;
 pub mod controller;

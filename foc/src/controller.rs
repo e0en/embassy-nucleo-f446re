@@ -9,7 +9,6 @@ use crate::{
     pwm::FocError,
     pwm_output::DutyCycle3Phase,
     svpwm,
-    units::{Radian, Second},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -19,7 +18,7 @@ pub enum Direction {
 }
 
 pub struct Target {
-    pub angle: Radian,
+    pub angle: f32,
     pub velocity: f32,
     pub torque: f32,
     pub spring: f32,
@@ -36,7 +35,7 @@ pub enum RunMode {
 
 #[derive(Clone, Copy)]
 pub struct ImpedanceParameter {
-    pub angle: Radian,
+    pub angle: f32,
     pub velocity: f32,
     pub spring: f32,
     pub damping: f32,
@@ -56,12 +55,12 @@ pub struct FocState {
     pub mode: RunMode,
     pub use_current_sensing: bool,
 
-    pub angle: Radian,
+    pub angle: f32,
     pub filtered_velocity: f32,
 
     pub velocity_error: f32,
     pub velocity_integral: f32,
-    pub angle_error: Radian,
+    pub angle_error: f32,
     pub angle_integral: f32,
 
     pub target_angle: f32,
@@ -75,14 +74,14 @@ pub struct FocState {
 
     pub i_q_error: f32,
     pub i_q_integral: f32,
-    pub electrical_angle: Radian,
-    pub dt: Second,
+    pub electrical_angle: f32,
+    pub dt: f32,
 }
 
 pub struct FocController {
     pub motor: MotorSetup,
-    pub bias_angle: Radian,
-    pub current_phase_bias: Radian,
+    pub bias_angle: f32,
+    pub current_phase_bias: f32,
     pub sensor_direction: Direction,
     pub current_mapping: (u8, u8, u8),
     pub state: Option<FocState>,
@@ -121,8 +120,8 @@ impl FocController {
         Self {
             use_current_sensing: false,
             motor,
-            bias_angle: Radian::new(0.0),
-            current_phase_bias: Radian::new(0.0),
+            bias_angle: 0.0,
+            current_phase_bias: 0.0,
             sensor_direction: Direction::Clockwise,
             current_mapping: (0, 1, 2),
             state: None,
@@ -140,7 +139,7 @@ impl FocController {
             current_d_filter: LowPassFilter::new(0.001),
             mode: RunMode::Impedance,
             target: Target {
-                angle: Radian::new(0.0),
+                angle: 0.0,
                 velocity: 0.0,
                 torque: 0.0,
                 spring: 0.0,
@@ -168,24 +167,24 @@ impl FocController {
     where
         FSensor: AsyncFnMut() -> AngleReading + Send + 'a,
         FMotor: FnMut(DutyCycle3Phase),
-        FWait: Fn(Second) -> FutUnit + 'a,
+        FWait: Fn(f32) -> FutUnit + 'a,
         FutUnit: Future<Output = ()> + Send + 'a,
     {
         // keep sending zero
         let zero_signal = svpwm(
             align_voltage,
             0.0,
-            Radian::new(3.0 * core::f32::consts::FRAC_PI_2),
+            3.0 * core::f32::consts::FRAC_PI_2,
             self.psu_voltage,
         )?;
         set_motor(zero_signal);
 
         // monitor mechanical angle until convergence
-        let mut angle = Radian::new(0.0);
-        let mut last_angle = Radian::new(0.0);
+        let mut angle = 0.0;
+        let mut last_angle = 0.0;
         for _ in 0..100 {
             angle = read_sensor().await.angle;
-            wait_function(Second(0.01)).await;
+            wait_function(0.01).await;
             if angle == last_angle {
                 break;
             }
@@ -194,13 +193,13 @@ impl FocController {
         self.bias_angle = angle;
 
         // start rotating slowly and monitor velocity
-        let mut target_angle = Radian::new(0.0);
+        let mut target_angle = 0.0;
         let mut velocity_sum = 0.0;
         for _ in 0..100 {
-            target_angle.angle += 0.01;
+            target_angle += 0.01;
             let signal = svpwm(align_voltage, 0.0, target_angle, self.psu_voltage)?;
             set_motor(signal);
-            wait_function(Second(0.01)).await;
+            wait_function(0.01).await;
             velocity_sum += read_sensor().await.velocity;
         }
         let direction_forward = velocity_sum > 0.0;
@@ -208,10 +207,10 @@ impl FocController {
         // do the same for reversed direction
         velocity_sum = 0.0;
         for _ in 0..100 {
-            target_angle.angle -= 0.01;
+            target_angle -= 0.01;
             let signal = svpwm(align_voltage, 0.0, target_angle, self.psu_voltage)?;
             set_motor(signal);
-            wait_function(Second(0.01)).await;
+            wait_function(0.01).await;
             velocity_sum += read_sensor().await.velocity;
         }
         let direction_backward = velocity_sum < 0.0;
@@ -224,14 +223,13 @@ impl FocController {
         Ok(())
     }
 
-    pub fn to_electrical_angle(&self, mechanical_angle: Radian) -> Radian {
+    pub fn to_electrical_angle(&self, mechanical_angle: f32) -> f32 {
         let mut full_angle =
             (mechanical_angle - self.bias_angle) * (self.motor.pole_pair_count as f32);
         if self.sensor_direction == Direction::CounterClockWise {
-            full_angle = full_angle * -1.0;
+            full_angle *= -1.0;
         }
-        let angle = fmodf(full_angle.angle, 2.0 * core::f32::consts::PI);
-        Radian::new(angle)
+        fmodf(full_angle, 2.0 * core::f32::consts::PI)
     }
 
     pub fn stop(&mut self) {
@@ -253,7 +251,7 @@ impl FocController {
         self.mode = mode;
     }
 
-    pub fn set_target_angle(&mut self, angle: Radian) {
+    pub fn set_target_angle(&mut self, angle: f32) {
         self.target.angle = angle;
     }
 
@@ -344,17 +342,17 @@ impl FocController {
             mode: self.mode,
             use_current_sensing: self.use_current_sensing,
 
-            angle_error: Radian::new(0.0),
+            angle_error: 0.0,
             angle_integral: 0.0,
             target_angle: 0.0,
             target_velocity: 0.0,
 
-            angle: Radian::new(0.0),
+            angle: 0.0,
             filtered_velocity: 0.0,
             velocity_error: 0.0,
             velocity_integral: 0.0,
-            dt: Second(0.0),
-            electrical_angle: Radian::new(0.0),
+            dt: 0.0,
+            electrical_angle: 0.0,
 
             i_q: 0.0,
             i_d: 0.0,
@@ -371,13 +369,13 @@ impl FocController {
         let velocity = self.velocity_filter.apply(s.velocity, s.dt);
 
         new_state.angle = s.angle;
-        new_state.target_angle = self.target.angle.angle;
+        new_state.target_angle = self.target.angle;
         new_state.filtered_velocity = velocity;
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
                 new_state.angle_error = angle_error;
-                let mut target_velocity = self.angle_pid.update(angle_error.angle, s.dt);
+                let mut target_velocity = self.angle_pid.update(angle_error, s.dt);
                 new_state.angle_integral = self.angle_pid.integral;
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
@@ -400,7 +398,7 @@ impl FocController {
                 let velocity_error = self.target.velocity - velocity;
                 new_state.angle_error = angle_error;
                 new_state.velocity_error = velocity_error;
-                self.target.spring * angle_error.angle
+                self.target.spring * angle_error
                     + self.target.damping * velocity_error
                     + self.target.torque
             }
@@ -463,17 +461,13 @@ impl FocController {
         Ok(duty_cycle)
     }
 
-    pub fn get_vq_duty_cycle(
-        &mut self,
-        v_q: f32,
-        angle: Radian,
-    ) -> Result<DutyCycle3Phase, FocError> {
+    pub fn get_vq_duty_cycle(&mut self, v_q: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
         let duty_cycle = svpwm(v_q, 0.0, self.to_electrical_angle(angle), self.psu_voltage)?;
         Ok(duty_cycle)
     }
 
     pub fn set_current_phase_bias(&mut self, angle: f32) {
-        self.current_phase_bias = Radian::new(angle);
+        self.current_phase_bias = angle;
     }
 }
 
@@ -487,8 +481,8 @@ pub fn clarke_transform(ia: f32, ib: f32, ic: f32) -> (f32, f32) {
     (i_alpha, i_beta)
 }
 
-pub fn park_transform(alpha: f32, beta: f32, mut angle: Radian) -> (f32, f32) {
-    let (sin, cos) = angle.get_sin_cos();
+pub fn park_transform(alpha: f32, beta: f32, angle: f32) -> (f32, f32) {
+    let (sin, cos) = libm::sincosf(angle);
     let i_q = beta * cos - alpha * sin;
     let i_d = alpha * cos + beta * sin;
     (i_q, i_d)

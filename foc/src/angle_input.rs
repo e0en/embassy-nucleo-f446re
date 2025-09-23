@@ -1,9 +1,7 @@
-use crate::units::{Radian, Second};
-
 pub struct AngleReading {
-    pub angle: Radian,
+    pub angle: f32,
     pub velocity: f32,
-    pub dt: Second,
+    pub dt: f32,
 }
 
 pub trait AngleInput {

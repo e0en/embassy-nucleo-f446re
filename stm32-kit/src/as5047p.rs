@@ -2,14 +2,13 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
 use foc::angle_input::{AngleInput, AngleReading};
-use foc::units::{Radian, Second};
 
 const RAW_ANGLE_MAX: u16 = 1 << 14;
 const RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / (RAW_ANGLE_MAX as f32);
 
 pub struct As5047P<'d> {
     previous_raw_angle: Option<u16>,
-    previous_angle: Radian,
+    previous_angle: f32,
     previous_time: Instant,
     full_rotations: i32,
     spi_mutex: &'static SpiMutex,
@@ -42,7 +41,7 @@ impl<'d> As5047P<'d> {
     pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
         As5047P {
             previous_raw_angle: None,
-            previous_angle: Radian::new(0.0),
+            previous_angle: 0.0,
             previous_time: Instant::from_secs(0),
             full_rotations: 0,
             spi_mutex,
@@ -137,17 +136,17 @@ impl<'d> AngleInput for As5047P<'d> {
 
     async fn read_async(&mut self) -> Result<AngleReading, Self::ReadError> {
         let now = Instant::now();
-        let dt = Second((now - self.previous_time).as_micros() as f32 / 1e6);
+        let dt = (now - self.previous_time).as_micros() as f32 / 1e6;
         let raw_angle = self.read_raw_angle().await?;
         match self.previous_raw_angle {
             None => {
                 self.previous_time = now;
                 self.previous_raw_angle = Some(raw_angle);
-                self.previous_angle = Radian::new(raw_angle as f32 * RAW_TO_RADIAN);
+                self.previous_angle = raw_angle as f32 * RAW_TO_RADIAN;
                 Ok(AngleReading {
                     angle: self.previous_angle,
                     velocity: 0.0,
-                    dt: Second(0.0),
+                    dt: 0.0,
                 })
             }
             Some(previous_raw_angle) => {
@@ -175,13 +174,13 @@ impl<'d> AngleInput for As5047P<'d> {
                         0
                     }
                 };
-                let angular_change = Radian::new((raw_angle_change as f32) * RAW_TO_RADIAN);
+                let angular_change = (raw_angle_change as f32) * RAW_TO_RADIAN;
                 let mut angle = self.previous_angle + angular_change;
-                if angle.angle > 2.0 * core::f32::consts::PI {
-                    angle.angle -= 2.0 * core::f32::consts::PI;
+                if angle > 2.0 * core::f32::consts::PI {
+                    angle -= 2.0 * core::f32::consts::PI;
                     self.full_rotations += 1;
-                } else if angle.angle < -2.0 * core::f32::consts::PI {
-                    angle.angle += 2.0 * core::f32::consts::PI;
+                } else if angle < -2.0 * core::f32::consts::PI {
+                    angle += 2.0 * core::f32::consts::PI;
                     self.full_rotations -= 1;
                 }
                 let velocity = angular_change / dt;
