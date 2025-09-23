@@ -376,6 +376,16 @@ async fn foc_sensorless_task(
                     foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
                 },
             },
+            Err(as5047p::Error::CommandFrame) => {
+                if sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("CommandFrame error correction failed");
+                }
+            }
+            Err(as5047p::Error::Parity) => {
+                if sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("Parity error correction failed");
+                }
+            }
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
@@ -561,6 +571,16 @@ async fn foc_task(
                         foc::pwm::FocError::CalculationError => error!("CalculationError"),
                         foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
                     },
+                }
+            }
+            Err(as5047p::Error::CommandFrame) => {
+                if sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("CommandFrame error correction failed");
+                }
+            }
+            Err(as5047p::Error::Parity) => {
+                if sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("Parity error correction failed");
                 }
             }
             Err(e) => error!("Failed to read from sensor: {:?}", e),
