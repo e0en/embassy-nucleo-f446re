@@ -37,7 +37,7 @@ use embassy_stm32::{
     spi as stm32_spi,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Instant, Timer, WithTimeout};
+use embassy_time::{Duration, Timer, WithTimeout};
 
 use embedded_can::Id;
 use foc::{
@@ -346,15 +346,10 @@ async fn foc_sensorless_task(
     let command_channel = COMMAND_CHANNEL.receiver();
     let status_channel = STATUS_CHANNEL.sender();
 
-    let mut last_logged_at = Instant::from_secs(0);
-    let mut count: usize = 0;
-
     let mut monitor_period: u8 = 100;
     let mut monitor_tick: u8 = 0;
 
     loop {
-        count += 1;
-
         if let Ok(command) = command_channel.try_receive() {
             match command {
                 Command::SetMonitorInterval(period) => monitor_period = period,
@@ -379,33 +374,6 @@ async fn foc_sensorless_task(
                             monitor_tick = 0;
                         }
                     }
-
-                    let now = Instant::now();
-                    if let Some(log_after) = last_logged_at.checked_add(Duration::from_millis(100))
-                        && now > log_after
-                    {
-                        let second_since_last_log = (now - last_logged_at).as_micros() as f32 / 1e6;
-
-                        last_logged_at = now;
-
-                        if let Some(state) = foc.state {
-                            info!(
-                                "target: a = {}, v = {}, i_ref = {}",
-                                state.target_angle, state.target_velocity, state.i_ref,
-                            );
-
-                            info!(
-                                "a = {}, v = {}, iq = {}, v_q = {}",
-                                reading.angle.angle,
-                                state.filtered_velocity.0,
-                                state.i_q,
-                                state.v_q,
-                            );
-                        }
-
-                        info!("loop = {} Hz", count as f32 / second_since_last_log);
-                        count = 0;
-                    };
                 }
                 Err(e) => match e {
                     foc::pwm::FocError::AlignError => error!("AlignError"),
@@ -551,15 +519,10 @@ async fn foc_task(
     let command_channel = COMMAND_CHANNEL.receiver();
     let status_channel = STATUS_CHANNEL.sender();
 
-    let mut last_logged_at = Instant::from_secs(0);
-    let mut count: usize = 0;
-
     let mut monitor_period: u8 = 100;
     let mut monitor_tick: u8 = 0;
 
     loop {
-        count += 1;
-
         if let Ok(command) = command_channel.try_receive() {
             match command {
                 Command::SetMonitorInterval(period) => monitor_period = period,
@@ -597,35 +560,6 @@ async fn foc_task(
                                 monitor_tick = 0;
                             }
                         }
-
-                        let now = Instant::now();
-                        if let Some(log_after) =
-                            last_logged_at.checked_add(Duration::from_millis(100))
-                            && now > log_after
-                        {
-                            let second_since_last_log =
-                                (now - last_logged_at).as_micros() as f32 / 1e6;
-
-                            last_logged_at = now;
-
-                            if let Some(state) = foc.state {
-                                info!(
-                                    "target: a = {}, v = {}, i_ref = {}",
-                                    state.target_angle, state.target_velocity, state.i_ref,
-                                );
-
-                                info!(
-                                    "a = {}, v = {}, iq = {}, v_q = {}",
-                                    reading.angle.angle,
-                                    state.filtered_velocity.0,
-                                    state.i_q,
-                                    state.v_q,
-                                );
-                            }
-
-                            info!("loop = {} Hz", count as f32 / second_since_last_log);
-                            count = 0;
-                        };
                     }
                     Err(e) => match e {
                         foc::pwm::FocError::AlignError => error!("AlignError"),
