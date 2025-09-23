@@ -357,28 +357,8 @@ async fn foc_sensorless_task(
 
         if let Ok(command) = command_channel.try_receive() {
             match command {
-                Command::Enable => foc.enable(),
-                Command::Stop => foc.stop(),
-                Command::SetRunMode(m) => foc.set_run_mode(m),
-                Command::SetAngle(p) => foc.set_target_angle(Radian::new(p)),
-                Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(v)),
-                Command::SetTorque(t) => foc.set_target_torque(t),
-                Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
-                Command::SetCurrentLimit(i) => foc.set_current_limit(i),
-                Command::SetTorqueLimit(t) => foc.set_torque_limit(t),
-
-                Command::SetCurrentKp(kp) => foc.set_current_kp(kp),
-                Command::SetCurrentKi(ki) => foc.set_current_ki(ki),
-
-                Command::SetVelocityKp(kp) => foc.set_velocity_kp(kp),
-                Command::SetVelocityKi(ki) => foc.set_velocity_ki(ki),
-                Command::SetVelocityGain(tf) => foc.set_velocity_gain(tf),
-                Command::SetAngleKp(kp) => foc.set_angle_kp(kp),
-                Command::SetSpring(k) => foc.set_spring(k),
-                Command::SetDamping(b) => foc.set_damping(b),
-
                 Command::SetMonitorInterval(period) => monitor_period = period,
-                _ => (),
+                _ => handle_command(&command, &mut foc),
             }
         }
         match sensor.read_async().await {
@@ -596,28 +576,8 @@ async fn foc_task(
 
         if let Ok(command) = command_channel.try_receive() {
             match command {
-                Command::Enable => foc.enable(),
-                Command::Stop => foc.stop(),
-                Command::SetRunMode(m) => foc.set_run_mode(m),
-                Command::SetAngle(p) => foc.set_target_angle(Radian::new(p)),
-                Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(v)),
-                Command::SetTorque(t) => foc.set_target_torque(t),
-                Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(v)),
-                Command::SetCurrentLimit(i) => foc.set_current_limit(i),
-                Command::SetTorqueLimit(t) => foc.set_torque_limit(t),
-
-                Command::SetCurrentKp(kp) => foc.set_current_kp(kp),
-                Command::SetCurrentKi(ki) => foc.set_current_ki(ki),
-
-                Command::SetVelocityKp(kp) => foc.set_velocity_kp(kp),
-                Command::SetVelocityKi(ki) => foc.set_velocity_ki(ki),
-                Command::SetVelocityGain(tf) => foc.set_velocity_gain(tf),
-                Command::SetAngleKp(kp) => foc.set_angle_kp(kp),
-                Command::SetSpring(k) => foc.set_spring(k),
-                Command::SetDamping(b) => foc.set_damping(b),
-
                 Command::SetMonitorInterval(period) => monitor_period = period,
-                _ => (),
+                _ => handle_command(&command, &mut foc),
             }
         }
         match sensor.read_async().await {
@@ -770,6 +730,31 @@ async fn can_task(p_can: Can<'static>) {
             }
             _ => Timer::after(Duration::from_micros(1)).await,
         }
+    }
+}
+
+fn handle_command(command: &Command, foc: &mut FocController) {
+    match command {
+        Command::Enable => foc.enable(),
+        Command::Stop => foc.stop(),
+        Command::SetRunMode(m) => foc.set_run_mode(*m),
+        Command::SetAngle(p) => foc.set_target_angle(Radian::new(*p)),
+        Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(*v)),
+        Command::SetTorque(t) => foc.set_target_torque(*t),
+        Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(*v)),
+        Command::SetCurrentLimit(i) => foc.set_current_limit(*i),
+        Command::SetTorqueLimit(t) => foc.set_torque_limit(*t),
+
+        Command::SetCurrentKp(kp) => foc.set_current_kp(*kp),
+        Command::SetCurrentKi(ki) => foc.set_current_ki(*ki),
+
+        Command::SetVelocityKp(kp) => foc.set_velocity_kp(*kp),
+        Command::SetVelocityKi(ki) => foc.set_velocity_ki(*ki),
+        Command::SetVelocityGain(tf) => foc.set_velocity_gain(*tf),
+        Command::SetAngleKp(kp) => foc.set_angle_kp(*kp),
+        Command::SetSpring(k) => foc.set_spring(*k),
+        Command::SetDamping(b) => foc.set_damping(*b),
+        _ => (),
     }
 }
 
