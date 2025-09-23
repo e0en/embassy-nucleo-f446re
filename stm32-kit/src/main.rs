@@ -543,22 +543,8 @@ async fn foc_task(
         info!("current phase bias = {}", offset);
     }
 
-    /*
-    foc.set_run_mode(RunMode::Impedance);
-    foc.set_target_angle(Radian::new(0.0));
-    foc.set_target_velocity(RadianPerSecond(0.0));
-    foc.set_target_torque(0.0);
-    foc.set_spring(4.0);
-    foc.set_damping(0.0);
-
-    foc.set_run_mode(RunMode::Angle);
-    foc.set_target_angle(Radian::new(0.0));
-
-    foc.set_run_mode(RunMode::Velocity);
-    foc.set_target_velocity(RadianPerSecond(40.0));
-    */
     foc.set_run_mode(RunMode::Torque);
-    foc.set_target_torque(0.5);
+    foc.set_target_torque(0.0);
 
     foc.enable();
 
