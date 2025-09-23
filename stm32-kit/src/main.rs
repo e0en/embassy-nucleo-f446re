@@ -310,7 +310,11 @@ async fn foc_sensorless_task(
 
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
-        Err(e) => error!("Sensor initialization failed, {:?}", e),
+        Err(e) => {
+            error!("Sensor initialization failed, {:?}", e);
+            drvoff_pin.set_low();
+            return;
+        }
     }
 
     let mut read_sensor = {
@@ -333,6 +337,7 @@ async fn foc_sensorless_task(
         }
         Err(_) => {
             error!("Sensor align failed");
+            drvoff_pin.set_low();
             return;
         }
     };
@@ -481,7 +486,11 @@ async fn foc_task(
 
     match sensor.initialize().await {
         Ok(_) => info!("Sensor initialized"),
-        Err(e) => error!("Sensor initialization failed, {:?}", e),
+        Err(e) => {
+            error!("Sensor initialization failed, {:?}", e);
+            drvoff_pin.set_low();
+            return;
+        }
     }
 
     let mut read_sensor = {
@@ -504,6 +513,7 @@ async fn foc_task(
         }
         Err(_) => {
             error!("Sensor align failed");
+            drvoff_pin.set_low();
             return;
         }
     };
