@@ -1,8 +1,8 @@
-use crate::units::{Radian, RadianPerSecond, Second};
+use crate::units::{Radian, Second};
 
 pub struct AngleReading {
     pub angle: Radian,
-    pub velocity: RadianPerSecond,
+    pub velocity: f32,
     pub dt: Second,
 }
 

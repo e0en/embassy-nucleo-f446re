@@ -9,7 +9,7 @@ use crate::{
     pwm::FocError,
     pwm_output::DutyCycle3Phase,
     svpwm,
-    units::{Radian, RadianPerSecond, Second},
+    units::{Radian, Second},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum Direction {
 
 pub struct Target {
     pub angle: Radian,
-    pub velocity: RadianPerSecond,
+    pub velocity: f32,
     pub torque: f32,
     pub spring: f32,
     pub damping: f32,
@@ -37,7 +37,7 @@ pub enum RunMode {
 #[derive(Clone, Copy)]
 pub struct ImpedanceParameter {
     pub angle: Radian,
-    pub velocity: RadianPerSecond,
+    pub velocity: f32,
     pub spring: f32,
     pub damping: f32,
     pub torque: f32,
@@ -57,9 +57,9 @@ pub struct FocState {
     pub use_current_sensing: bool,
 
     pub angle: Radian,
-    pub filtered_velocity: RadianPerSecond,
+    pub filtered_velocity: f32,
 
-    pub velocity_error: RadianPerSecond,
+    pub velocity_error: f32,
     pub velocity_integral: f32,
     pub angle_error: Radian,
     pub angle_integral: f32,
@@ -90,7 +90,7 @@ pub struct FocController {
     psu_voltage: f32,
     torque_limit: Option<f32>,
     current_limit: Option<f32>,
-    velocity_limit: Option<RadianPerSecond>,
+    velocity_limit: Option<f32>,
     current_q_pid: PIDController,
     current_d_pid: PIDController,
     angle_pid: PIDController,
@@ -141,7 +141,7 @@ impl FocController {
             mode: RunMode::Impedance,
             target: Target {
                 angle: Radian::new(0.0),
-                velocity: RadianPerSecond(0.0),
+                velocity: 0.0,
                 torque: 0.0,
                 spring: 0.0,
                 damping: 0.0,
@@ -195,7 +195,7 @@ impl FocController {
 
         // start rotating slowly and monitor velocity
         let mut target_angle = Radian::new(0.0);
-        let mut velocity_sum = RadianPerSecond(0.0);
+        let mut velocity_sum = 0.0;
         for _ in 0..100 {
             target_angle.angle += 0.01;
             let signal = svpwm(align_voltage, 0.0, target_angle, self.psu_voltage)?;
@@ -203,10 +203,10 @@ impl FocController {
             wait_function(Second(0.01)).await;
             velocity_sum += read_sensor().await.velocity;
         }
-        let direction_forward = velocity_sum.0 > 0.0;
+        let direction_forward = velocity_sum > 0.0;
 
         // do the same for reversed direction
-        velocity_sum = RadianPerSecond(0.0);
+        velocity_sum = 0.0;
         for _ in 0..100 {
             target_angle.angle -= 0.01;
             let signal = svpwm(align_voltage, 0.0, target_angle, self.psu_voltage)?;
@@ -214,7 +214,7 @@ impl FocController {
             wait_function(Second(0.01)).await;
             velocity_sum += read_sensor().await.velocity;
         }
-        let direction_backward = velocity_sum.0 < 0.0;
+        let direction_backward = velocity_sum < 0.0;
 
         match (direction_forward, direction_backward) {
             (true, true) => self.sensor_direction = Direction::Clockwise,
@@ -257,7 +257,7 @@ impl FocController {
         self.target.angle = angle;
     }
 
-    pub fn set_target_velocity(&mut self, velocity: RadianPerSecond) {
+    pub fn set_target_velocity(&mut self, velocity: f32) {
         self.target.velocity = velocity;
     }
 
@@ -273,7 +273,7 @@ impl FocController {
         self.target.damping = damping;
     }
 
-    pub fn set_velocity_limit(&mut self, velocity: RadianPerSecond) {
+    pub fn set_velocity_limit(&mut self, velocity: f32) {
         self.velocity_limit = Some(velocity);
     }
 
@@ -350,8 +350,8 @@ impl FocController {
             target_velocity: 0.0,
 
             angle: Radian::new(0.0),
-            filtered_velocity: RadianPerSecond(0.0),
-            velocity_error: RadianPerSecond(0.0),
+            filtered_velocity: 0.0,
+            velocity_error: 0.0,
             velocity_integral: 0.0,
             dt: Second(0.0),
             electrical_angle: Radian::new(0.0),
@@ -368,7 +368,7 @@ impl FocController {
 
         let s = angle_reading;
         new_state.dt = s.dt;
-        let velocity = RadianPerSecond(self.velocity_filter.apply(s.velocity.0, s.dt));
+        let velocity = self.velocity_filter.apply(s.velocity, s.dt);
 
         new_state.angle = s.angle;
         new_state.target_angle = self.target.angle.angle;
@@ -380,20 +380,20 @@ impl FocController {
                 let mut target_velocity = self.angle_pid.update(angle_error.angle, s.dt);
                 new_state.angle_integral = self.angle_pid.integral;
                 if let Some(v) = self.velocity_limit {
-                    target_velocity = target_velocity.min(v.0).max(-v.0);
+                    target_velocity = target_velocity.min(v).max(-v);
                 }
                 new_state.target_velocity = target_velocity;
-                let velocity_error = RadianPerSecond(target_velocity) - velocity;
+                let velocity_error = target_velocity - velocity;
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;
-                self.velocity_pid.update(velocity_error.0, s.dt)
+                self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Velocity => {
-                new_state.target_velocity = self.target.velocity.0;
+                new_state.target_velocity = self.target.velocity;
                 let velocity_error = self.target.velocity - velocity;
                 new_state.velocity_error = velocity_error;
                 new_state.velocity_integral = self.velocity_pid.integral;
-                self.velocity_pid.update(velocity_error.0, s.dt)
+                self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Impedance => {
                 let angle_error = self.target.angle - s.angle;
@@ -401,7 +401,7 @@ impl FocController {
                 new_state.angle_error = angle_error;
                 new_state.velocity_error = velocity_error;
                 self.target.spring * angle_error.angle
-                    + self.target.damping * velocity_error.0
+                    + self.target.damping * velocity_error
                     + self.target.torque
             }
             RunMode::Torque => self.target.torque,

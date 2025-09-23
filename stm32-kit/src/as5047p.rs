@@ -2,7 +2,7 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
 use foc::angle_input::{AngleInput, AngleReading};
-use foc::units::{Radian, RadianPerSecond, Second};
+use foc::units::{Radian, Second};
 
 const RAW_ANGLE_MAX: u16 = 1 << 14;
 const RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / (RAW_ANGLE_MAX as f32);
@@ -146,7 +146,7 @@ impl<'d> AngleInput for As5047P<'d> {
                 self.previous_angle = Radian::new(raw_angle as f32 * RAW_TO_RADIAN);
                 Ok(AngleReading {
                     angle: self.previous_angle,
-                    velocity: RadianPerSecond(0.0),
+                    velocity: 0.0,
                     dt: Second(0.0),
                 })
             }

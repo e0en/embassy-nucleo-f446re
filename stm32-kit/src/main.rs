@@ -44,7 +44,7 @@ use foc::{
     angle_input::AngleInput,
     controller::{Direction, FocController, FocState, RunMode},
     pwm_output::DutyCycle3Phase,
-    units::{Radian, RadianPerSecond, Second},
+    units::{Radian, Second},
 };
 use foc::{
     controller::{clarke_transform, park_transform},
@@ -396,7 +396,7 @@ async fn foc_sensorless_task(
 fn build_motor_status(state: FocState) -> MotorStatus {
     MotorStatus {
         raw_angle: f32_to_u16(state.angle.angle, -100.0, 100.0),
-        raw_velocity: f32_to_u16(state.filtered_velocity.0, -100.0, 100.0),
+        raw_velocity: f32_to_u16(state.filtered_velocity, -100.0, 100.0),
         raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
         raw_temperature: 0x00,
     }
@@ -674,9 +674,9 @@ fn handle_command(command: &Command, foc: &mut FocController) {
         Command::Stop => foc.stop(),
         Command::SetRunMode(m) => foc.set_run_mode(*m),
         Command::SetAngle(p) => foc.set_target_angle(Radian::new(*p)),
-        Command::SetVelocity(v) => foc.set_target_velocity(RadianPerSecond(*v)),
+        Command::SetVelocity(v) => foc.set_target_velocity(*v),
         Command::SetTorque(t) => foc.set_target_torque(*t),
-        Command::SetSpeedLimit(v) => foc.set_velocity_limit(RadianPerSecond(*v)),
+        Command::SetSpeedLimit(v) => foc.set_velocity_limit(*v),
         Command::SetCurrentLimit(i) => foc.set_current_limit(*i),
         Command::SetTorqueLimit(t) => foc.set_torque_limit(*t),
 
