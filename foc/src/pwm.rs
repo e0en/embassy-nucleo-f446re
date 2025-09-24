@@ -65,7 +65,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libm::{cosf, floorf, sinf};
+    use libm::floorf;
     const INV_SQRT3: f32 = 0.577_350_26;
 
     fn svpwm_reference(
@@ -84,8 +84,9 @@ mod tests {
         let target_angle = electrical_angle + core::f32::consts::FRAC_PI_2;
 
         // use electrical angle + pi/2 for maximum torque
-        let v_x = v_normalized * cosf(target_angle);
-        let v_y = v_normalized * sinf(target_angle);
+        let (sin, cos) = libm::sincosf(target_angle);
+        let v_x = v_normalized * cos;
+        let v_y = v_normalized * sin;
 
         // get the sector based on angle
         let sector = floorf(target_angle / core::f32::consts::FRAC_PI_3) as u8 % 6;
