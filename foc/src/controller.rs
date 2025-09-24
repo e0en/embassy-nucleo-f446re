@@ -51,10 +51,6 @@ pub struct MotorSetup {
 
 #[derive(Clone, Copy)]
 pub struct FocState {
-    pub is_running: bool,
-    pub mode: RunMode,
-    pub use_current_sensing: bool,
-
     pub angle: f32,
     pub filtered_velocity: f32,
 
@@ -84,7 +80,7 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     pub current_phase_bias: f32,
     pub sensor_direction: Direction,
     pub current_mapping: (u8, u8, u8),
-    pub state: Option<FocState>,
+    pub state: FocState,
     pub use_current_sensing: bool,
     psu_voltage: f32,
     torque_limit: Option<f32>,
@@ -127,6 +123,28 @@ where
         let max_velocity_ramp = 1000.0;
         let max_current = output_limit.max_value; // / motor.phase_resistance;
         let max_current_ramp = output_limit.ramp / motor.phase_resistance;
+        let state = FocState {
+            angle_error: 0.0,
+            angle_integral: 0.0,
+            target_angle: 0.0,
+            target_velocity: 0.0,
+
+            angle: 0.0,
+            filtered_velocity: 0.0,
+            velocity_error: 0.0,
+            velocity_integral: 0.0,
+            dt: 0.0,
+            electrical_angle: 0.0,
+
+            i_q: 0.0,
+            i_d: 0.0,
+            v_q: 0.0,
+            v_d: 0.0,
+
+            i_q_error: 0.0,
+            i_q_integral: 0.0,
+            i_ref: 0.0,
+        };
         Self {
             use_current_sensing: false,
             motor,
@@ -134,7 +152,7 @@ where
             current_phase_bias: 0.0,
             sensor_direction: Direction::Clockwise,
             current_mapping: (0, 1, 2),
-            state: None,
+            state,
             psu_voltage,
             torque_limit: None,
             current_limit: None,
@@ -369,67 +387,40 @@ where
         ib: f32,
         ic: f32,
     ) -> Result<DutyCycle3Phase, FocError> {
-        let mut new_state = FocState {
-            is_running: self.is_running,
-            mode: self.mode,
-            use_current_sensing: self.use_current_sensing,
-
-            angle_error: 0.0,
-            angle_integral: 0.0,
-            target_angle: 0.0,
-            target_velocity: 0.0,
-
-            angle: 0.0,
-            filtered_velocity: 0.0,
-            velocity_error: 0.0,
-            velocity_integral: 0.0,
-            dt: 0.0,
-            electrical_angle: 0.0,
-
-            i_q: 0.0,
-            i_d: 0.0,
-            v_q: 0.0,
-            v_d: 0.0,
-
-            i_q_error: 0.0,
-            i_q_integral: 0.0,
-            i_ref: 0.0,
-        };
-
         let s = angle_reading;
-        new_state.dt = s.dt;
+        self.state.dt = s.dt;
         let velocity = self.velocity_filter.apply(s.velocity, s.dt);
 
-        new_state.angle = s.angle;
-        new_state.target_angle = self.target.angle;
-        new_state.filtered_velocity = velocity;
+        self.state.angle = s.angle;
+        self.state.target_angle = self.target.angle;
+        self.state.filtered_velocity = velocity;
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
-                new_state.angle_error = angle_error;
+                self.state.angle_error = angle_error;
                 let mut target_velocity = self.angle_pid.update(angle_error, s.dt);
-                new_state.angle_integral = self.angle_pid.integral;
+                self.state.angle_integral = self.angle_pid.integral;
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
                 }
-                new_state.target_velocity = target_velocity;
+                self.state.target_velocity = target_velocity;
                 let velocity_error = target_velocity - velocity;
-                new_state.velocity_error = velocity_error;
-                new_state.velocity_integral = self.velocity_pid.integral;
+                self.state.velocity_error = velocity_error;
+                self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Velocity => {
-                new_state.target_velocity = self.target.velocity;
+                self.state.target_velocity = self.target.velocity;
                 let velocity_error = self.target.velocity - velocity;
-                new_state.velocity_error = velocity_error;
-                new_state.velocity_integral = self.velocity_pid.integral;
+                self.state.velocity_error = velocity_error;
+                self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Impedance => {
                 let angle_error = self.target.angle - s.angle;
                 let velocity_error = self.target.velocity - velocity;
-                new_state.angle_error = angle_error;
-                new_state.velocity_error = velocity_error;
+                self.state.angle_error = angle_error;
+                self.state.velocity_error = velocity_error;
                 self.target.spring * angle_error
                     + self.target.damping * velocity_error
                     + self.target.torque
@@ -454,12 +445,12 @@ where
             i_ref = 0.0;
         }
 
-        new_state.i_ref = i_ref;
+        self.state.i_ref = i_ref;
         let electrical_angle = self.to_electrical_angle(s.angle);
 
         let (v_q, v_d) = {
             if self.use_current_sensing {
-                new_state.electrical_angle = electrical_angle;
+                self.state.electrical_angle = electrical_angle;
 
                 let (ia, ib, ic) = self.map_currents(ia, ib, ic);
 
@@ -474,24 +465,23 @@ where
                 i_q = self.current_q_filter.apply(i_q, s.dt);
                 i_d = self.current_d_filter.apply(i_d, s.dt);
 
-                new_state.i_q = i_q;
-                new_state.i_d = i_d;
+                self.state.i_q = i_q;
+                self.state.i_d = i_d;
 
                 let v_q = self.current_q_pid.update(i_ref - i_q, s.dt);
                 let v_d = self.current_d_pid.update(-i_d, s.dt);
 
-                new_state.i_q_error = self.current_q_pid.last_error;
-                new_state.i_q_integral = self.current_q_pid.integral;
+                self.state.i_q_error = self.current_q_pid.last_error;
+                self.state.i_q_integral = self.current_q_pid.integral;
                 (v_q, v_d)
             } else {
                 (i_ref, 0.0)
             }
         };
-        new_state.v_q = v_q;
-        new_state.v_d = v_d;
+        self.state.v_q = v_q;
+        self.state.v_d = v_d;
 
         let duty_cycle = svpwm(v_q, v_d, electrical_angle, self.psu_voltage, &self.f_sincos)?;
-        self.state = Some(new_state);
         Ok(duty_cycle)
     }
 
