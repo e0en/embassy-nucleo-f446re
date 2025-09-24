@@ -22,6 +22,7 @@ pub enum Error {
     CommandFrame,
     Parity,
     LowLevel(spi::Error),
+    TimeStamp,
 }
 
 #[derive(defmt::Format)]
@@ -136,7 +137,11 @@ impl<'d> AngleInput for As5047P<'d> {
 
     async fn read_async(&mut self) -> Result<AngleReading, Self::ReadError> {
         let now = Instant::now();
-        let dt = (now - self.previous_time).as_micros() as f32 / 1e6;
+        let dt_duration = now
+            .checked_duration_since(self.previous_time)
+            .ok_or(Error::TimeStamp)?;
+
+        let dt = dt_duration.as_micros() as f32 / 1e6;
         let raw_angle = self.read_raw_angle().await?;
         match self.previous_raw_angle {
             None => {
