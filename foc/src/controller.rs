@@ -78,7 +78,7 @@ pub struct FocState {
     pub dt: f32,
 }
 
-pub struct FocController {
+pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     pub motor: MotorSetup,
     pub bias_angle: f32,
     pub current_phase_bias: f32,
@@ -101,22 +101,32 @@ pub struct FocController {
     mode: RunMode,
     target: Target,
     is_running: bool,
+
+    f_sincos: Fsincos,
 }
 
-impl FocController {
+pub struct OutputLimit {
+    pub max_value: f32,
+    pub ramp: f32,
+}
+
+impl<Fsincos> FocController<Fsincos>
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+{
     pub fn new(
         motor: MotorSetup,
         psu_voltage: f32,
         current_pid_gains: PID,
         angle_pid_gains: PID,
         velocity_pid_gains: PID,
-        max_voltage: f32,
-        max_voltage_ramp: f32,
+        output_limit: OutputLimit,
+        f_sincos: Fsincos,
     ) -> Self {
         let max_velocity = motor.max_velocity;
         let max_velocity_ramp = 1000.0;
-        let max_current = max_voltage; // / motor.phase_resistance;
-        let max_current_ramp = max_voltage_ramp / motor.phase_resistance;
+        let max_current = output_limit.max_value; // / motor.phase_resistance;
+        let max_current_ramp = output_limit.ramp / motor.phase_resistance;
         Self {
             use_current_sensing: false,
             motor,
@@ -129,8 +139,16 @@ impl FocController {
             torque_limit: None,
             current_limit: None,
             velocity_limit: None,
-            current_q_pid: PIDController::new(current_pid_gains, max_voltage, max_voltage_ramp),
-            current_d_pid: PIDController::new(current_pid_gains, max_voltage, max_voltage_ramp),
+            current_q_pid: PIDController::new(
+                current_pid_gains,
+                output_limit.max_value,
+                output_limit.ramp,
+            ),
+            current_d_pid: PIDController::new(
+                current_pid_gains,
+                output_limit.max_value,
+                output_limit.ramp,
+            ),
             angle_pid: PIDController::new(angle_pid_gains, max_velocity, max_velocity_ramp),
             velocity_pid: PIDController::new(velocity_pid_gains, max_current, max_current_ramp),
             velocity_filter: LowPassFilter::new(0.005),
@@ -146,6 +164,7 @@ impl FocController {
                 damping: 0.0,
             },
             is_running: false,
+            f_sincos,
         }
     }
 
@@ -176,6 +195,7 @@ impl FocController {
             0.0,
             3.0 * core::f32::consts::FRAC_PI_2,
             self.psu_voltage,
+            &self.f_sincos,
         )?;
         set_motor(zero_signal);
 
@@ -197,7 +217,13 @@ impl FocController {
         let mut velocity_sum = 0.0;
         for _ in 0..100 {
             target_angle += 0.01;
-            let signal = svpwm(align_voltage, 0.0, target_angle, self.psu_voltage)?;
+            let signal = svpwm(
+                align_voltage,
+                0.0,
+                target_angle,
+                self.psu_voltage,
+                &self.f_sincos,
+            )?;
             set_motor(signal);
             wait_function(0.01).await;
             velocity_sum += read_sensor().await.velocity;
@@ -208,7 +234,13 @@ impl FocController {
         velocity_sum = 0.0;
         for _ in 0..100 {
             target_angle -= 0.01;
-            let signal = svpwm(align_voltage, 0.0, target_angle, self.psu_voltage)?;
+            let signal = svpwm(
+                align_voltage,
+                0.0,
+                target_angle,
+                self.psu_voltage,
+                &self.f_sincos,
+            )?;
             set_motor(signal);
             wait_function(0.01).await;
             velocity_sum += read_sensor().await.velocity;
@@ -424,6 +456,7 @@ impl FocController {
 
         new_state.i_ref = i_ref;
         let electrical_angle = self.to_electrical_angle(s.angle);
+
         let (v_q, v_d) = {
             if self.use_current_sensing {
                 new_state.electrical_angle = electrical_angle;
@@ -435,7 +468,8 @@ impl FocController {
 
                 // park transform
                 let current_angle = electrical_angle + self.current_phase_bias;
-                let (mut i_q, mut i_d) = park_transform(i_alpha, i_beta, current_angle);
+                let (mut i_q, mut i_d) =
+                    park_transform(i_alpha, i_beta, current_angle, &self.f_sincos);
 
                 i_q = self.current_q_filter.apply(i_q, s.dt);
                 i_d = self.current_d_filter.apply(i_d, s.dt);
@@ -456,13 +490,19 @@ impl FocController {
         new_state.v_q = v_q;
         new_state.v_d = v_d;
 
-        let duty_cycle = svpwm(v_q, v_d, electrical_angle, self.psu_voltage)?;
+        let duty_cycle = svpwm(v_q, v_d, electrical_angle, self.psu_voltage, &self.f_sincos)?;
         self.state = Some(new_state);
         Ok(duty_cycle)
     }
 
     pub fn get_vq_duty_cycle(&mut self, v_q: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
-        let duty_cycle = svpwm(v_q, 0.0, self.to_electrical_angle(angle), self.psu_voltage)?;
+        let duty_cycle = svpwm(
+            v_q,
+            0.0,
+            self.to_electrical_angle(angle),
+            self.psu_voltage,
+            &self.f_sincos,
+        )?;
         Ok(duty_cycle)
     }
 
@@ -481,8 +521,11 @@ pub fn clarke_transform(ia: f32, ib: f32, ic: f32) -> (f32, f32) {
     (i_alpha, i_beta)
 }
 
-pub fn park_transform(alpha: f32, beta: f32, angle: f32) -> (f32, f32) {
-    let (sin, cos) = libm::sincosf(angle);
+pub fn park_transform<Fsincos>(alpha: f32, beta: f32, angle: f32, sincos: Fsincos) -> (f32, f32)
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+{
+    let (sin, cos) = sincos(angle);
     let i_q = beta * cos - alpha * sin;
     let i_d = alpha * cos + beta * sin;
     (i_q, i_d)

@@ -13,12 +13,16 @@ pub enum FocError {
 
 const HALF_SQRT3: f32 = 0.866_025_4;
 
-pub fn svpwm(
+pub fn svpwm<Fsincos>(
     v_q: f32,
     v_d: f32,
     electrical_angle: f32,
     v_max: f32,
-) -> Result<DutyCycle3Phase, FocError> {
+    sincos: Fsincos,
+) -> Result<DutyCycle3Phase, FocError>
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+{
     // Calculate the duty cycles for the three phases based on the voltage and angle
 
     // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
@@ -32,7 +36,7 @@ pub fn svpwm(
     let v_d = v_d / v_max / 1.5;
     let v_q = v_q / v_max / 1.5;
 
-    let (sa, ca) = libm::sincosf(electrical_angle);
+    let (sa, ca) = sincos(electrical_angle);
 
     // inverse park transform
     let v_alpha = v_d * ca - v_q * sa;
@@ -152,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_svpwm_valid_parameters() {
-        let result = svpwm(1.0, 0.0, 0.0, 2.0);
+        let result = svpwm(1.0, 0.0, 0.0, 2.0, libm::sincosf);
         assert!(result.is_ok());
 
         let duty_cycle = result.unwrap();
@@ -163,21 +167,21 @@ mod tests {
 
     #[test]
     fn test_svpwm_invalid_negative_vref() {
-        let result = svpwm(-1.0, 0.0, 0.0, 2.0);
+        let result = svpwm(-1.0, 0.0, 0.0, 2.0, libm::sincosf);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
 
     #[test]
     fn test_svpwm_invalid_zero_vmax() {
-        let result = svpwm(1.0, 0.0, 0.0, 0.0);
+        let result = svpwm(1.0, 0.0, 0.0, 0.0, libm::sincosf);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
 
     #[test]
     fn test_svpwm_invalid_vref_greater_than_vmax() {
-        let result = svpwm(3.0, 0.0, 0.0, 2.0);
+        let result = svpwm(3.0, 0.0, 0.0, 2.0, libm::sincosf);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
@@ -188,7 +192,7 @@ mod tests {
 
         for sector in 0..6 {
             let angle = sector as f32 * pi_third + 0.1;
-            let result = svpwm(0.5, 0.0, angle, 1.0);
+            let result = svpwm(0.5, 0.0, angle, 1.0, libm::sincosf);
             assert!(result.is_ok(), "Failed for sector {sector}");
 
             let duty_cycle = result.unwrap();
@@ -225,7 +229,7 @@ mod tests {
         let v_ref = sqrt3_over_2;
         for sector in 0..6 {
             let angle = sector as f32 * pi_third + 0.1;
-            let result = svpwm(v_ref, 0.0, angle, 1.0);
+            let result = svpwm(v_ref, 0.0, angle, 1.0, libm::sincosf);
             assert!(
                 result.is_ok(),
                 "Failed for sector {sector} at theoretical max",
@@ -262,7 +266,7 @@ mod tests {
         let v_ref = 0.5;
         for sector in 0..6 {
             let angle = sector as f32 * core::f32::consts::PI / 3.0 + 0.1;
-            let result = svpwm(v_ref, 0.0, angle, 1.0);
+            let result = svpwm(v_ref, 0.0, angle, 1.0, libm::sincosf);
             assert!(result.is_ok(), "Failed for sector {sector}");
 
             let duty_cycle = result.unwrap();
@@ -290,7 +294,7 @@ mod tests {
             ] {
                 let angle = angle_div_pi * core::f32::consts::PI;
                 let duty_reference = svpwm_reference(v_ref, angle, v_max).unwrap();
-                let duty = svpwm(v_ref, 0.0, angle, v_max).unwrap();
+                let duty = svpwm(v_ref, 0.0, angle, v_max, libm::sincosf).unwrap();
 
                 assert!(
                     (duty_reference.t1 - duty.t1).abs() < 1e-6,

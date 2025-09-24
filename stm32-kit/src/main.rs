@@ -5,6 +5,7 @@ mod as5047p;
 mod bldc_driver;
 mod can_message;
 mod clock;
+mod cordic;
 mod drv8316;
 mod pwm;
 
@@ -15,6 +16,7 @@ use crate::{
     as5047p::As5047P,
     bldc_driver::PwmDriver,
     can_message::{Command, MotorStatus, StatusMessage},
+    cordic::{initialize_cordic, sincos},
     drv8316::Drv8316,
 };
 
@@ -37,12 +39,12 @@ use embassy_stm32::{
     spi as stm32_spi,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer, WithTimeout};
+use embassy_time::{Duration, Instant, Timer, WithTimeout};
 
 use embedded_can::Id;
 use foc::{
     angle_input::AngleInput,
-    controller::{Direction, FocController, FocState, RunMode},
+    controller::{Direction, FocController, FocState, OutputLimit, RunMode},
     pwm_output::DutyCycle3Phase,
 };
 use foc::{
@@ -191,17 +193,18 @@ fn max_index(v1: f32, v2: f32, v3: f32) -> Option<u8> {
     }
 }
 
-async fn align_current<'a, T, TIM>(
+async fn align_current<'a, T, TIM, Fsincos>(
     p_adc: &mut adc::DummyAdc<T>,
     driver: &mut PwmDriver<'a, TIM>,
     csa_gain: drv8316::CsaGain,
     current_offset: PhaseCurrent,
     sensor: &mut As5047P<'a>,
-    foc: &FocController,
+    foc: &FocController<Fsincos>,
 ) -> Option<f32>
 where
     T: stm32_adc::Instance + AdcSelector,
     TIM: AdvancedInstance4Channel,
+    Fsincos: Fn(f32) -> (f32, f32),
 {
     // assumption: mechanical angle and voltage (electrical) angle are aligned
     let a_duty = 0.2;
@@ -231,7 +234,7 @@ where
             let e_angle = foc.to_electrical_angle(angle);
 
             let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
-            let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle);
+            let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle, sincos);
             let i_angle = atan2f(i_q, i_d);
             avg_angle += i_angle - e_angle;
             n_success += 1;
@@ -298,8 +301,11 @@ async fn foc_sensorless_task(
             i: 12.0,
             d: 0.0,
         },
-        12.0,
-        1000.0,
+        OutputLimit {
+            max_value: 12.0,
+            ramp: 1000.0,
+        },
+        sincos,
     );
     foc.disable_current_sensing();
 
@@ -352,6 +358,9 @@ async fn foc_sensorless_task(
     let mut monitor_period: u8 = 100;
     let mut monitor_tick: u8 = 0;
 
+    let mut check_count: usize = 0;
+    let mut last_logged_at = Instant::now();
+
     loop {
         if let Ok(command) = command_channel.try_receive() {
             match command {
@@ -365,11 +374,26 @@ async fn foc_sensorless_task(
                     driver.run(duty);
 
                     if let Some(state) = foc.state {
-                        let motor_status = build_motor_status(state);
                         monitor_tick += 1;
                         if monitor_tick >= monitor_period {
+                            let motor_status = build_motor_status(state);
                             status_channel.send(motor_status).await;
                             monitor_tick = 0;
+                        }
+
+                        check_count += 1;
+                        if check_count.is_multiple_of(1_000) {
+                            let now = Instant::now();
+                            if let Some(dt) = now.checked_duration_since(last_logged_at) {
+                                let dt_seconds = (dt.as_micros() as f32) / 1e6;
+                                let freq = (check_count as f32) / dt_seconds;
+                                info!(
+                                    "a={}, v={}, vq={}, {} Hz",
+                                    state.angle, state.filtered_velocity, state.v_q, freq
+                                );
+                                check_count = 0;
+                                last_logged_at = now;
+                            }
                         }
                     }
                 }
@@ -457,8 +481,11 @@ async fn foc_task(
             i: 0.1,
             d: 0.0,
         },
-        12.0,
-        1000.0,
+        OutputLimit {
+            max_value: 12.0,
+            ramp: 1000.0,
+        },
+        sincos,
     );
 
     driver.stop();
@@ -542,6 +569,8 @@ async fn foc_task(
 
     let mut monitor_period: u8 = 100;
     let mut monitor_tick: u8 = 0;
+    let mut check_count: usize = 0;
+    let mut last_logged_at = Instant::now();
 
     loop {
         if let Ok(command) = command_channel.try_receive() {
@@ -570,6 +599,17 @@ async fn foc_task(
                                 let motor_status = build_motor_status(state);
                                 status_channel.send(motor_status).await;
                                 monitor_tick = 0;
+                            }
+                        }
+                        check_count += 1;
+                        if check_count.is_multiple_of(1_000) {
+                            let now = Instant::now();
+                            if let Some(dt) = now.checked_duration_since(last_logged_at) {
+                                let dt_seconds = (dt.as_micros() as f32) / 1e6;
+                                let freq = (check_count as f32) / dt_seconds;
+                                info!("{} Hz", freq);
+                                check_count = 0;
+                                last_logged_at = now;
                             }
                         }
                     }
@@ -675,7 +715,10 @@ async fn can_task(p_can: Can<'static>) {
     }
 }
 
-fn handle_command(command: &Command, foc: &mut FocController) {
+fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
+    command: &Command,
+    foc: &mut FocController<Fsincos>,
+) {
     match command {
         Command::Enable => foc.enable(),
         Command::Stop => foc.stop(),
@@ -712,6 +755,7 @@ bind_interrupts!(
 async fn main(spawner: Spawner) {
     let mut config = Config::default();
     clock::set_clock(&mut config);
+    initialize_cordic();
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
