@@ -1,6 +1,12 @@
 use embassy_stm32::can::{self, enums::FrameCreateError};
 use foc::controller::RunMode;
 
+struct CanMessage {
+    id: u32,
+    data: [u8; 8],
+    length: u8,
+}
+
 #[derive(Copy, Clone)]
 pub struct StatusMessage {
     pub motor_can_id: u8,
@@ -57,32 +63,41 @@ pub struct CommandMessage {
     pub command: Command,
 }
 
-impl TryInto<can::Frame> for StatusMessage {
+impl TryInto<CanMessage> for StatusMessage {
     type Error = FrameCreateError;
-    fn try_into(self) -> Result<can::Frame, Self::Error> {
-        let raw_id = (self.motor_can_id as u32) << 8 | (self.host_can_id as u32);
-        let mut raw_data = [0x00u8; 8];
-        raw_data[0..2].copy_from_slice(&self.motor_status.raw_angle.to_le_bytes());
-        raw_data[2..4].copy_from_slice(&self.motor_status.raw_velocity.to_le_bytes());
-        raw_data[4..6].copy_from_slice(&self.motor_status.raw_torque.to_le_bytes());
-        raw_data[6..8].copy_from_slice(&self.motor_status.raw_temperature.to_le_bytes());
-        can::Frame::new_extended(raw_id, &raw_data)
+    fn try_into(self) -> Result<CanMessage, Self::Error> {
+        let id = (self.motor_can_id as u32) << 8 | (self.host_can_id as u32);
+        let mut data = [0x00u8; 8];
+        data[0..2].copy_from_slice(&self.motor_status.raw_angle.to_le_bytes());
+        data[2..4].copy_from_slice(&self.motor_status.raw_velocity.to_le_bytes());
+        data[4..6].copy_from_slice(&self.motor_status.raw_torque.to_le_bytes());
+        data[6..8].copy_from_slice(&self.motor_status.raw_temperature.to_le_bytes());
+        Ok(CanMessage {
+            id,
+            data,
+            length: 8,
+        })
     }
 }
 
-impl TryFrom<can::Frame> for CommandMessage {
+impl TryInto<can::Frame> for StatusMessage {
+    type Error = FrameCreateError;
+    fn try_into(self) -> Result<can::Frame, Self::Error> {
+        let m: CanMessage = self.try_into()?;
+        can::Frame::new_extended(m.id, &m.data[0..(m.length as usize)])
+    }
+}
+
+impl TryFrom<CanMessage> for CommandMessage {
     type Error = CommandError;
 
-    fn try_from(message: can::Frame) -> Result<Self, Self::Error> {
-        let raw_id = match message.id() {
-            embedded_can::Id::Extended(e) => e.as_raw().to_le_bytes(),
-            _ => return Err(CommandError::IdFormat),
-        };
+    fn try_from(message: CanMessage) -> Result<Self, Self::Error> {
+        let raw_id = message.id.to_le_bytes();
         let motor_can_id = raw_id[0];
         let command_content = (raw_id[2] as u16) << 8 | raw_id[1] as u16;
         let command_id = raw_id[3];
-        let data = message.data();
-        if data.len() != 8 {
+        let data = message.data;
+        if message.length != 8 {
             return Err(CommandError::CanDataLength);
         }
         let mut value_buffer = [0x00u8; 4];
@@ -132,5 +147,29 @@ impl TryFrom<can::Frame> for CommandMessage {
             motor_can_id,
             command,
         })
+    }
+}
+
+impl TryFrom<can::Frame> for CommandMessage {
+    type Error = CommandError;
+
+    fn try_from(message: can::Frame) -> Result<Self, Self::Error> {
+        let m = parse_can_message(message)?;
+        CommandMessage::try_from(m)
+    }
+}
+
+fn parse_can_message(message: can::Frame) -> Result<CanMessage, CommandError> {
+    match message.id() {
+        embedded_can::Id::Extended(e) => {
+            let mut data: [u8; 8] = [0x00u8; 8];
+            data.copy_from_slice(message.data());
+            Ok(CanMessage {
+                id: e.as_raw(),
+                data,
+                length: message.header().len(),
+            })
+        }
+        _ => Err(CommandError::IdFormat),
     }
 }
