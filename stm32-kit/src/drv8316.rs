@@ -1,5 +1,6 @@
 use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
+use embassy_time::Timer;
 
 const IC_STATUS_REGISTER: u8 = 0x00u8;
 const STATUS_REGISTER_2: u8 = 0x02u8;
@@ -106,6 +107,20 @@ impl From<u8> for IcStatusRegister {
 impl<'d> Drv8316<'d> {
     pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
         Drv8316 { spi_mutex, cs_pin }
+    }
+
+    pub async fn initialize(&mut self, csa_gain: CsaGain) {
+        Timer::after_millis(1).await; // ready time of gate driver
+        self.unlock_registers().await.unwrap();
+        self.set_csa_gain(csa_gain).await.unwrap();
+        let config = BuckRegulatorConfig {
+            enable: true,
+            voltage: BuckVoltage::V5_0,
+            current_limit: BuckCurrentLimit::Limit200mA,
+        };
+        self.configure_buck_regulator(config).await.unwrap();
+        self.lock_registers().await.unwrap();
+        Timer::after_millis(1).await; // wait for register value update
     }
 
     async fn read_address(&mut self, address: u8) -> Result<u16, Error> {

@@ -13,7 +13,8 @@ impl<'a, TIM> PwmDriver<'a, TIM>
 where
     TIM: AdvancedInstance4Channel,
 {
-    pub fn new(pwm_timer: low_level::Timer<'a, TIM>) -> Self {
+    pub fn new(mut pwm_timer: low_level::Timer<'a, TIM>) -> Self {
+        set_duty_cycle(&mut pwm_timer, 0, 0, 0);
         let max_pwm_duty_cycle = pwm_timer.get_max_compare_value() + 1;
         Self {
             pwm_timer,

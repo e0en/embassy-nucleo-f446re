@@ -19,6 +19,16 @@ pub struct StatusMessage {
     pub motor_status: MotorStatus,
 }
 
+impl StatusMessage {
+    pub fn new(motor_can_id: u8, host_can_id: u8, motor_status: MotorStatus) -> Self {
+        Self {
+            motor_can_id,
+            host_can_id,
+            motor_status,
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct MotorStatus {
     pub raw_angle: u16,

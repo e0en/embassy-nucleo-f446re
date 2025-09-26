@@ -95,61 +95,61 @@ mod tests {
                 let t_100 = v_x - v_y * INV_SQRT3;
                 let t_110 = v_y * 2.0 * INV_SQRT3;
                 let t_111 = (1.0 - t_100 - t_110) / 2.0;
-                Ok(DutyCycle3Phase {
-                    t1: t_100 + t_110 + t_111,
-                    t2: t_110 + t_111,
-                    t3: t_111,
-                })
+                Ok(DutyCycle3Phase::new(
+                    t_100 + t_110 + t_111,
+                    t_110 + t_111,
+                    t_111,
+                ))
             }
             1 => {
                 let t_110 = v_x + v_y * INV_SQRT3;
                 let t_010 = -v_x + v_y * INV_SQRT3;
                 let t_111 = (1.0 - t_110 - t_010) / 2.0;
-                Ok(DutyCycle3Phase {
-                    t1: t_110 + t_111,
-                    t2: t_010 + t_110 + t_111,
-                    t3: t_111,
-                })
+                Ok(DutyCycle3Phase::new(
+                    t_110 + t_111,
+                    t_010 + t_110 + t_111,
+                    t_111,
+                ))
             }
             2 => {
                 let t_010 = v_y * 2.0 * INV_SQRT3;
                 let t_011 = -v_x - v_y * INV_SQRT3;
                 let t_111 = (1.0 - t_010 - t_011) / 2.0;
-                Ok(DutyCycle3Phase {
-                    t1: t_111,
-                    t2: t_010 + t_011 + t_111,
-                    t3: t_011 + t_111,
-                })
+                Ok(DutyCycle3Phase::new(
+                    t_111,
+                    t_010 + t_011 + t_111,
+                    t_011 + t_111,
+                ))
             }
             3 => {
                 let t_011 = -v_x + v_y * INV_SQRT3;
                 let t_001 = -v_y * 2.0 * INV_SQRT3;
                 let t_111 = (1.0 - t_011 - t_001) / 2.0;
-                Ok(DutyCycle3Phase {
-                    t1: t_111,
-                    t2: t_011 + t_111,
-                    t3: t_011 + t_001 + t_111,
-                })
+                Ok(DutyCycle3Phase::new(
+                    t_111,
+                    t_011 + t_111,
+                    t_011 + t_001 + t_111,
+                ))
             }
             4 => {
                 let t_001 = -v_x - v_y * INV_SQRT3;
                 let t_101 = v_x - v_y * INV_SQRT3;
                 let t_111 = (1.0 - t_001 - t_101) / 2.0;
-                Ok(DutyCycle3Phase {
-                    t1: t_101 + t_111,
-                    t2: t_111,
-                    t3: t_001 + t_101 + t_111,
-                })
+                Ok(DutyCycle3Phase::new(
+                    t_101 + t_111,
+                    t_111,
+                    t_001 + t_101 + t_111,
+                ))
             }
             5 => {
                 let t_101 = -v_y * 2.0 * INV_SQRT3;
                 let t_100 = v_x + v_y * INV_SQRT3;
                 let t_111 = (1.0 - t_101 - t_100) / 2.0;
-                Ok(DutyCycle3Phase {
-                    t1: t_101 + t_100 + t_111,
-                    t2: t_111,
-                    t3: t_101 + t_111,
-                })
+                Ok(DutyCycle3Phase::new(
+                    t_101 + t_100 + t_111,
+                    t_111,
+                    t_101 + t_111,
+                ))
             }
             _ => Err(FocError::CalculationError),
         }

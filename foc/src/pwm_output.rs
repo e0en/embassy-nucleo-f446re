@@ -14,22 +14,14 @@ pub struct Motor {
 }
 
 impl DutyCycle3Phase {
-    pub fn new(phases: (f32, f32, f32)) -> Self {
-        Self {
-            t1: phases.0,
-            t2: phases.1,
-            t3: phases.2,
-        }
+    pub fn new(t1: f32, t2: f32, t3: f32) -> Self {
+        Self { t1, t2, t3 }
     }
 }
 
 pub trait PwmOutput {
     fn run(&mut self, signal: DutyCycle3Phase);
     fn stop(&mut self) {
-        self.run(DutyCycle3Phase {
-            t1: 0.0,
-            t2: 0.0,
-            t3: 0.0,
-        });
+        self.run(DutyCycle3Phase::new(0.0, 0.0, 0.0));
     }
 }

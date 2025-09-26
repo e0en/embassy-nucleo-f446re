@@ -45,7 +45,7 @@ use embassy_time::{Duration, Instant, Timer, WithTimeout};
 use embedded_can::Id;
 use foc::{
     angle_input::AngleInput,
-    controller::{Direction, FocController, FocState, OutputLimit, RunMode},
+    controller::{FocController, FocState, OutputLimit, RunMode},
     pwm_output::DutyCycle3Phase,
 };
 use foc::{
@@ -148,11 +148,7 @@ where
 }
 
 fn zero_phase() -> DutyCycle3Phase {
-    DutyCycle3Phase {
-        t1: 0.0,
-        t2: 0.0,
-        t3: 0.0,
-    }
+    DutyCycle3Phase::new(0.0, 0.0, 0.0)
 }
 
 async fn get_current_offset<'a, T, TIM>(
@@ -310,27 +306,16 @@ async fn foc_task(
     pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
     mut p_adc: adc::DummyAdc<ADC1>,
 ) {
+    let csa_gain = drv8316::CsaGain::Gain0_3V;
+    let psu_voltage = 16.0;
+
     drvoff_pin.set_high();
 
     let mut driver = PwmDriver::new(pwm_timer.timer);
     let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
-    Timer::after_millis(1).await; // ready time of gate driver
+    gate_driver.initialize(csa_gain).await;
 
-    let csa_gain = drv8316::CsaGain::Gain0_3V;
-
-    gate_driver.unlock_registers().await.unwrap();
-    gate_driver.set_csa_gain(csa_gain).await.unwrap();
-    let config = drv8316::BuckRegulatorConfig {
-        enable: true,
-        voltage: drv8316::BuckVoltage::V5_0,
-        current_limit: drv8316::BuckCurrentLimit::Limit200mA,
-    };
-    gate_driver.configure_buck_regulator(config).await.unwrap();
-    gate_driver.lock_registers().await.unwrap();
-    Timer::after_millis(1).await; // wait for register value update
-
-    let psu_voltage = 16.0;
     let mut foc = FocController::new(
         GM3506_SETUP,
         psu_voltage,
@@ -347,16 +332,10 @@ async fn foc_task(
     if !use_current_sensing {
         foc.disable_current_sensing();
     }
-    driver.stop();
     drvoff_pin.set_low();
 
     let align_voltage: f32 = 3.0;
-
-    let mut current_offset = PhaseCurrent {
-        a: 0.0,
-        b: 0.0,
-        c: 0.0,
-    };
+    let mut current_offset = PhaseCurrent::new(0.0, 0.0, 0.0);
     if use_current_sensing {
         current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
         if let Some(m) = get_phase_mapping(
@@ -378,13 +357,10 @@ async fn foc_task(
         }
     }
 
-    match sensor.initialize().await {
-        Ok(_) => info!("Sensor initialized"),
-        Err(e) => {
-            error!("Sensor initialization failed, {:?}", e);
-            drvoff_pin.set_low();
-            return;
-        }
+    if let Err(e) = sensor.initialize().await {
+        error!("Sensor initialization failed, {:?}", e);
+        drvoff_pin.set_high();
+        return;
     }
 
     let mut read_sensor = {
@@ -394,23 +370,15 @@ async fn foc_task(
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
     let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
 
-    match foc
+    if foc
         .align_sensor(align_voltage, &mut read_sensor, set_motor, wait_seconds)
         .await
+        .is_err()
     {
-        Ok(_) => {
-            info!(
-                "Sensor aligned {} {}",
-                foc.bias_angle,
-                foc.sensor_direction == Direction::Clockwise
-            );
-        }
-        Err(_) => {
-            error!("Sensor align failed");
-            drvoff_pin.set_low();
-            return;
-        }
-    };
+        error!("Sensor align failed");
+        drvoff_pin.set_low();
+        return;
+    }
 
     if use_current_sensing
         && let Some(offset) = align_current(
@@ -429,7 +397,6 @@ async fn foc_task(
 
     foc.set_run_mode(RunMode::Torque);
     foc.set_target_torque(0.0);
-
     foc.enable();
 
     let command_channel = COMMAND_CHANNEL.receiver();
@@ -470,28 +437,12 @@ async fn foc_task(
                             status_channel.send(motor_status).await;
                             monitor_tick = 0;
                         }
+
                         check_count += 1;
                         if check_count.is_multiple_of(5_000) {
                             let now = Instant::now();
                             if let Some(dt) = now.checked_duration_since(last_logged_at) {
-                                let dt_seconds = (dt.as_micros() as f32) / 1e6;
-                                let freq = (check_count as f32) / dt_seconds;
-
-                                info!(
-                                    "TARGET: a={}, v={}, t={}, ",
-                                    foc.state.target_angle,
-                                    foc.state.target_velocity,
-                                    foc.state.i_ref,
-                                );
-
-                                info!(
-                                    "MEASURED: a={}, v={}, t={}, {} Hz",
-                                    foc.state.angle,
-                                    foc.state.filtered_velocity,
-                                    foc.state.v_q,
-                                    freq
-                                );
-
+                                log_state(&foc.state, &dt, check_count);
                                 check_count = 0;
                                 last_logged_at = now;
                             }
@@ -521,6 +472,21 @@ async fn foc_task(
     }
 }
 
+fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
+    let dt_seconds = (dt.as_micros() as f32) / 1e6;
+    let freq = (check_count as f32) / dt_seconds;
+
+    info!(
+        "TARGET: a={}, v={}, t={}, ",
+        state.target_angle, state.target_velocity, state.i_ref,
+    );
+
+    info!(
+        "MEASURED: a={}, v={}, t={}, {} Hz",
+        state.angle, state.filtered_velocity, state.v_q, freq
+    );
+}
+
 #[embassy_executor::task]
 async fn can_task(p_can: Can<'static>) {
     let (mut can_tx, mut can_rx, _properties) = p_can.split();
@@ -536,11 +502,7 @@ async fn can_task(p_can: Can<'static>) {
                 && let Some(h) = host_id
             {
                 status = Some(s);
-                let message = StatusMessage {
-                    motor_can_id: can_id,
-                    host_can_id: h,
-                    motor_status: s,
-                };
+                let message = StatusMessage::new(can_id, h, s);
                 if let Ok(frame) = convert_status_message(message) {
                     can_tx.write(&frame).await;
                 }
