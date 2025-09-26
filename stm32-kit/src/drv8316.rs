@@ -11,6 +11,7 @@ const CONTROL_REGISTER_6: u8 = 0x08u8;
 pub struct Drv8316<'d> {
     spi_mutex: &'static SpiMutex,
     cs_pin: gpio::Output<'d>,
+    drvoff_pin: gpio::Output<'d>,
 }
 
 #[allow(dead_code)]
@@ -105,8 +106,16 @@ impl From<u8> for IcStatusRegister {
 }
 
 impl<'d> Drv8316<'d> {
-    pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
-        Drv8316 { spi_mutex, cs_pin }
+    pub fn new(
+        spi_mutex: &'static SpiMutex,
+        cs_pin: gpio::Output<'d>,
+        drvoff_pin: gpio::Output<'d>,
+    ) -> Self {
+        Drv8316 {
+            spi_mutex,
+            cs_pin,
+            drvoff_pin,
+        }
     }
 
     pub async fn initialize(&mut self, csa_gain: CsaGain) {
@@ -121,6 +130,14 @@ impl<'d> Drv8316<'d> {
         self.configure_buck_regulator(config).await.unwrap();
         self.lock_registers().await.unwrap();
         Timer::after_millis(1).await; // wait for register value update
+    }
+
+    pub fn turn_on(&mut self) {
+        self.drvoff_pin.set_low();
+    }
+
+    pub fn turn_off(&mut self) {
+        self.drvoff_pin.set_low();
     }
 
     async fn read_address(&mut self, address: u8) -> Result<u16, Error> {

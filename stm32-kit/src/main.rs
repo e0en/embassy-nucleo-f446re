@@ -308,12 +308,12 @@ async fn foc_task(
 ) {
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let psu_voltage = 16.0;
+    let align_voltage: f32 = 3.0;
 
     drvoff_pin.set_high();
-
     let mut driver = PwmDriver::new(pwm_timer.timer);
     let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
-    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin);
+    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
     gate_driver.initialize(csa_gain).await;
 
     let mut foc = FocController::new(
@@ -332,9 +332,8 @@ async fn foc_task(
     if !use_current_sensing {
         foc.disable_current_sensing();
     }
-    drvoff_pin.set_low();
 
-    let align_voltage: f32 = 3.0;
+    gate_driver.turn_on();
     let mut current_offset = PhaseCurrent::new(0.0, 0.0, 0.0);
     if use_current_sensing {
         current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
@@ -351,15 +350,14 @@ async fn foc_task(
             foc.current_mapping = m;
         } else {
             error!("Current phase mapping failed");
-            driver.stop();
-            drvoff_pin.set_high();
+            gate_driver.turn_off();
             return;
         }
     }
 
     if let Err(e) = sensor.initialize().await {
         error!("Sensor initialization failed, {:?}", e);
-        drvoff_pin.set_high();
+        gate_driver.turn_off();
         return;
     }
 
@@ -376,7 +374,7 @@ async fn foc_task(
         .is_err()
     {
         error!("Sensor align failed");
-        drvoff_pin.set_low();
+        gate_driver.turn_off();
         return;
     }
 
