@@ -3,7 +3,7 @@
 mod adc;
 mod as5047p;
 mod bldc_driver;
-mod can_message;
+mod can;
 mod clock;
 mod cordic;
 mod drv8316;
@@ -15,18 +15,19 @@ use crate::{
     adc::AdcSelector,
     as5047p::As5047P,
     bldc_driver::PwmDriver,
-    can_message::{Command, MotorStatus, StatusMessage},
+    can::{convert_status_message, parse_command_frame},
     cordic::{initialize_cordic, sincos},
     drv8316::Drv8316,
 };
 
+use can_message::message::{Command, MotorStatus, StatusMessage};
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, bind_interrupts,
-    can::{self, Can},
+    Config, bind_interrupts, can as stm32_can,
+    can::Can,
     gpio, i2c as stm32_i2c,
     mode::Async,
     peripherals::{self, ADC1, TIM1},
@@ -653,7 +654,7 @@ async fn can_task(p_can: Can<'static>) {
                     host_can_id: h,
                     motor_status: s,
                 };
-                if let Ok(frame) = message.try_into() {
+                if let Ok(frame) = convert_status_message(message) {
                     can_tx.write(&frame).await;
                 }
             } else {
@@ -662,16 +663,16 @@ async fn can_task(p_can: Can<'static>) {
         }
         match can_rx.read().with_timeout(Duration::from_millis(1)).await {
             Ok(Ok(m)) => {
-                if let Ok(message) = can_message::CommandMessage::try_from(m.frame) {
+                if let Ok(message) = parse_command_frame(m.frame) {
                     if message.motor_can_id != can_id {
                         continue;
                     }
                     // TODO: send request to the main FOC task
                     match message.command {
-                        can_message::Command::SetCanId(new_can_id) => {
+                        Command::SetCanId(new_can_id) => {
                             can_id = new_can_id;
                         }
-                        can_message::Command::RequestStatus(host_can_id) => {
+                        Command::RequestStatus(host_can_id) => {
                             host_id = Some(host_can_id);
                             if let Some(s) = status {
                                 let message = StatusMessage {
@@ -679,7 +680,7 @@ async fn can_task(p_can: Can<'static>) {
                                     host_can_id,
                                     motor_status: s,
                                 };
-                                if let Ok(frame) = message.try_into() {
+                                if let Ok(frame) = convert_status_message(message) {
                                     match can_tx
                                         .write(&frame)
                                         .with_timeout(Duration::from_millis(50))
@@ -718,7 +719,7 @@ fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
     match command {
         Command::Enable => foc.enable(),
         Command::Stop => foc.stop(),
-        Command::SetRunMode(m) => foc.set_run_mode(*m),
+        Command::SetRunMode(m) => foc.set_run_mode(convert_run_mode(m)),
         Command::SetAngle(p) => foc.set_target_angle(*p),
         Command::SetVelocity(v) => foc.set_target_velocity(*v),
         Command::SetTorque(t) => foc.set_target_torque(*t),
@@ -739,12 +740,21 @@ fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
     }
 }
 
+fn convert_run_mode(m: &can_message::message::RunMode) -> foc::controller::RunMode {
+    match m {
+        can_message::message::RunMode::Impedance => foc::controller::RunMode::Impedance,
+        can_message::message::RunMode::Angle => foc::controller::RunMode::Angle,
+        can_message::message::RunMode::Velocity => foc::controller::RunMode::Velocity,
+        can_message::message::RunMode::Torque => foc::controller::RunMode::Torque,
+    }
+}
+
 bind_interrupts!(
     struct Irqs {
         I2C1_EV => stm32_i2c::EventInterruptHandler<peripherals::I2C1>;
         I2C1_ER => stm32_i2c::ErrorInterruptHandler<peripherals::I2C1>;
-        FDCAN1_IT1 => can::IT1InterruptHandler<embassy_stm32::peripherals::FDCAN1>;
-        FDCAN1_IT0 => can::IT0InterruptHandler<embassy_stm32::peripherals::FDCAN1>;
+        FDCAN1_IT1 => stm32_can::IT1InterruptHandler<embassy_stm32::peripherals::FDCAN1>;
+        FDCAN1_IT0 => stm32_can::IT0InterruptHandler<embassy_stm32::peripherals::FDCAN1>;
 });
 
 #[embassy_executor::main]
@@ -770,11 +780,11 @@ async fn main(spawner: Spawner) {
         *(SPI.lock().await) = Some(p_spi);
     }
 
-    let mut can_conf = can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
+    let mut can_conf = stm32_can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
     can_conf.set_bitrate(1_000_000);
     can_conf.properties().set_extended_filter(
-        can::filter::ExtendedFilterSlot::_0,
-        can::filter::ExtendedFilter::accept_all_into_fifo1(),
+        stm32_can::filter::ExtendedFilterSlot::_0,
+        stm32_can::filter::ExtendedFilter::accept_all_into_fifo1(),
     );
     let p_can = can_conf.into_normal_mode();
 

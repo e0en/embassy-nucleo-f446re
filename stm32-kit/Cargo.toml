@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+can_message = { path = "../can_message", default-features = false }
 foc = { path = "../foc", default-features = false }
 embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "76e369b8aa5641b6f3f4440824f559def6cf6192", features = [
   "defmt",
