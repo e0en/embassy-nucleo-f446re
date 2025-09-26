@@ -382,13 +382,19 @@ async fn foc_sensorless_task(
                     }
 
                     check_count += 1;
-                    if check_count.is_multiple_of(1_000) {
+                    if check_count.is_multiple_of(5_000) {
                         let now = Instant::now();
                         if let Some(dt) = now.checked_duration_since(last_logged_at) {
                             let dt_seconds = (dt.as_micros() as f32) / 1e6;
                             let freq = (check_count as f32) / dt_seconds;
+
                             info!(
-                                "a={}, v={}, vq={}, {} Hz",
+                                "TARGET: a={}, v={}, t={}, ",
+                                foc.state.target_angle, foc.state.target_velocity, foc.state.i_ref,
+                            );
+
+                            info!(
+                                "MEASURED: a={}, v={}, t={}, {} Hz",
                                 foc.state.angle, foc.state.filtered_velocity, foc.state.v_q, freq
                             );
                             check_count = 0;
@@ -599,7 +605,7 @@ async fn foc_task(
                             monitor_tick = 0;
                         }
                         check_count += 1;
-                        if check_count.is_multiple_of(1_000) {
+                        if check_count.is_multiple_of(5_000) {
                             let now = Instant::now();
                             if let Some(dt) = now.checked_duration_since(last_logged_at) {
                                 let dt_seconds = (dt.as_micros() as f32) / 1e6;
