@@ -1,0 +1,14 @@
+[package]
+name = "bldc-monitor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+can_message = { path = "../can_message", default-features = false }
+
+eframe = "0.32.3"
+egui = "0.32.3"
+egui-file-dialog = "0.11.0"
+egui_plot = "0.33.0"
+env_logger = "0.11.8"
+socketcan = "3.5.0"
