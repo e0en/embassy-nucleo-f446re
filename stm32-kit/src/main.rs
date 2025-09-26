@@ -26,8 +26,8 @@ use {defmt_rtt as _, panic_probe as _};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, bind_interrupts, can as stm32_can,
-    can::Can,
+    Config, bind_interrupts,
+    can::{self as stm32_can, Can},
     gpio, i2c as stm32_i2c,
     mode::Async,
     peripherals::{self, ADC1, TIM1},
