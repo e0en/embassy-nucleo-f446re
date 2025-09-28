@@ -27,8 +27,9 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, bind_interrupts,
-    can::{self as stm32_can, Can},
+    can::{self as stm32_can, CanRx, CanTx},
     gpio, i2c as stm32_i2c,
+    interrupt::{self, InterruptExt},
     mode::Async,
     peripherals::{self, ADC1, TIM1},
     time::mhz,
@@ -40,7 +41,7 @@ use embassy_stm32::{
     spi as stm32_spi,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Instant, Timer, WithTimeout};
+use embassy_time::{Duration, Instant, Timer};
 
 use embedded_can::Id;
 use foc::{
@@ -465,8 +466,6 @@ async fn foc_task(
             }
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
-
-        Timer::after(Duration::from_micros(1)).await;
     }
 }
 
@@ -486,75 +485,46 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
 }
 
 #[embassy_executor::task]
-async fn can_task(p_can: Can<'static>) {
-    let (mut can_tx, mut can_rx, _properties) = p_can.split();
-    let mut can_id: u8 = 0x0F;
-    let command_sender = COMMAND_CHANNEL.sender();
+async fn can_tx_task(mut can_tx: CanTx<'static>) {
+    let can_id: u8 = 0x0F;
     let status_receiver = STATUS_CHANNEL.receiver();
-    let mut status: Option<MotorStatus> = None;
-    let mut host_id: Option<u8> = Some(0);
+    let host_id: Option<u8> = Some(0);
 
     loop {
-        loop {
-            if let Ok(s) = status_receiver.try_receive()
-                && let Some(h) = host_id
-            {
-                status = Some(s);
-                let message = StatusMessage::new(can_id, h, s);
-                if let Ok(frame) = convert_status_message(message) {
-                    can_tx.write(&frame).await;
-                }
-            } else {
-                break;
+        let s = status_receiver.receive().await;
+        if let Some(h) = host_id {
+            let message = StatusMessage::new(can_id, h, s);
+            if let Ok(frame) = convert_status_message(message) {
+                can_tx.write(&frame).await;
             }
         }
-        match can_rx.read().with_timeout(Duration::from_millis(1)).await {
-            Ok(Ok(m)) => {
-                if let Ok(message) = parse_command_frame(m.frame) {
-                    if message.motor_can_id != can_id {
-                        continue;
-                    }
-                    // TODO: send request to the main FOC task
-                    match message.command {
-                        Command::SetCanId(new_can_id) => {
-                            can_id = new_can_id;
-                        }
-                        Command::RequestStatus(host_can_id) => {
-                            host_id = Some(host_can_id);
-                            if let Some(s) = status {
-                                let message = StatusMessage {
-                                    motor_can_id: can_id,
-                                    host_can_id,
-                                    motor_status: s,
-                                };
-                                if let Ok(frame) = convert_status_message(message) {
-                                    match can_tx
-                                        .write(&frame)
-                                        .with_timeout(Duration::from_millis(50))
-                                        .await
-                                    {
-                                        Ok(Some(f)) => {
-                                            warn!("CAN tx error: {:?}", f);
-                                        }
-                                        Ok(None) => (),
-                                        Err(e) => {
-                                            warn!("CAN tx timeout: {:?}", e);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        cmd => command_sender.send(cmd).await,
-                    };
-                } else {
-                    let id = match m.frame.header().id() {
-                        Id::Standard(x) => x.as_raw() as u32,
-                        Id::Extended(x) => x.as_raw(),
-                    };
-                    warn!("parse failed: {}#{}", id, m.frame.data());
+    }
+}
+
+#[embassy_executor::task]
+async fn can_rx_task(mut can_rx: CanRx<'static>) {
+    let mut can_id: u8 = 0x0F;
+    let command_sender = COMMAND_CHANNEL.sender();
+
+    loop {
+        if let Ok(m) = can_rx.read().await {
+            if let Ok(message) = parse_command_frame(m.frame) {
+                if message.motor_can_id != can_id {
+                    continue;
                 }
+                match message.command {
+                    Command::SetCanId(new_can_id) => {
+                        can_id = new_can_id;
+                    }
+                    cmd => command_sender.send(cmd).await,
+                };
+            } else {
+                let id = match m.frame.header().id() {
+                    Id::Standard(x) => x.as_raw() as u32,
+                    Id::Extended(x) => x.as_raw(),
+                };
+                warn!("parse failed: {}#{}", id, m.frame.data());
             }
-            _ => Timer::after(Duration::from_micros(1)).await,
         }
     }
 }
@@ -612,6 +582,11 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
+    embassy_stm32::interrupt::TIM1_UP_TIM16.set_priority(interrupt::Priority::P0);
+    embassy_stm32::interrupt::ADC1_2.set_priority(interrupt::Priority::P1);
+    embassy_stm32::interrupt::FDCAN1_IT0.set_priority(interrupt::Priority::P7);
+    embassy_stm32::interrupt::FDCAN1_IT1.set_priority(interrupt::Priority::P7);
+
     let mut spi_config = stm32_spi::Config::default();
     spi_config.miso_pull = gpio::Pull::Up;
     spi_config.mode = stm32_spi::MODE_1;
@@ -634,6 +609,7 @@ async fn main(spawner: Spawner) {
         stm32_can::filter::ExtendedFilter::accept_all_into_fifo1(),
     );
     let p_can = can_conf.into_normal_mode();
+    let (can_tx, can_rx, _properties) = p_can.split();
 
     let drvoff_pin = gpio::Output::new(p.PB3, gpio::Level::High, gpio::Speed::Medium);
     let cs_drv = gpio::Output::new(p.PB5, gpio::Level::High, gpio::Speed::VeryHigh);
@@ -649,7 +625,9 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(foc_task(
         false, &SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc
     )));
-    unwrap!(spawner.spawn(can_task(p_can)));
+
+    unwrap!(spawner.spawn(can_rx_task(can_rx)));
+    unwrap!(spawner.spawn(can_tx_task(can_tx)));
 }
 
 fn f32_to_u16(x: f32, x_min: f32, x_max: f32) -> u16 {
