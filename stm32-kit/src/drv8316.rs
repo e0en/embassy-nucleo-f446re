@@ -1,6 +1,7 @@
 use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::Timer;
+use foc::current::PhaseCurrent;
 
 const IC_STATUS_REGISTER: u8 = 0x00u8;
 const STATUS_REGISTER_2: u8 = 0x02u8;
@@ -270,12 +271,7 @@ type SpiMutex = embassy_sync::mutex::Mutex<
     Option<spi::Spi<'static, Async>>,
 >;
 
-pub fn convert_csa_readings(
-    ia_raw: u16,
-    ib_raw: u16,
-    ic_raw: u16,
-    gain: CsaGain,
-) -> (f32, f32, f32) {
+pub fn convert_csa_readings(ia_raw: u16, ib_raw: u16, ic_raw: u16, gain: CsaGain) -> PhaseCurrent {
     let mut ia = (ia_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
     let mut ib = (ib_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
     let mut ic = (ic_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
@@ -293,5 +289,5 @@ pub fn convert_csa_readings(
     ia /= gain_value;
     ib /= gain_value;
     ic /= gain_value;
-    (ia, ib, ic)
+    PhaseCurrent::new(ia, ib, ic)
 }

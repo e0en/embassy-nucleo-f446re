@@ -5,4 +5,5 @@ pub mod pwm;
 pub use pwm::svpwm;
 pub mod angle_input;
 pub mod controller;
+pub mod current;
 pub mod pwm_output;

@@ -9,7 +9,7 @@ mod cordic;
 mod drv8316;
 mod pwm;
 
-use core::ops::Sub;
+use foc::current::PhaseCurrent;
 
 use crate::{
     adc::AdcSelector,
@@ -41,7 +41,7 @@ use embassy_stm32::{
     spi as stm32_spi,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, WithTimeout};
 
 use embedded_can::Id;
 use foc::{
@@ -101,26 +101,6 @@ const GM3506_VELOCITY_PID_NOCS: foc::pid::PID = foc::pid::PID {
     d: 0.0,
 };
 
-#[derive(Clone, Copy)]
-struct PhaseCurrent {
-    pub a: f32,
-    pub b: f32,
-    pub c: f32,
-}
-
-impl PhaseCurrent {
-    pub fn new(a: f32, b: f32, c: f32) -> Self {
-        Self { a, b, c }
-    }
-}
-
-impl Sub<PhaseCurrent> for PhaseCurrent {
-    type Output = Self;
-    fn sub(self, c: PhaseCurrent) -> Self::Output {
-        PhaseCurrent::new(self.a - c.a, self.b - c.b, self.c - c.c)
-    }
-}
-
 static SPI: SpiMutex = SpiMutex::new(None);
 
 async fn get_average_adc<T>(
@@ -136,20 +116,16 @@ where
     let mut ic_avg = 0.0;
     for _ in 0..n {
         let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-        let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-        ia_avg += ia;
-        ib_avg += ib;
-        ic_avg += ic;
+        let measured = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+        ia_avg += measured.a;
+        ib_avg += measured.b;
+        ic_avg += measured.c;
         Timer::after_millis(1).await;
     }
     ia_avg /= n as f32;
     ib_avg /= n as f32;
     ic_avg /= n as f32;
     PhaseCurrent::new(ia_avg, ib_avg, ic_avg)
-}
-
-fn zero_phase() -> DutyCycle3Phase {
-    DutyCycle3Phase::new(0.0, 0.0, 0.0)
 }
 
 async fn get_current_offset<'a, T, TIM>(
@@ -161,7 +137,7 @@ where
     T: stm32_adc::Instance + AdcSelector,
     TIM: AdvancedInstance4Channel,
 {
-    driver.run(zero_phase());
+    driver.run(DutyCycle3Phase::zero());
     Timer::after_millis(100).await;
     get_average_adc(p_adc, csa_gain, 100).await
 }
@@ -177,7 +153,7 @@ where
     T: stm32_adc::Instance + AdcSelector,
     TIM: AdvancedInstance4Channel,
 {
-    let mut phase = zero_phase();
+    let mut phase = DutyCycle3Phase::zero();
     for i in 0..100 {
         phase.t1 = align_ratio * (i as f32) / 100.0;
         driver.run(phase);
@@ -187,7 +163,7 @@ where
     let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
     let phase_1 = max_index(c.a, c.b, c.c)?;
 
-    phase = zero_phase();
+    phase = DutyCycle3Phase::zero();
     for i in 0..100 {
         phase.t2 = align_ratio * (i as f32) / 100.0;
         driver.run(phase);
@@ -200,7 +176,7 @@ where
         return None;
     }
 
-    phase = zero_phase();
+    phase = DutyCycle3Phase::zero();
     for i in 0..100 {
         phase.t3 = align_ratio * (i as f32) / 100.0;
         driver.run(phase);
@@ -233,7 +209,6 @@ async fn align_current<'a, T, TIM, Fsincos>(
     p_adc: &mut adc::DummyAdc<T>,
     driver: &mut PwmDriver<'a, TIM>,
     csa_gain: drv8316::CsaGain,
-    current_offset: PhaseCurrent,
     sensor: &mut As5047P<'a>,
     foc: &FocController<Fsincos>,
 ) -> Option<f32>
@@ -246,7 +221,7 @@ where
     let a_duty = 0.2;
 
     // start with zero voltage
-    let mut duty = zero_phase();
+    let mut duty = DutyCycle3Phase::zero();
     duty.t1 = a_duty;
     driver.run(duty);
     Timer::after_millis(100).await;
@@ -259,17 +234,13 @@ where
     let mut avg_angle = 0.0;
     for _ in 0..n_max_try {
         let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-        let (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-        let (ia, ib, ic) = foc.map_currents(
-            ia - current_offset.a,
-            ib - current_offset.b,
-            ic - current_offset.c,
-        );
+        let measured = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+        let mapped = foc.normalize_current(measured);
         if let Ok(reading) = sensor.read_async().await {
             let angle = reading.angle;
             let e_angle = foc.to_electrical_angle(angle);
 
-            let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
+            let (i_alpha, i_beta) = clarke_transform(mapped.a, mapped.b, mapped.c);
             let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle, sincos);
             let i_angle = atan2f(i_q, i_d);
             avg_angle += i_angle - e_angle;
@@ -335,9 +306,8 @@ async fn foc_task(
     }
 
     gate_driver.turn_on();
-    let mut current_offset = PhaseCurrent::new(0.0, 0.0, 0.0);
     if use_current_sensing {
-        current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
+        let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
         if let Some(m) = get_phase_mapping(
             &mut p_adc,
             &mut driver,
@@ -354,6 +324,7 @@ async fn foc_task(
             gate_driver.turn_off();
             return;
         }
+        foc.set_current_offset(current_offset);
     }
 
     if let Err(e) = sensor.initialize().await {
@@ -380,15 +351,8 @@ async fn foc_task(
     }
 
     if use_current_sensing
-        && let Some(offset) = align_current(
-            &mut p_adc,
-            &mut driver,
-            csa_gain,
-            current_offset,
-            &mut sensor,
-            &foc,
-        )
-        .await
+        && let Some(offset) =
+            align_current(&mut p_adc, &mut driver, csa_gain, &mut sensor, &foc).await
     {
         foc.set_current_phase_bias(offset);
         info!("current phase bias = {}", offset);
@@ -405,6 +369,7 @@ async fn foc_task(
     let mut monitor_tick: u8 = 0;
     let mut check_count: usize = 0;
     let mut last_logged_at = Instant::now();
+    let mut phase_current = PhaseCurrent::new(0.0, 0.0, 0.0);
 
     loop {
         if let Ok(command) = command_channel.try_receive() {
@@ -415,25 +380,22 @@ async fn foc_task(
         }
         match sensor.read_async().await {
             Ok(reading) => {
-                let (mut ia, mut ib, mut ic) = (0.0, 0.0, 0.0);
                 if use_current_sensing {
                     let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-                    (ia, ib, ic) = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+                    phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
                 }
 
-                match foc.get_duty_cycle(
-                    &reading,
-                    ia - current_offset.a,
-                    ib - current_offset.b,
-                    ic - current_offset.c,
-                ) {
+                match foc.get_duty_cycle(&reading, phase_current) {
                     Ok(duty) => {
                         driver.run(duty);
 
                         monitor_tick += 1;
                         if monitor_tick >= monitor_period {
                             let motor_status = build_motor_status(foc.state);
-                            status_channel.send(motor_status).await;
+                            let _ = status_channel
+                                .send(motor_status)
+                                .with_timeout(Duration::from_micros(1))
+                                .await;
                             monitor_tick = 0;
                         }
 
@@ -516,7 +478,11 @@ async fn can_rx_task(mut can_rx: CanRx<'static>) {
                     Command::SetCanId(new_can_id) => {
                         can_id = new_can_id;
                     }
-                    cmd => command_sender.send(cmd).await,
+                    cmd => {
+                        if command_sender.try_send(cmd).is_err() {
+                            warn!("failed to send cmd");
+                        }
+                    }
                 };
             } else {
                 let id = match m.frame.header().id() {

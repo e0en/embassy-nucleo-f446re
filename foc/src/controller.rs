@@ -1,5 +1,7 @@
 use libm::fmodf;
 
+use crate::current::PhaseCurrent;
+
 const INV_SQRT3: f32 = 0.577_350_26;
 
 use crate::{
@@ -81,7 +83,10 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     pub sensor_direction: Direction,
     pub current_mapping: (u8, u8, u8),
     pub state: FocState,
+
     pub use_current_sensing: bool,
+    current_offset: PhaseCurrent,
+
     psu_voltage: f32,
     torque_limit: Option<f32>,
     current_limit: Option<f32>,
@@ -173,6 +178,9 @@ where
             _velocity_output_limit: 1000.0,
             current_q_filter: LowPassFilter::new(0.001),
             current_d_filter: LowPassFilter::new(0.001),
+
+            current_offset: PhaseCurrent::new(0.0, 0.0, 0.0),
+
             mode: RunMode::Impedance,
             target: Target {
                 angle: 0.0,
@@ -192,6 +200,10 @@ where
 
     pub fn disable_current_sensing(&mut self) {
         self.use_current_sensing = false;
+    }
+
+    pub fn set_current_offset(&mut self, offset: PhaseCurrent) {
+        self.current_offset = offset;
     }
 
     pub async fn align_sensor<'a, FSensor, FMotor, FWait, FutUnit>(
@@ -363,19 +375,23 @@ where
         self.angle_pid.gains.p = kp;
     }
 
-    pub fn map_currents(&self, ia: f32, ib: f32, ic: f32) -> (f32, f32, f32) {
+    pub fn normalize_current(&self, c: PhaseCurrent) -> PhaseCurrent {
+        self.map_currents(c - self.current_offset)
+    }
+
+    pub fn map_currents(&self, c: PhaseCurrent) -> PhaseCurrent {
         let (ma, mb, mc) = self.current_mapping;
-        (
-            self.get_current_at(ma, ia, ib, ic),
-            self.get_current_at(mb, ia, ib, ic),
-            self.get_current_at(mc, ia, ib, ic),
+        PhaseCurrent::new(
+            self.get_current_at(ma, c),
+            self.get_current_at(mb, c),
+            self.get_current_at(mc, c),
         )
     }
-    fn get_current_at(&self, index: u8, ia: f32, ib: f32, ic: f32) -> f32 {
+    fn get_current_at(&self, index: u8, c: PhaseCurrent) -> f32 {
         match index {
-            0 => ia,
-            1 => ib,
-            2 => ic,
+            0 => c.a,
+            1 => c.b,
+            2 => c.c,
             _ => panic!(),
         }
     }
@@ -383,9 +399,7 @@ where
     pub fn get_duty_cycle(
         &mut self,
         angle_reading: &AngleReading,
-        ia: f32,
-        ib: f32,
-        ic: f32,
+        measured_current: PhaseCurrent,
     ) -> Result<DutyCycle3Phase, FocError> {
         let s = angle_reading;
         self.state.dt = s.dt;
@@ -452,10 +466,10 @@ where
             if self.use_current_sensing {
                 self.state.electrical_angle = electrical_angle;
 
-                let (ia, ib, ic) = self.map_currents(ia, ib, ic);
+                let c = self.normalize_current(measured_current);
 
                 // clarke transform
-                let (i_alpha, i_beta) = clarke_transform(ia, ib, ic);
+                let (i_alpha, i_beta) = clarke_transform(c.a, c.b, c.c);
 
                 // park transform
                 let current_angle = electrical_angle + self.current_phase_bias;

@@ -5,6 +5,16 @@ pub struct DutyCycle3Phase {
     pub t3: f32,
 }
 
+impl DutyCycle3Phase {
+    pub fn zero() -> Self {
+        Self {
+            t1: 0.0,
+            t2: 0.0,
+            t3: 0.0,
+        }
+    }
+}
+
 pub struct Motor {
     pub pole_pairs: u8,
     pub max_current: f32, // Amperes
