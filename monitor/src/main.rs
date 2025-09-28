@@ -150,6 +150,9 @@ impl eframe::App for MyApp {
                     PlotType::Torque => s.motor_status.raw_torque as f32,
                 };
                 if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                    if s.host_can_id != 0 {
+                        continue;
+                    }
                     let timestamp = now.as_nanos() as f64 / 1e9;
                     let new_point = egui_plot::PlotPoint::new(timestamp, value as f64);
                     self.plot_points.push(new_point);
