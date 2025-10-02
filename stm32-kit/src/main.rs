@@ -577,7 +577,7 @@ async fn main(spawner: Spawner) {
     let p_can = can_conf.into_normal_mode();
     let (can_tx, can_rx, _properties) = p_can.split();
 
-    let drvoff_pin = gpio::Output::new(p.PB3, gpio::Level::High, gpio::Speed::Medium);
+    let drvoff_pin = gpio::Output::new(p.PB12, gpio::Level::High, gpio::Speed::Medium);
     let cs_drv = gpio::Output::new(p.PB5, gpio::Level::High, gpio::Speed::VeryHigh);
 
     let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PC2);
