@@ -54,8 +54,15 @@ impl<'d> As5047P<'d> {
         // startup time = 10ms
         Timer::after(Duration::from_millis(20)).await;
         // ignore the first error response
-        let _ = self.read_and_reset_error_flag().await;
-        self.read_and_reset_error_flag().await?;
+        for _ in 0..10 {
+            if let Ok(flags) = self.read_and_reset_error_flag().await
+                && (!flags.parity_error)
+                && (!flags.framing_error)
+                && (!flags.invalid_command)
+            {
+                break;
+            }
+        }
         self.read_diagnostics().await
     }
 

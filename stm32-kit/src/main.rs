@@ -335,7 +335,7 @@ async fn foc_task(
 
     let mut read_sensor = {
         let s = &mut sensor;
-        async || s.read_async().await.unwrap()
+        async || s.read_async().await.map_err(|e| error!("{:?}", e)).unwrap()
     };
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
     let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
