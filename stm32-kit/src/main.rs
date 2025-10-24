@@ -7,6 +7,7 @@ mod can;
 mod clock;
 mod cordic;
 mod drv8316;
+mod gm2804;
 mod gm3506;
 mod pwm;
 
@@ -21,7 +22,7 @@ use crate::{
     drv8316::Drv8316,
 };
 
-use crate::gm3506 as motor;
+use crate::gm2804 as motor;
 
 use can_message::message::{Command, MotorStatus, StatusMessage};
 use {defmt_rtt as _, panic_probe as _};
