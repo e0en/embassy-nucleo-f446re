@@ -7,6 +7,7 @@ mod can;
 mod clock;
 mod cordic;
 mod drv8316;
+mod gm3506;
 mod pwm;
 
 use foc::current::PhaseCurrent;
@@ -19,6 +20,8 @@ use crate::{
     cordic::{initialize_cordic, sincos},
     drv8316::Drv8316,
 };
+
+use crate::gm3506 as motor;
 
 use can_message::message::{Command, MotorStatus, StatusMessage};
 use {defmt_rtt as _, panic_probe as _};
@@ -62,44 +65,6 @@ type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
     Option<stm32_spi::Spi<'static, Async>>,
 >;
-
-const GM3506_SETUP: foc::controller::MotorSetup = foc::controller::MotorSetup {
-    pole_pair_count: 11,
-    phase_resistance: 9.0,
-    max_velocity: 50.0,
-};
-
-const GM3506_CURRENT_PID: foc::pid::PID = foc::pid::PID {
-    p: 0.5,
-    i: 1000.0,
-    d: 0.0,
-};
-
-#[allow(dead_code)]
-const GM3506_ANGLE_PID_CS: foc::pid::PID = foc::pid::PID {
-    p: 2.0,
-    i: 0.0,
-    d: 0.0,
-};
-
-#[allow(dead_code)]
-const GM3506_VELOCITY_PID_CS: foc::pid::PID = foc::pid::PID {
-    p: 0.04,
-    i: 0.1,
-    d: 0.0,
-};
-
-const GM3506_ANGLE_PID_NOCS: foc::pid::PID = foc::pid::PID {
-    p: 16.0,
-    i: 0.0,
-    d: 0.0,
-};
-
-const GM3506_VELOCITY_PID_NOCS: foc::pid::PID = foc::pid::PID {
-    p: 0.2,
-    i: 12.0,
-    d: 0.0,
-};
 
 static SPI: SpiMutex = SpiMutex::new(None);
 
@@ -288,18 +253,35 @@ async fn foc_task(
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
     gate_driver.initialize(csa_gain).await;
 
-    let mut foc = FocController::new(
-        GM3506_SETUP,
-        psu_voltage,
-        GM3506_CURRENT_PID,
-        GM3506_ANGLE_PID_NOCS,
-        GM3506_VELOCITY_PID_NOCS,
-        OutputLimit {
-            max_value: 12.0,
-            ramp: 1000.0,
-        },
-        sincos,
-    );
+    let mut foc = {
+        if use_current_sensing {
+            FocController::new(
+                motor::SETUP,
+                psu_voltage,
+                motor::CURRENT_PID,
+                motor::ANGLE_PID_CS,
+                motor::VELOCITY_PID_CS,
+                OutputLimit {
+                    max_value: 16.0,
+                    ramp: 1000.0,
+                },
+                sincos,
+            )
+        } else {
+            FocController::new(
+                motor::SETUP,
+                psu_voltage,
+                motor::CURRENT_PID,
+                motor::ANGLE_PID_NOCS,
+                motor::VELOCITY_PID_NOCS,
+                OutputLimit {
+                    max_value: 16.0,
+                    ramp: 1000.0,
+                },
+                sincos,
+            )
+        }
+    };
 
     if !use_current_sensing {
         foc.disable_current_sensing();
