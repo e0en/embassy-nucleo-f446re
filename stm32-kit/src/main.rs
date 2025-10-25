@@ -245,6 +245,7 @@ async fn foc_task(
     mut p_adc: adc::DummyAdc<ADC1>,
 ) {
     let csa_gain = drv8316::CsaGain::Gain0_3V;
+    let slew_rate = drv8316::SlewRate::Rate200V;
     let psu_voltage = 16.0;
     let align_voltage: f32 = 3.0;
 
@@ -252,7 +253,7 @@ async fn foc_task(
     let mut driver = PwmDriver::new(pwm_timer.timer);
     let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
-    gate_driver.initialize(csa_gain).await;
+    gate_driver.initialize(csa_gain, slew_rate).await;
 
     let mut foc = {
         if use_current_sensing {

@@ -6,6 +6,7 @@ use foc::current::PhaseCurrent;
 const IC_STATUS_REGISTER: u8 = 0x00u8;
 const STATUS_REGISTER_2: u8 = 0x02u8;
 const CONTROL_REGISTER_1: u8 = 0x03u8;
+const CONTROL_REGISTER_2: u8 = 0x04u8;
 const CONTROL_REGISTER_5: u8 = 0x07u8;
 const CONTROL_REGISTER_6: u8 = 0x08u8;
 
@@ -38,6 +39,15 @@ pub enum CsaGain {
     Gain0_3V = 0b01,  // 0.3 V/A
     Gain0_6V = 0b10,  // 0.6 V/A
     Gain1_2V = 0b11,  // 1.2 V/A
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub enum SlewRate {
+    Rate25V = 0b00,  // 25 V/s
+    Rate50V = 0b01,  // 50 V/s
+    Rate125V = 0b10, // 125 V/s
+    Rate200V = 0b11, // 200 V/s
 }
 
 #[allow(dead_code)]
@@ -119,10 +129,11 @@ impl<'d> Drv8316<'d> {
         }
     }
 
-    pub async fn initialize(&mut self, csa_gain: CsaGain) {
+    pub async fn initialize(&mut self, csa_gain: CsaGain, slew_rate: SlewRate) {
         Timer::after_millis(1).await; // ready time of gate driver
         self.unlock_registers().await.unwrap();
         self.set_csa_gain(csa_gain).await.unwrap();
+        self.set_slew_rate(slew_rate).await.unwrap();
         let config = BuckRegulatorConfig {
             enable: true,
             voltage: BuckVoltage::V5_0,
@@ -176,6 +187,13 @@ impl<'d> Drv8316<'d> {
         let current_data = (current_reg & 0xFF) as u8;
         let new_data = (current_data & 0b11111100) | (gain as u8);
         self.write_address(CONTROL_REGISTER_5, new_data).await
+    }
+
+    pub async fn set_slew_rate(&mut self, rate: SlewRate) -> Result<(), Error> {
+        let current_reg = self.read_address(CONTROL_REGISTER_2).await?;
+        let current_data = (current_reg & 0xFF) as u8;
+        let new_data = (current_data & 0b11100111) | ((rate as u8) << 3);
+        self.write_address(CONTROL_REGISTER_2, new_data).await
     }
 
     pub async fn unlock_registers(&mut self) -> Result<(), Error> {
