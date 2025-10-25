@@ -54,6 +54,7 @@ pub struct MotorSetup {
 #[derive(Clone, Copy)]
 pub struct FocState {
     pub angle: f32,
+    pub angular_change: f32,
     pub filtered_velocity: f32,
 
     pub velocity_error: f32,
@@ -135,6 +136,7 @@ where
             target_velocity: 0.0,
 
             angle: 0.0,
+            angular_change: 0.0,
             filtered_velocity: 0.0,
             velocity_error: 0.0,
             velocity_integral: 0.0,

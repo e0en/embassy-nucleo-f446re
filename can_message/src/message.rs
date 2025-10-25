@@ -31,28 +31,41 @@ impl StatusMessage {
 
 #[derive(Copy, Clone)]
 pub struct MotorStatus {
-    pub raw_angle: u16,
-    pub raw_velocity: u16,
-    pub raw_torque: u16,
-    pub raw_temperature: u16,
+    pub angle: f32,
+    pub velocity: f32,
+    pub torque: f32,
+    pub temperature: f32,
 }
+
+const ANGLE_MIN: f32 = -1000.0;
+const ANGLE_MAX: f32 = 1000.0;
+const VELOCITY_MIN: f32 = -500.0;
+const VELOCITY_MAX: f32 = 500.0;
+const TORQUE_MIN: f32 = -100.0;
+const TORQUE_MAX: f32 = 100.0;
+const TEMPERATURE_MIN: f32 = -100.0;
+const TEMPERATURE_MAX: f32 = 100.0;
 
 impl From<CanMessage> for StatusMessage {
     fn from(val: CanMessage) -> Self {
         let mut u16_buffer = [0x00u8; 2];
         u16_buffer.copy_from_slice(&val.data[0..2]);
-        let raw_angle = u16::from_le_bytes(u16_buffer);
+        let angle = u16_to_f32(u16::from_le_bytes(u16_buffer), ANGLE_MIN, ANGLE_MAX);
         u16_buffer.copy_from_slice(&val.data[2..4]);
-        let raw_velocity = u16::from_le_bytes(u16_buffer);
+        let velocity = u16_to_f32(u16::from_le_bytes(u16_buffer), VELOCITY_MIN, VELOCITY_MAX);
         u16_buffer.copy_from_slice(&val.data[4..6]);
-        let raw_torque = u16::from_le_bytes(u16_buffer);
+        let torque = u16_to_f32(u16::from_le_bytes(u16_buffer), TORQUE_MIN, TORQUE_MAX);
         u16_buffer.copy_from_slice(&val.data[6..8]);
-        let raw_temperature = u16::from_le_bytes(u16_buffer);
+        let temperature = u16_to_f32(
+            u16::from_le_bytes(u16_buffer),
+            TEMPERATURE_MIN,
+            TEMPERATURE_MAX,
+        );
         let motor_status = MotorStatus {
-            raw_angle,
-            raw_velocity,
-            raw_torque,
-            raw_temperature,
+            angle,
+            velocity,
+            torque,
+            temperature,
         };
 
         StatusMessage {
@@ -67,16 +80,36 @@ impl From<StatusMessage> for CanMessage {
     fn from(val: StatusMessage) -> Self {
         let id = (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
         let mut data = [0x00u8; 8];
-        data[0..2].copy_from_slice(&val.motor_status.raw_angle.to_le_bytes());
-        data[2..4].copy_from_slice(&val.motor_status.raw_velocity.to_le_bytes());
-        data[4..6].copy_from_slice(&val.motor_status.raw_torque.to_le_bytes());
-        data[6..8].copy_from_slice(&val.motor_status.raw_temperature.to_le_bytes());
+
+        let angle = f32_to_u16(val.motor_status.angle, ANGLE_MIN, ANGLE_MAX);
+        data[0..2].copy_from_slice(&angle.to_le_bytes());
+        let velocity = f32_to_u16(val.motor_status.velocity, VELOCITY_MIN, VELOCITY_MAX);
+        data[2..4].copy_from_slice(&velocity.to_le_bytes());
+        let torque = f32_to_u16(val.motor_status.torque, TORQUE_MIN, TORQUE_MAX);
+        data[4..6].copy_from_slice(&torque.to_le_bytes());
+        let temperature = f32_to_u16(
+            val.motor_status.temperature,
+            TEMPERATURE_MIN,
+            TEMPERATURE_MAX,
+        );
+        data[6..8].copy_from_slice(&temperature.to_le_bytes());
         CanMessage {
             id,
             data,
             length: 8,
         }
     }
+}
+
+fn f32_to_u16(x: f32, x_min: f32, x_max: f32) -> u16 {
+    let x = x.min(x_max).max(x_min);
+    let span = x_max - x_min;
+    ((x - x_min) / span * (u16::MAX as f32)) as u16
+}
+
+fn u16_to_f32(x: u16, x_min: f32, x_max: f32) -> f32 {
+    let span = x_max - x_min;
+    x as f32 / (u16::MAX as f32) * span + x_min
 }
 
 pub enum Command {

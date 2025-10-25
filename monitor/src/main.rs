@@ -2,7 +2,7 @@
 use std::fs::File;
 use std::io::prelude::Write;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use std::{f32, thread};
 
 use can_message::message::{CanMessage, Command, CommandMessage, RunMode, StatusMessage};
@@ -103,6 +103,8 @@ struct MyApp {
     is_plotting: bool,
 
     file_dialog: egui_file_dialog::FileDialog,
+
+    t0: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +138,7 @@ impl MyApp {
             is_plotting: false,
 
             file_dialog: egui_file_dialog::FileDialog::new(),
+            t0: Instant::now(),
         }
     }
 }
@@ -145,15 +148,15 @@ impl eframe::App for MyApp {
         for s in self.status_recv.try_iter() {
             if self.is_plotting {
                 let value = match self.plot_type {
-                    PlotType::Angle => s.motor_status.raw_angle as f32,
-                    PlotType::Velocity => s.motor_status.raw_velocity as f32,
-                    PlotType::Torque => s.motor_status.raw_torque as f32,
+                    PlotType::Angle => s.motor_status.angle,
+                    PlotType::Velocity => s.motor_status.velocity,
+                    PlotType::Torque => s.motor_status.torque,
                 };
-                if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                if let Some(now) = Instant::now().checked_duration_since(self.t0) {
                     if s.host_can_id != 0 {
                         continue;
                     }
-                    let timestamp = now.as_nanos() as f64 / 1e9;
+                    let timestamp = now.as_micros() as f32 / 1e6;
                     let new_point = egui_plot::PlotPoint::new(timestamp, value as f64);
                     self.plot_points.push(new_point);
                 }

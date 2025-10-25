@@ -22,7 +22,7 @@ use crate::{
     drv8316::Drv8316,
 };
 
-use crate::gm2804 as motor;
+use crate::gm3506 as motor;
 
 use can_message::message::{Command, MotorStatus, StatusMessage};
 use {defmt_rtt as _, panic_probe as _};
@@ -227,10 +227,10 @@ where
 
 fn build_motor_status(state: FocState) -> MotorStatus {
     MotorStatus {
-        raw_angle: f32_to_u16(state.angle, -100.0, 100.0),
-        raw_velocity: f32_to_u16(state.filtered_velocity, -100.0, 100.0),
-        raw_torque: f32_to_u16(state.i_q, -10.0, 10.0),
-        raw_temperature: 0x00,
+        angle: state.angle,
+        velocity: state.filtered_velocity,
+        torque: state.i_q,
+        temperature: 0.0,
     }
 }
 
@@ -349,7 +349,7 @@ async fn foc_task(
     let command_channel = COMMAND_CHANNEL.receiver();
     let status_channel = STATUS_CHANNEL.sender();
 
-    let mut monitor_period: u8 = 100;
+    let mut monitor_period: u8 = 10;
     let mut monitor_tick: u8 = 0;
     let mut check_count: usize = 0;
     let mut last_logged_at = Instant::now();
@@ -578,10 +578,4 @@ async fn main(spawner: Spawner) {
 
     unwrap!(spawner.spawn(can_rx_task(can_rx)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));
-}
-
-fn f32_to_u16(x: f32, x_min: f32, x_max: f32) -> u16 {
-    let x = x.min(x_max).max(x_min);
-    let span = x_max - x_min;
-    ((x - x_min) / span * (u16::MAX as f32)) as u16
 }
