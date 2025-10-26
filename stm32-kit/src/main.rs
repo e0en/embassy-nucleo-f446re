@@ -500,7 +500,7 @@ fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
 
         Command::SetParameter(ParameterValue::SpeedKp(kp)) => foc.set_velocity_kp(*kp),
         Command::SetParameter(ParameterValue::SpeedKi(ki)) => foc.set_velocity_ki(*ki),
-        Command::SetParameter(ParameterValue::IqFilter(f)) => foc.set_current_filter(*f),
+        Command::SetParameter(ParameterValue::Iq(f)) => foc.set_current_filter(*f),
         Command::SetParameter(ParameterValue::AngleKp(kp)) => foc.set_angle_kp(*kp),
 
         Command::SetParameter(ParameterValue::Spring(k)) => foc.set_spring(*k),
