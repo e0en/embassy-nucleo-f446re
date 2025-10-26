@@ -1,9 +1,23 @@
+#[repr(u8)]
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum RunMode {
-    Impedance,
-    Angle,
-    Velocity,
-    Torque,
+    Impedance = 0x00,
+    Angle = 0x01,
+    Velocity = 0x02,
+    Torque = 0x03,
+}
+
+impl TryFrom<u8> for RunMode {
+    type Error = ();
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(RunMode::Impedance),
+            0x01 => Ok(RunMode::Angle),
+            0x02 => Ok(RunMode::Velocity),
+            0x03 => Ok(RunMode::Torque),
+            _ => Err(()),
+        }
+    }
 }
 
 pub struct CanMessage {
@@ -183,13 +197,11 @@ impl TryFrom<CanMessage> for CommandMessage {
             0x12 => {
                 let address = (data[1] as u16) << 8 | data[0] as u16;
                 match address {
-                    0x7005 => match data[2] {
-                        0x00 => Command::SetRunMode(RunMode::Impedance),
-                        0x01 => Command::SetRunMode(RunMode::Angle),
-                        0x02 => Command::SetRunMode(RunMode::Velocity),
-                        0x03 => Command::SetRunMode(RunMode::Torque),
-                        _ => return Err(CommandError::WrongCommand),
-                    },
+                    0x7005 => {
+                        let mode =
+                            RunMode::try_from(data[2]).map_err(|_| CommandError::WrongCommand)?;
+                        Command::SetRunMode(mode)
+                    }
                     0x7006 => Command::SetTorque(value),
                     0x700A => Command::SetVelocity(value),
                     0x700B => Command::SetTorqueLimit(value),
@@ -308,12 +320,7 @@ impl TryFrom<CommandMessage> for CanMessage {
             Command::SetRunMode(m) => {
                 command_id = 0x12;
                 data[0..2].copy_from_slice(&0x7005u16.to_le_bytes());
-                data[2] = match m {
-                    RunMode::Impedance => 0x00,
-                    RunMode::Angle => 0x01,
-                    RunMode::Velocity => 0x02,
-                    RunMode::Torque => 0x03,
-                };
+                data[2] = m as u8;
             }
             Command::SetCanId(x) => {
                 command_id = 0x07;
