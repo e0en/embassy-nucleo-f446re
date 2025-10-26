@@ -17,14 +17,14 @@ use crate::{
     adc::AdcSelector,
     as5047p::As5047P,
     bldc_driver::PwmDriver,
-    can::{convert_status_message, parse_command_frame},
+    can::{convert_response_message, parse_command_frame},
     cordic::{initialize_cordic, sincos},
     drv8316::Drv8316,
 };
 
 use crate::gm3506 as motor;
 
-use can_message::message::{Command, MotorStatus, StatusMessage};
+use can_message::message::{Command, MotorStatus, ParameterValue, ResponseMessage};
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
@@ -439,8 +439,8 @@ async fn can_tx_task(mut can_tx: CanTx<'static>) {
     loop {
         let s = status_receiver.receive().await;
         if let Some(h) = host_id {
-            let message = StatusMessage::new(can_id, h, s);
-            if let Ok(frame) = convert_status_message(message) {
+            let message = ResponseMessage::new(can_id, h, s);
+            if let Ok(frame) = convert_response_message(message) {
                 can_tx.write(&frame).await;
             }
         }
@@ -486,23 +486,26 @@ fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
     match command {
         Command::Enable => foc.enable(),
         Command::Stop => foc.stop(),
-        Command::SetRunMode(m) => foc.set_run_mode(convert_run_mode(m)),
-        Command::SetAngle(p) => foc.set_target_angle(*p),
-        Command::SetVelocity(v) => foc.set_target_velocity(*v),
-        Command::SetTorque(t) => foc.set_target_torque(*t),
-        Command::SetSpeedLimit(v) => foc.set_velocity_limit(*v),
-        Command::SetCurrentLimit(i) => foc.set_current_limit(*i),
-        Command::SetTorqueLimit(t) => foc.set_torque_limit(*t),
 
-        Command::SetCurrentKp(kp) => foc.set_current_kp(*kp),
-        Command::SetCurrentKi(ki) => foc.set_current_ki(*ki),
+        Command::SetParameter(ParameterValue::RunMode(m)) => foc.set_run_mode(convert_run_mode(m)),
+        Command::SetParameter(ParameterValue::AngleRef(p)) => foc.set_target_angle(*p),
+        Command::SetParameter(ParameterValue::SpeedRef(v)) => foc.set_target_velocity(*v),
+        Command::SetParameter(ParameterValue::IqRef(t)) => foc.set_target_torque(*t),
+        Command::SetParameter(ParameterValue::SpeedLimit(v)) => foc.set_velocity_limit(*v),
+        Command::SetParameter(ParameterValue::CurrentLimit(i)) => foc.set_current_limit(*i),
+        Command::SetParameter(ParameterValue::TorqueLimit(t)) => foc.set_torque_limit(*t),
 
-        Command::SetVelocityKp(kp) => foc.set_velocity_kp(*kp),
-        Command::SetVelocityKi(ki) => foc.set_velocity_ki(*ki),
-        Command::SetVelocityGain(tf) => foc.set_velocity_gain(*tf),
-        Command::SetAngleKp(kp) => foc.set_angle_kp(*kp),
-        Command::SetSpring(k) => foc.set_spring(*k),
-        Command::SetDamping(b) => foc.set_damping(*b),
+        Command::SetParameter(ParameterValue::CurrentKp(kp)) => foc.set_current_kp(*kp),
+        Command::SetParameter(ParameterValue::CurrentKi(ki)) => foc.set_current_ki(*ki),
+
+        Command::SetParameter(ParameterValue::SpeedKp(kp)) => foc.set_velocity_kp(*kp),
+        Command::SetParameter(ParameterValue::SpeedKi(ki)) => foc.set_velocity_ki(*ki),
+        Command::SetParameter(ParameterValue::IqFilter(f)) => foc.set_current_filter(*f),
+        Command::SetParameter(ParameterValue::AngleKp(kp)) => foc.set_angle_kp(*kp),
+
+        Command::SetParameter(ParameterValue::Spring(k)) => foc.set_spring(*k),
+        Command::SetParameter(ParameterValue::Damping(b)) => foc.set_damping(*b),
+
         _ => (),
     }
 }

@@ -1,7 +1,7 @@
-use can_message::message::{CanMessage, CommandError, CommandMessage, StatusMessage};
+use can_message::message::{CanMessage, CommandError, CommandMessage, ResponseMessage};
 use embassy_stm32::can::{self, enums::FrameCreateError};
 
-pub fn convert_status_message(m: StatusMessage) -> Result<can::Frame, FrameCreateError> {
+pub fn convert_response_message(m: ResponseMessage) -> Result<can::Frame, FrameCreateError> {
     let cm: CanMessage = m.into();
     can::Frame::new_extended(cm.id, &cm.data[0..(cm.length as usize)])
 }

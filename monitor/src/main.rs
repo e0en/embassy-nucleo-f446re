@@ -5,7 +5,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 use std::{f32, thread};
 
-use can_message::message::{CanMessage, Command, CommandMessage, RunMode, StatusMessage};
+use can_message::message::{
+    CanMessage, Command, CommandMessage, ParameterValue, ResponseMessage, RunMode,
+};
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
 use socketcan::{CanFrame, EmbeddedFrame, ExtendedId};
@@ -14,7 +16,7 @@ fn main() -> eframe::Result {
     env_logger::init();
 
     let (command_sender, command_receiver) = channel::<Command>();
-    let (status_sender, status_receiver) = channel::<StatusMessage>();
+    let (status_sender, status_receiver) = channel::<ResponseMessage>();
 
     let rx_socket = CanSocket::open("can0").unwrap();
     let tx_socket = CanSocket::open("can0").unwrap();
@@ -66,14 +68,14 @@ fn forward_command(command_recv: Receiver<Command>, socket: CanSocket) {
     }
 }
 
-fn forward_status(status_send: Sender<StatusMessage>, socket: CanSocket) {
+fn forward_status(status_send: Sender<ResponseMessage>, socket: CanSocket) {
     println!("CAN receiver started");
 
     loop {
         match socket.read_frame() {
             Ok(frame) => {
                 let can_msg = can_frame_to_can_message(&frame);
-                let status_msg = StatusMessage::from(can_msg);
+                let status_msg = ResponseMessage::from(can_msg);
                 let _ = status_send.send(status_msg);
             }
             Err(e) => {
@@ -86,7 +88,7 @@ fn forward_status(status_send: Sender<StatusMessage>, socket: CanSocket) {
 
 struct MyApp {
     command_send: Sender<Command>,
-    status_recv: Receiver<StatusMessage>,
+    status_recv: Receiver<ResponseMessage>,
 
     angle_string: String,
     velocity_string: String,
@@ -115,7 +117,7 @@ enum PlotType {
 }
 
 impl MyApp {
-    fn new(command_send: Sender<Command>, status_recv: Receiver<StatusMessage>) -> Self {
+    fn new(command_send: Sender<Command>, status_recv: Receiver<ResponseMessage>) -> Self {
         let position = 0.0;
         let velocity = 0.0;
         let torque = 0.0;
@@ -175,7 +177,11 @@ impl eframe::App for MyApp {
                 ui.selectable_value(&mut self.run_mode, RunMode::Torque, "Torque");
             });
             if old_mode != self.run_mode {
-                let _ = self.command_send.send(Command::SetRunMode(self.run_mode));
+                let _ = self
+                    .command_send
+                    .send(Command::SetParameter(ParameterValue::RunMode(
+                        self.run_mode,
+                    )));
             }
 
             egui::Grid::new("params")
@@ -198,7 +204,9 @@ impl eframe::App for MyApp {
                         .add_enabled(is_button_active, egui::Button::new("Set"))
                         .clicked()
                     {
-                        let _ = self.command_send.send(Command::SetAngle(self.angle));
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::AngleRef(self.angle)));
                     };
 
                     ui.end_row();
@@ -219,7 +227,9 @@ impl eframe::App for MyApp {
                         .add_enabled(is_button_active, egui::Button::new("Set"))
                         .clicked()
                     {
-                        let _ = self.command_send.send(Command::SetVelocity(self.velocity));
+                        let _ = self.command_send.send(Command::SetParameter(
+                            ParameterValue::SpeedRef(self.velocity),
+                        ));
                     };
                     ui.end_row();
 
@@ -239,7 +249,9 @@ impl eframe::App for MyApp {
                         .add_enabled(is_button_active, egui::Button::new("Set"))
                         .clicked()
                     {
-                        let _ = self.command_send.send(Command::SetTorque(self.torque));
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::IqRef(self.torque)));
                     };
 
                     ui.end_row();

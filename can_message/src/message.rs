@@ -27,13 +27,172 @@ pub struct CanMessage {
 }
 
 #[derive(Copy, Clone)]
-pub struct StatusMessage {
+pub struct ResponseMessage {
     pub motor_can_id: u8,
     pub host_can_id: u8,
     pub motor_status: MotorStatus,
 }
 
-impl StatusMessage {
+#[repr(u16)]
+pub enum ParameterIndex {
+    RunMode = 0x7005,
+    IqRef = 0x7006,
+    SpeedRef = 0x700A,
+    TorqueLimit = 0x700B,
+    CurrentKp = 0x7010,
+    CurrentKi = 0x7011,
+    CurrentFilter = 0x7014,
+    AngleRef = 0x7016,
+    SpeedLimit = 0x7017,
+    CurrentLimit = 0x7018,
+    Angle = 0x7019,
+    IqFilter = 0x701A,
+    Speed = 0x701B,
+    AngleKp = 0x701E,
+    SpeedKp = 0x701F,
+    SpeedKi = 0x7020,
+
+    Spring = 0x7021,
+    Damping = 0x7022,
+}
+
+impl TryFrom<u16> for ParameterIndex {
+    type Error = ();
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0x7005 => Ok(Self::RunMode),
+            0x7006 => Ok(Self::IqRef),
+            0x700A => Ok(Self::SpeedRef),
+            0x700B => Ok(Self::TorqueLimit),
+            0x7010 => Ok(Self::CurrentKp),
+            0x7011 => Ok(Self::CurrentKi),
+            0x7014 => Ok(Self::CurrentFilter),
+            0x7016 => Ok(Self::AngleRef),
+            0x7017 => Ok(Self::SpeedLimit),
+            0x7018 => Ok(Self::CurrentLimit),
+            0x7019 => Ok(Self::Angle),
+            0x701A => Ok(Self::IqFilter),
+            0x701B => Ok(Self::Speed),
+            0x701E => Ok(Self::AngleKp),
+            0x701F => Ok(Self::SpeedKp),
+            0x7020 => Ok(Self::SpeedKi),
+            0x7021 => Ok(Self::Spring),
+            0x7022 => Ok(Self::Damping),
+            _ => Err(()),
+        }
+    }
+}
+
+pub enum ParameterValue {
+    RunMode(RunMode),
+    IqRef(f32),
+    SpeedRef(f32),
+    TorqueLimit(f32),
+    CurrentKp(f32),
+    CurrentKi(f32),
+    CurrentFilter(f32),
+    AngleRef(f32),
+    SpeedLimit(f32),
+    CurrentLimit(f32),
+    Angle(f32),
+    IqFilter(f32),
+    Speed(f32),
+    AngleKp(f32),
+    SpeedKp(f32),
+    SpeedKi(f32),
+    Spring(f32),
+    Damping(f32),
+}
+
+impl TryFrom<[u8; 8]> for ParameterValue {
+    type Error = ();
+    fn try_from(data: [u8; 8]) -> Result<Self, Self::Error> {
+        let address = (data[1] as u16) << 8 | data[0] as u16;
+        let index = ParameterIndex::try_from(address)?;
+
+        let mut value_buffer = [0x00u8; 4];
+        value_buffer.copy_from_slice(&data[4..8]);
+        let value = f32::from_le_bytes(value_buffer);
+
+        Ok(match index {
+            ParameterIndex::RunMode => {
+                let mode = RunMode::try_from(data[4])?;
+                Self::RunMode(mode)
+            }
+            ParameterIndex::IqRef => Self::IqRef(value),
+            ParameterIndex::SpeedRef => Self::SpeedRef(value),
+            ParameterIndex::TorqueLimit => Self::TorqueLimit(value),
+            ParameterIndex::CurrentKp => Self::CurrentKp(value),
+            ParameterIndex::CurrentKi => Self::CurrentKi(value),
+            ParameterIndex::CurrentFilter => Self::CurrentFilter(value),
+            ParameterIndex::AngleRef => Self::AngleRef(value),
+            ParameterIndex::SpeedLimit => Self::SpeedLimit(value),
+            ParameterIndex::CurrentLimit => Self::CurrentLimit(value),
+            ParameterIndex::Angle => Self::Angle(value),
+            ParameterIndex::IqFilter => Self::IqFilter(value),
+            ParameterIndex::Speed => Self::Speed(value),
+            ParameterIndex::AngleKp => Self::AngleKp(value),
+            ParameterIndex::SpeedKp => Self::SpeedKp(value),
+            ParameterIndex::SpeedKi => Self::SpeedKi(value),
+
+            ParameterIndex::Spring => Self::Spring(value),
+            ParameterIndex::Damping => Self::Damping(value),
+        })
+    }
+}
+
+impl From<ParameterValue> for [u8; 8] {
+    fn from(val: ParameterValue) -> [u8; 8] {
+        let mut data = [0x00u8; 8];
+        let address = match val {
+            ParameterValue::RunMode(_) => ParameterIndex::RunMode,
+            ParameterValue::IqRef(_) => ParameterIndex::IqRef,
+            ParameterValue::SpeedRef(_) => ParameterIndex::SpeedRef,
+            ParameterValue::TorqueLimit(_) => ParameterIndex::TorqueLimit,
+            ParameterValue::CurrentKp(_) => ParameterIndex::CurrentKp,
+            ParameterValue::CurrentKi(_) => ParameterIndex::CurrentKi,
+            ParameterValue::CurrentFilter(_) => ParameterIndex::CurrentFilter,
+            ParameterValue::AngleRef(_) => ParameterIndex::AngleRef,
+            ParameterValue::SpeedLimit(_) => ParameterIndex::SpeedLimit,
+            ParameterValue::CurrentLimit(_) => ParameterIndex::CurrentLimit,
+            ParameterValue::Angle(_) => ParameterIndex::Angle,
+            ParameterValue::IqFilter(_) => ParameterIndex::IqFilter,
+            ParameterValue::Speed(_) => ParameterIndex::Speed,
+            ParameterValue::AngleKp(_) => ParameterIndex::AngleKp,
+            ParameterValue::SpeedKp(_) => ParameterIndex::SpeedKp,
+            ParameterValue::SpeedKi(_) => ParameterIndex::SpeedKi,
+
+            ParameterValue::Spring(_) => ParameterIndex::Spring,
+            ParameterValue::Damping(_) => ParameterIndex::Damping,
+        };
+        data[0..2].copy_from_slice(&(address as u16).to_le_bytes());
+
+        match val {
+            ParameterValue::RunMode(x) => data[4] = x as u8,
+            ParameterValue::IqRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::SpeedRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::TorqueLimit(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::CurrentKp(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::CurrentKi(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::CurrentFilter(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::AngleRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::SpeedLimit(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::CurrentLimit(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::Angle(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::IqFilter(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::Speed(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::AngleKp(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::SpeedKp(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::SpeedKi(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+
+            ParameterValue::Spring(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::Damping(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+        };
+        data
+    }
+}
+
+impl ResponseMessage {
     pub fn new(motor_can_id: u8, host_can_id: u8, motor_status: MotorStatus) -> Self {
         Self {
             motor_can_id,
@@ -99,10 +258,10 @@ const TORQUE_MAX: f32 = 100.0;
 const TEMPERATURE_MIN: f32 = -100.0;
 const TEMPERATURE_MAX: f32 = 100.0;
 
-impl From<CanMessage> for StatusMessage {
+impl From<CanMessage> for ResponseMessage {
     fn from(val: CanMessage) -> Self {
         let motor_status = MotorStatus::from(val.data);
-        StatusMessage {
+        ResponseMessage {
             motor_can_id: (val.id >> 8 & 0xFF) as u8,
             host_can_id: (val.id & 0xFF) as u8,
             motor_status,
@@ -110,8 +269,8 @@ impl From<CanMessage> for StatusMessage {
     }
 }
 
-impl From<StatusMessage> for CanMessage {
-    fn from(val: StatusMessage) -> Self {
+impl From<ResponseMessage> for CanMessage {
+    fn from(val: ResponseMessage) -> Self {
         let id = (2 << 24) | (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
         let data = val.motor_status.into();
         CanMessage {
@@ -137,28 +296,8 @@ pub enum Command {
     Stop,
     Enable,
     SetCanId(u8),
-
-    SetSpeedLimit(f32),
-    SetCurrentLimit(f32),
-    SetTorqueLimit(f32),
-
-    SetAngle(f32),
-    SetVelocity(f32),
-    SetTorque(f32),
-
-    SetSpring(f32),
-    SetDamping(f32),
-    SetVelocityKp(f32),
-    SetVelocityKi(f32),
-    SetVelocityGain(f32),
-    SetAngleKp(f32),
-
-    SetCurrentKp(f32),
-    SetCurrentKi(f32),
-
-    SetRunMode(RunMode),
+    SetParameter(ParameterValue),
     RequestStatus(u8),
-
     SetMonitorInterval(u8),
 }
 
@@ -186,38 +325,14 @@ impl TryFrom<CanMessage> for CommandMessage {
         if message.length != 8 {
             return Err(CommandError::CanDataLength);
         }
-        let mut value_buffer = [0x00u8; 4];
-        value_buffer.copy_from_slice(&data[4..8]);
-        let value = f32::from_le_bytes(value_buffer);
 
         let command = match command_id {
             0x03 => Command::Enable,
             0x04 => Command::Stop,
             0x07 => Command::SetCanId(command_content as u8),
             0x12 => {
-                let address = (data[1] as u16) << 8 | data[0] as u16;
-                match address {
-                    0x7005 => {
-                        let mode =
-                            RunMode::try_from(data[2]).map_err(|_| CommandError::WrongCommand)?;
-                        Command::SetRunMode(mode)
-                    }
-                    0x7006 => Command::SetTorque(value),
-                    0x700A => Command::SetVelocity(value),
-                    0x700B => Command::SetTorqueLimit(value),
-                    0x7010 => Command::SetCurrentKp(value),
-                    0x7011 => Command::SetCurrentKi(value),
-                    0x7016 => Command::SetAngle(value),
-                    0x7017 => Command::SetSpeedLimit(value),
-                    0x7018 => Command::SetCurrentLimit(value),
-                    0x701E => Command::SetAngleKp(value),
-                    0x701F => Command::SetVelocityKp(value),
-                    0x7020 => Command::SetVelocityKi(value),
-                    0x2017 => Command::SetVelocityGain(value),
-                    0x201A => Command::SetSpring(value),
-                    0x201B => Command::SetDamping(value),
-                    _ => return Err(CommandError::WrongRegister),
-                }
+                let pv = ParameterValue::try_from(data).map_err(|_| CommandError::WrongRegister)?;
+                Command::SetParameter(pv)
             }
             0x15 => {
                 let host_id = (command_content & 0xFF) as u8;
@@ -247,80 +362,10 @@ impl TryFrom<CommandMessage> for CanMessage {
             Command::Stop => {
                 command_id = 0x04;
             }
-            Command::SetAngle(x) => {
+            Command::SetParameter(pv) => {
                 command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7016u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetVelocity(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x700Au16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetTorque(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7006u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetTorqueLimit(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x700Bu16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetCurrentKp(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7010u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetCurrentKi(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7011u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetSpeedLimit(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7017u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetCurrentLimit(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7018u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetAngleKp(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x701Eu16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetVelocityKp(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x701Fu16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetVelocityKi(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7020u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetVelocityGain(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x2017u16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetSpring(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x201Au16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetDamping(x) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x201Au16.to_le_bytes());
-                data[4..8].copy_from_slice(&x.to_le_bytes());
-            }
-            Command::SetRunMode(m) => {
-                command_id = 0x12;
-                data[0..2].copy_from_slice(&0x7005u16.to_le_bytes());
-                data[2] = m as u8;
+                let pv_data: [u8; 8] = pv.into();
+                data.copy_from_slice(&pv_data);
             }
             Command::SetCanId(x) => {
                 command_id = 0x07;

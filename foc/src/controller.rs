@@ -369,6 +369,11 @@ where
         self.velocity_pid.gains.i = ki;
     }
 
+    pub fn set_current_filter(&mut self, f: f32) {
+        self.current_q_filter = LowPassFilter::new(f);
+        self.current_d_filter = LowPassFilter::new(f);
+    }
+
     pub fn set_velocity_gain(&mut self, tf: f32) {
         self.velocity_filter = LowPassFilter::new(tf);
     }
