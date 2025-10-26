@@ -296,6 +296,7 @@ pub enum Command {
     Stop,
     Enable,
     SetCanId(u8),
+    GetParameter(ParameterIndex),
     SetParameter(ParameterValue),
     RequestStatus(u8),
     SetMonitorInterval(u8),
@@ -330,6 +331,13 @@ impl TryFrom<CanMessage> for CommandMessage {
             0x03 => Command::Enable,
             0x04 => Command::Stop,
             0x07 => Command::SetCanId(command_content as u8),
+            0x11 => {
+                let mut u16_buffer = [0x00u8; 2];
+                u16_buffer.copy_from_slice(&data[0..2]);
+                let p = ParameterIndex::try_from(u16::from_le_bytes(u16_buffer))
+                    .map_err(|_| CommandError::WrongRegister)?;
+                Command::GetParameter(p)
+            }
             0x12 => {
                 let pv = ParameterValue::try_from(data).map_err(|_| CommandError::WrongRegister)?;
                 Command::SetParameter(pv)
@@ -361,6 +369,10 @@ impl TryFrom<CommandMessage> for CanMessage {
             }
             Command::Stop => {
                 command_id = 0x04;
+            }
+            Command::GetParameter(p) => {
+                command_id = 0x11;
+                data[0..2].copy_from_slice(&(p as u16).to_le_bytes());
             }
             Command::SetParameter(pv) => {
                 command_id = 0x12;
