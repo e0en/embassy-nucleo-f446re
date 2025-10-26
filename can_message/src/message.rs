@@ -338,6 +338,7 @@ pub enum CommandError {
 
 pub struct CommandMessage {
     pub motor_can_id: u8,
+    pub host_can_id: u8,
     pub command: Command,
 }
 
@@ -347,7 +348,8 @@ impl TryFrom<CanMessage> for CommandMessage {
     fn try_from(message: CanMessage) -> Result<Self, Self::Error> {
         let raw_id = message.id.to_le_bytes();
         let motor_can_id = raw_id[0];
-        let command_content = (raw_id[2] as u16) << 8 | raw_id[1] as u16;
+        let host_can_id = raw_id[1];
+        let command_content = raw_id[2];
         let command_id = raw_id[3];
         let data = message.data;
         if message.length != 8 {
@@ -357,7 +359,7 @@ impl TryFrom<CanMessage> for CommandMessage {
         let command = match command_id {
             0x03 => Command::Enable,
             0x04 => Command::Stop,
-            0x07 => Command::SetCanId(command_content as u8),
+            0x07 => Command::SetCanId(command_content),
             0x11 => {
                 let mut u16_buffer = [0x00u8; 2];
                 u16_buffer.copy_from_slice(&data[0..2]);
@@ -369,16 +371,14 @@ impl TryFrom<CanMessage> for CommandMessage {
                 let pv = ParameterValue::try_from(data).map_err(|_| CommandError::WrongRegister)?;
                 Command::SetParameter(pv)
             }
-            0x15 => {
-                let host_id = (command_content & 0xFF) as u8;
-                Command::RequestStatus(host_id)
-            }
-            0x16 => Command::SetMonitorInterval(command_content as u8),
+            0x15 => Command::RequestStatus(host_can_id),
+            0x16 => Command::SetMonitorInterval(command_content),
 
             _ => return Err(CommandError::WrongCommand),
         };
         Ok(CommandMessage {
             motor_can_id,
+            host_can_id,
             command,
         })
     }
@@ -388,7 +388,7 @@ impl TryFrom<CommandMessage> for CanMessage {
     type Error = CommandError;
     fn try_from(val: CommandMessage) -> Result<Self, Self::Error> {
         let command_id: u8;
-        let mut command_content: u16 = 0;
+        let mut command_content: u8 = 0;
         let mut data = [0x00u8; 8];
         match val.command {
             Command::Enable => {
@@ -408,20 +408,22 @@ impl TryFrom<CommandMessage> for CanMessage {
             }
             Command::SetCanId(x) => {
                 command_id = 0x07;
-                command_content = x as u16;
+                command_content = x;
             }
             Command::SetMonitorInterval(x) => {
                 command_id = 0x16;
-                command_content = x as u16;
+                command_content = x;
             }
             Command::RequestStatus(x) => {
                 command_id = 0x15;
-                command_content = x as u16;
+                command_content = x;
             }
         }
 
-        let id =
-            (command_id as u32) << 24 | ((command_content as u32) << 8) | (val.motor_can_id as u32);
+        let id = (command_id as u32) << 24
+            | ((command_content as u32) << 16)
+            | (val.host_can_id as u32)
+            | (val.motor_can_id as u32);
 
         Ok(CanMessage {
             id,

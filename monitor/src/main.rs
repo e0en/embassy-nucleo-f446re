@@ -48,6 +48,7 @@ fn forward_command(command_recv: Receiver<Command>, socket: CanSocket) {
     loop {
         for command in command_recv.try_iter() {
             let command_msg = CommandMessage {
+                host_can_id: 0x00,  // Default host CAN ID
                 motor_can_id: 0x0F, // Default motor CAN ID
                 command,
             };
