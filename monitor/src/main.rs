@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use std::{f32, thread};
 
 use can_message::message::{
-    CanMessage, Command, CommandMessage, ParameterValue, ResponseMessage, RunMode,
+    CanMessage, Command, CommandMessage, ParameterValue, ResponseBody, ResponseMessage, RunMode,
 };
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
@@ -75,8 +75,9 @@ fn forward_status(status_send: Sender<ResponseMessage>, socket: CanSocket) {
         match socket.read_frame() {
             Ok(frame) => {
                 let can_msg = can_frame_to_can_message(&frame);
-                let status_msg = ResponseMessage::from(can_msg);
-                let _ = status_send.send(status_msg);
+                if let Ok(status_msg) = ResponseMessage::try_from(can_msg) {
+                    let _ = status_send.send(status_msg);
+                }
             }
             Err(e) => {
                 println!("Failed to read CAN frame: {}", e);
@@ -148,20 +149,40 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         for s in self.status_recv.try_iter() {
-            if self.is_plotting {
-                let value = match self.plot_type {
-                    PlotType::Angle => s.motor_status.angle,
-                    PlotType::Velocity => s.motor_status.velocity,
-                    PlotType::Torque => s.motor_status.torque,
-                };
-                if let Some(now) = Instant::now().checked_duration_since(self.t0) {
-                    if s.host_can_id != 0 {
-                        continue;
+            match s.body {
+                ResponseBody::MotorStatus(x) => {
+                    if self.is_plotting {
+                        let value = match self.plot_type {
+                            PlotType::Angle => x.angle,
+                            PlotType::Velocity => x.velocity,
+                            PlotType::Torque => x.torque,
+                        };
+                        if let Some(now) = Instant::now().checked_duration_since(self.t0) {
+                            if s.host_can_id != 0 {
+                                continue;
+                            }
+                            let timestamp = now.as_micros() as f32 / 1e6;
+                            let new_point = egui_plot::PlotPoint::new(timestamp, value as f64);
+                            self.plot_points.push(new_point);
+                        }
                     }
-                    let timestamp = now.as_micros() as f32 / 1e6;
-                    let new_point = egui_plot::PlotPoint::new(timestamp, value as f64);
-                    self.plot_points.push(new_point);
                 }
+                ResponseBody::ParameterValue(pv) => match pv {
+                    ParameterValue::RunMode(x) => self.run_mode = x,
+                    ParameterValue::AngleRef(x) => {
+                        self.angle = x;
+                        self.angle_string = x.to_string();
+                    }
+                    ParameterValue::SpeedRef(x) => {
+                        self.velocity = x;
+                        self.velocity_string = x.to_string();
+                    }
+                    ParameterValue::IqRef(x) => {
+                        self.torque = x;
+                        self.torque_string = x.to_string();
+                    }
+                    _ => (),
+                },
             }
         }
         ctx.set_pixels_per_point(1.5);

@@ -2,7 +2,10 @@ use can_message::message::{CanMessage, CommandError, CommandMessage, ResponseMes
 use embassy_stm32::can::{self, enums::FrameCreateError};
 
 pub fn convert_response_message(m: ResponseMessage) -> Result<can::Frame, FrameCreateError> {
-    let cm: CanMessage = m.into();
+    // TODO: use a proper error type
+    let cm: CanMessage = m
+        .try_into()
+        .map_err(|_| FrameCreateError::InvalidDataLength)?;
     can::Frame::new_extended(cm.id, &cm.data[0..(cm.length as usize)])
 }
 

@@ -62,8 +62,6 @@ pub struct FocState {
     pub angle_error: f32,
     pub angle_integral: f32,
 
-    pub target_angle: f32,
-    pub target_velocity: f32,
     pub i_ref: f32,
 
     pub i_q: f32,
@@ -89,19 +87,19 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     current_offset: PhaseCurrent,
 
     psu_voltage: f32,
-    torque_limit: Option<f32>,
-    current_limit: Option<f32>,
-    velocity_limit: Option<f32>,
-    current_q_pid: PIDController,
-    current_d_pid: PIDController,
-    angle_pid: PIDController,
-    velocity_pid: PIDController,
+    pub torque_limit: Option<f32>,
+    pub current_limit: Option<f32>,
+    pub velocity_limit: Option<f32>,
+    pub current_q_pid: PIDController,
+    pub current_d_pid: PIDController,
+    pub angle_pid: PIDController,
+    pub velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
-    velocity_filter: LowPassFilter,
-    current_q_filter: LowPassFilter,
-    current_d_filter: LowPassFilter,
-    mode: RunMode,
-    target: Target,
+    pub velocity_filter: LowPassFilter,
+    pub current_q_filter: LowPassFilter,
+    pub current_d_filter: LowPassFilter,
+    pub mode: RunMode,
+    pub target: Target,
     is_running: bool,
 
     f_sincos: Fsincos,
@@ -132,8 +130,6 @@ where
         let state = FocState {
             angle_error: 0.0,
             angle_integral: 0.0,
-            target_angle: 0.0,
-            target_velocity: 0.0,
 
             angle: 0.0,
             angular_change: 0.0,
@@ -413,7 +409,6 @@ where
         let velocity = self.velocity_filter.apply(s.velocity, s.dt);
 
         self.state.angle = s.angle;
-        self.state.target_angle = self.target.angle;
         self.state.filtered_velocity = velocity;
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
@@ -424,14 +419,12 @@ where
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
                 }
-                self.state.target_velocity = target_velocity;
                 let velocity_error = target_velocity - velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Velocity => {
-                self.state.target_velocity = self.target.velocity;
                 let velocity_error = self.target.velocity - velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;

@@ -24,7 +24,9 @@ use crate::{
 
 use crate::gm3506 as motor;
 
-use can_message::message::{Command, MotorStatus, ParameterValue, ResponseMessage};
+use can_message::message::{
+    Command, MotorStatus, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
+};
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
@@ -44,7 +46,10 @@ use embassy_stm32::{
     peripherals::{PA8, PA9, PA10, PB13, PB14, PB15},
     spi as stm32_spi,
 };
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
+use embassy_sync::{
+    blocking_mutex::raw::ThreadModeRawMutex,
+    channel::{Channel, Sender},
+};
 use embassy_time::{Duration, Instant, Timer, WithTimeout};
 
 use embedded_can::Id;
@@ -60,7 +65,7 @@ use foc::{
 use libm::atan2f;
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 3> = Channel::new();
-static STATUS_CHANNEL: Channel<ThreadModeRawMutex, MotorStatus, 64> = Channel::new();
+static RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, ResponseBody, 64> = Channel::new();
 
 type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
@@ -346,8 +351,8 @@ async fn foc_task(
     foc.set_target_torque(0.0);
     foc.enable();
 
-    let command_channel = COMMAND_CHANNEL.receiver();
-    let status_channel = STATUS_CHANNEL.sender();
+    let command_receiver = COMMAND_CHANNEL.receiver();
+    let response_sender = RESPONSE_CHANNEL.sender();
 
     let mut monitor_period: u8 = 10;
     let mut monitor_tick: u8 = 0;
@@ -356,10 +361,14 @@ async fn foc_task(
     let mut phase_current = PhaseCurrent::new(0.0, 0.0, 0.0);
 
     loop {
-        if let Ok(command) = command_channel.try_receive() {
+        if let Ok(command) = command_receiver.try_receive() {
             match command {
                 Command::SetMonitorInterval(period) => monitor_period = period,
-                _ => handle_command(&command, &mut foc),
+                _ => {
+                    let _ = handle_command(&command, &mut foc, &response_sender)
+                        .with_timeout(Duration::from_micros(1))
+                        .await;
+                }
             }
         }
         match sensor.read_async().await {
@@ -376,8 +385,8 @@ async fn foc_task(
                         monitor_tick += 1;
                         if monitor_tick >= monitor_period {
                             let motor_status = build_motor_status(foc.state);
-                            let _ = status_channel
-                                .send(motor_status)
+                            let _ = response_sender
+                                .send(ResponseBody::MotorStatus(motor_status))
                                 .with_timeout(Duration::from_micros(1))
                                 .await;
                             monitor_tick = 0;
@@ -418,12 +427,6 @@ async fn foc_task(
 fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
     let dt_seconds = (dt.as_micros() as f32) / 1e6;
     let freq = (check_count as f32) / dt_seconds;
-
-    info!(
-        "TARGET: a={}, v={}, t={}, ",
-        state.target_angle, state.target_velocity, state.i_ref,
-    );
-
     info!(
         "MEASURED: a={}, v={}, t={}, {} Hz",
         state.angle, state.filtered_velocity, state.v_q, freq
@@ -433,13 +436,13 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
 #[embassy_executor::task]
 async fn can_tx_task(mut can_tx: CanTx<'static>) {
     let can_id: u8 = 0x0F;
-    let status_receiver = STATUS_CHANNEL.receiver();
+    let response_receiver = RESPONSE_CHANNEL.receiver();
     let host_id: Option<u8> = Some(0);
 
     loop {
-        let s = status_receiver.receive().await;
+        let r = response_receiver.receive().await;
         if let Some(h) = host_id {
-            let message = ResponseMessage::new(can_id, h, s);
+            let message = ResponseMessage::new(can_id, h, r);
             if let Ok(frame) = convert_response_message(message) {
                 can_tx.write(&frame).await;
             }
@@ -479,15 +482,16 @@ async fn can_rx_task(mut can_rx: CanRx<'static>) {
     }
 }
 
-fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
+async fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
     command: &Command,
     foc: &mut FocController<Fsincos>,
+    response_sender: &Sender<'static, ThreadModeRawMutex, ResponseBody, 64>,
 ) {
     match command {
         Command::Enable => foc.enable(),
         Command::Stop => foc.stop(),
 
-        Command::SetParameter(ParameterValue::RunMode(m)) => foc.set_run_mode(convert_run_mode(m)),
+        Command::SetParameter(ParameterValue::RunMode(m)) => foc.set_run_mode(decode_run_mode(m)),
         Command::SetParameter(ParameterValue::AngleRef(p)) => foc.set_target_angle(*p),
         Command::SetParameter(ParameterValue::SpeedRef(v)) => foc.set_target_velocity(*v),
         Command::SetParameter(ParameterValue::IqRef(t)) => foc.set_target_torque(*t),
@@ -506,16 +510,59 @@ fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
         Command::SetParameter(ParameterValue::Spring(k)) => foc.set_spring(*k),
         Command::SetParameter(ParameterValue::Damping(b)) => foc.set_damping(*b),
 
+        Command::GetParameter(p) => {
+            let pv = match p {
+                ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
+                ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
+                ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
+                ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
+                ParameterIndex::Speed => ParameterValue::Speed(foc.state.filtered_velocity),
+                ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
+                ParameterIndex::SpeedLimit => {
+                    ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
+                }
+                ParameterIndex::TorqueLimit => {
+                    ParameterValue::TorqueLimit(foc.torque_limit.unwrap_or(0.0))
+                }
+                ParameterIndex::Iq => ParameterValue::Iq(foc.state.i_q),
+
+                ParameterIndex::AngleKp => ParameterValue::AngleKp(foc.angle_pid.gains.p),
+                ParameterIndex::SpeedKp => ParameterValue::SpeedKp(foc.velocity_pid.gains.p),
+                ParameterIndex::SpeedKi => ParameterValue::SpeedKi(foc.velocity_pid.gains.i),
+
+                ParameterIndex::CurrentKp => ParameterValue::CurrentKp(foc.current_q_pid.gains.p),
+                ParameterIndex::CurrentKi => ParameterValue::CurrentKi(foc.current_q_pid.gains.i),
+                ParameterIndex::CurrentFilter => {
+                    ParameterValue::CurrentFilter(foc.current_q_filter.time_constant)
+                }
+                ParameterIndex::CurrentLimit => {
+                    ParameterValue::CurrentLimit(foc.current_limit.unwrap_or(0.0))
+                }
+                ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
+                ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
+            };
+            let body = ResponseBody::ParameterValue(pv);
+            response_sender.send(body).await;
+        }
         _ => (),
     }
 }
 
-fn convert_run_mode(m: &can_message::message::RunMode) -> foc::controller::RunMode {
+fn decode_run_mode(m: &can_message::message::RunMode) -> foc::controller::RunMode {
     match m {
         can_message::message::RunMode::Impedance => foc::controller::RunMode::Impedance,
         can_message::message::RunMode::Angle => foc::controller::RunMode::Angle,
         can_message::message::RunMode::Velocity => foc::controller::RunMode::Velocity,
         can_message::message::RunMode::Torque => foc::controller::RunMode::Torque,
+    }
+}
+
+fn encode_run_mode(m: &foc::controller::RunMode) -> can_message::message::RunMode {
+    match m {
+        foc::controller::RunMode::Impedance => can_message::message::RunMode::Impedance,
+        foc::controller::RunMode::Angle => can_message::message::RunMode::Angle,
+        foc::controller::RunMode::Velocity => can_message::message::RunMode::Velocity,
+        foc::controller::RunMode::Torque => can_message::message::RunMode::Torque,
     }
 }
 

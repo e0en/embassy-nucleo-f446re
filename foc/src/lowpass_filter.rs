@@ -1,5 +1,5 @@
 pub struct LowPassFilter {
-    time_constant: f32,
+    pub time_constant: f32,
     last_value: Option<f32>,
 }
 

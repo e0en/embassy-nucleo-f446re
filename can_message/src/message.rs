@@ -30,7 +30,13 @@ pub struct CanMessage {
 pub struct ResponseMessage {
     pub motor_can_id: u8,
     pub host_can_id: u8,
-    pub motor_status: MotorStatus,
+    pub body: ResponseBody,
+}
+
+#[derive(Copy, Clone)]
+pub enum ResponseBody {
+    MotorStatus(MotorStatus),
+    ParameterValue(ParameterValue),
 }
 
 #[repr(u16)]
@@ -83,6 +89,7 @@ impl TryFrom<u16> for ParameterIndex {
     }
 }
 
+#[derive(Copy, Clone)]
 pub enum ParameterValue {
     RunMode(RunMode),
     IqRef(f32),
@@ -193,11 +200,11 @@ impl From<ParameterValue> for [u8; 8] {
 }
 
 impl ResponseMessage {
-    pub fn new(motor_can_id: u8, host_can_id: u8, motor_status: MotorStatus) -> Self {
+    pub fn new(motor_can_id: u8, host_can_id: u8, body: ResponseBody) -> Self {
         Self {
             motor_can_id,
             host_can_id,
-            motor_status,
+            body,
         }
     }
 }
@@ -258,26 +265,46 @@ const TORQUE_MAX: f32 = 100.0;
 const TEMPERATURE_MIN: f32 = -100.0;
 const TEMPERATURE_MAX: f32 = 100.0;
 
-impl From<CanMessage> for ResponseMessage {
-    fn from(val: CanMessage) -> Self {
-        let motor_status = MotorStatus::from(val.data);
-        ResponseMessage {
+impl TryFrom<CanMessage> for ResponseMessage {
+    type Error = ();
+    fn try_from(val: CanMessage) -> Result<Self, Self::Error> {
+        let response_type = val.id >> 24;
+        let body = match response_type {
+            0x02 => {
+                let motor_status = MotorStatus::from(val.data);
+                ResponseBody::MotorStatus(motor_status)
+            }
+            0x11 => {
+                let pv = ParameterValue::try_from(val.data)?;
+                ResponseBody::ParameterValue(pv)
+            }
+            _ => return Err(()),
+        };
+        Ok(ResponseMessage {
             motor_can_id: (val.id >> 8 & 0xFF) as u8,
             host_can_id: (val.id & 0xFF) as u8,
-            motor_status,
-        }
+            body,
+        })
     }
 }
 
-impl From<ResponseMessage> for CanMessage {
-    fn from(val: ResponseMessage) -> Self {
-        let id = (2 << 24) | (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
-        let data = val.motor_status.into();
-        CanMessage {
+impl TryFrom<ResponseMessage> for CanMessage {
+    type Error = ();
+    fn try_from(val: ResponseMessage) -> Result<Self, Self::Error> {
+        let response_type = match val.body {
+            ResponseBody::MotorStatus(_) => 0x02,
+            ResponseBody::ParameterValue(_) => 0x11,
+        };
+        let id = (response_type << 24) | (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
+        let data = match val.body {
+            ResponseBody::MotorStatus(x) => x.into(),
+            ResponseBody::ParameterValue(x) => x.into(),
+        };
+        Ok(CanMessage {
             id,
             data,
             length: 8,
-        }
+        })
     }
 }
 
