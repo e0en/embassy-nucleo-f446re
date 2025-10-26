@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use std::{f32, thread};
 
 use can_message::message::{
-    CanMessage, Command, CommandMessage, ParameterValue, ResponseBody, ResponseMessage, RunMode,
+    CanMessage, Command, CommandMessage, ParameterIndex, ParameterValue, ResponseBody,
+    ResponseMessage, RunMode,
 };
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
@@ -94,11 +95,25 @@ struct MyApp {
 
     angle_string: String,
     velocity_string: String,
-    torque_string: String,
+    iq_string: String,
+
+    angle_kp_string: String,
+    speed_kp_string: String,
+    speed_ki_string: String,
+
+    iq_kp_string: String,
+    iq_ki_string: String,
 
     angle: f32,
     velocity: f32,
-    torque: f32,
+    iq: f32,
+
+    angle_kp: f32,
+    speed_kp: f32,
+    speed_ki: f32,
+
+    iq_kp: f32,
+    iq_ki: f32,
 
     run_mode: RunMode,
 
@@ -120,21 +135,47 @@ enum PlotType {
 
 impl MyApp {
     fn new(command_send: Sender<Command>, status_recv: Receiver<ResponseMessage>) -> Self {
-        let position = 0.0;
+        let angle = 0.0;
         let velocity = 0.0;
-        let torque = 0.0;
+        let iq = 0.0;
+
+        let angle_kp = 0.0;
+        let speed_kp = 0.0;
+        let speed_ki = 0.0;
+        let iq_kp = 0.0;
+        let iq_ki = 0.0;
+
+        let _ = command_send.send(Command::GetParameter(ParameterIndex::AngleKp));
+        let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKp));
+        let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKi));
+        let _ = command_send.send(Command::GetParameter(ParameterIndex::CurrentKp));
+        let _ = command_send.send(Command::GetParameter(ParameterIndex::CurrentKi));
 
         Self {
             command_send,
             status_recv,
 
-            angle_string: position.to_string(),
+            angle_string: angle.to_string(),
             velocity_string: velocity.to_string(),
-            torque_string: torque.to_string(),
+            iq_string: iq.to_string(),
 
-            angle: position,
+            angle_kp_string: angle_kp.to_string(),
+            speed_kp_string: speed_kp.to_string(),
+            speed_ki_string: speed_ki.to_string(),
+
+            iq_kp_string: iq_kp.to_string(),
+            iq_ki_string: iq_ki.to_string(),
+
+            angle,
             velocity,
-            torque,
+            iq,
+
+            angle_kp,
+            speed_kp,
+            speed_ki,
+
+            iq_kp,
+            iq_ki,
 
             plot_type: PlotType::Angle,
             run_mode: RunMode::Impedance,
@@ -179,8 +220,28 @@ impl eframe::App for MyApp {
                         self.velocity_string = x.to_string();
                     }
                     ParameterValue::IqRef(x) => {
-                        self.torque = x;
-                        self.torque_string = x.to_string();
+                        self.iq = x;
+                        self.iq_string = x.to_string();
+                    }
+                    ParameterValue::AngleKp(x) => {
+                        self.angle_kp = x;
+                        self.angle_kp_string = x.to_string();
+                    }
+                    ParameterValue::SpeedKp(x) => {
+                        self.speed_kp = x;
+                        self.speed_kp_string = x.to_string();
+                    }
+                    ParameterValue::SpeedKi(x) => {
+                        self.speed_ki = x;
+                        self.speed_ki_string = x.to_string();
+                    }
+                    ParameterValue::CurrentKp(x) => {
+                        self.iq_kp = x;
+                        self.iq_kp_string = x.to_string();
+                    }
+                    ParameterValue::CurrentKi(x) => {
+                        self.iq_ki = x;
+                        self.iq_ki_string = x.to_string();
                     }
                     _ => (),
                 },
@@ -210,7 +271,7 @@ impl eframe::App for MyApp {
                 .num_columns(3)
                 .spacing([40.0, 4.0])
                 .show(ui, |ui| {
-                    let name_label = ui.label("Angle");
+                    let name_label = ui.label("Angle Ref");
                     ui.text_edit_singleline(&mut self.angle_string)
                         .labelled_by(name_label.id);
 
@@ -233,7 +294,7 @@ impl eframe::App for MyApp {
 
                     ui.end_row();
 
-                    let name_label = ui.label("Velocity");
+                    let name_label = ui.label("Velocity Ref");
                     ui.text_edit_singleline(&mut self.velocity_string)
                         .labelled_by(name_label.id);
 
@@ -255,13 +316,13 @@ impl eframe::App for MyApp {
                     };
                     ui.end_row();
 
-                    let name_label = ui.label("Torque");
-                    ui.text_edit_singleline(&mut self.torque_string)
+                    let name_label = ui.label("I_q Ref");
+                    ui.text_edit_singleline(&mut self.iq_string)
                         .labelled_by(name_label.id);
 
                     let mut is_button_active = true;
-                    match self.torque_string.parse::<f32>() {
-                        Ok(n) => self.torque = n,
+                    match self.iq_string.parse::<f32>() {
+                        Ok(n) => self.iq = n,
                         _ => {
                             is_button_active = false;
                         }
@@ -273,9 +334,128 @@ impl eframe::App for MyApp {
                     {
                         let _ = self
                             .command_send
-                            .send(Command::SetParameter(ParameterValue::IqRef(self.torque)));
+                            .send(Command::SetParameter(ParameterValue::IqRef(self.iq)));
                     };
 
+                    ui.end_row();
+
+                    let name_label = ui.label("Angle K_p");
+                    ui.text_edit_singleline(&mut self.angle_kp_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.angle_kp_string.parse::<f32>() {
+                        Ok(n) => self.angle_kp = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ =
+                            self.command_send
+                                .send(Command::SetParameter(ParameterValue::AngleKp(
+                                    self.angle_kp,
+                                )));
+                    };
+
+                    ui.end_row();
+
+                    let name_label = ui.label("Speed K_p");
+                    ui.text_edit_singleline(&mut self.speed_kp_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.speed_kp_string.parse::<f32>() {
+                        Ok(n) => self.speed_kp = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ =
+                            self.command_send
+                                .send(Command::SetParameter(ParameterValue::SpeedKp(
+                                    self.speed_kp,
+                                )));
+                    };
+
+                    ui.end_row();
+
+                    let name_label = ui.label("Speed K_i");
+                    ui.text_edit_singleline(&mut self.speed_ki_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.speed_ki_string.parse::<f32>() {
+                        Ok(n) => self.speed_ki = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ =
+                            self.command_send
+                                .send(Command::SetParameter(ParameterValue::SpeedKi(
+                                    self.speed_ki,
+                                )));
+                    };
+                    ui.end_row();
+
+                    let name_label = ui.label("Current K_p");
+                    ui.text_edit_singleline(&mut self.iq_kp_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.iq_kp_string.parse::<f32>() {
+                        Ok(n) => self.iq_kp = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::CurrentKp(self.iq_kp)));
+                    };
+
+                    ui.end_row();
+
+                    let name_label = ui.label("Current K_i");
+                    ui.text_edit_singleline(&mut self.iq_ki_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.iq_ki_string.parse::<f32>() {
+                        Ok(n) => self.iq_ki = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::CurrentKi(self.iq_ki)));
+                    };
                     ui.end_row();
                 });
 
