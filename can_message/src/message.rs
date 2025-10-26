@@ -98,7 +98,7 @@ impl From<CanMessage> for StatusMessage {
 
 impl From<StatusMessage> for CanMessage {
     fn from(val: StatusMessage) -> Self {
-        let id = (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
+        let id = (2 << 24) | (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
         let data = val.motor_status.into();
         CanMessage {
             id,
