@@ -25,7 +25,8 @@ use crate::{
 use crate::gm3506 as motor;
 
 use can_message::message::{
-    Command, MotorStatus, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
+    Command, FeedbackType, MotorCurrent, MotorStatus, ParameterIndex, ParameterValue, ResponseBody,
+    ResponseMessage,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -292,6 +293,8 @@ async fn foc_task(
 
     if !use_current_sensing {
         foc.disable_current_sensing();
+    } else {
+        foc.enable_current_sensing();
     }
 
     gate_driver.turn_on();
@@ -345,6 +348,8 @@ async fn foc_task(
     {
         foc.set_current_phase_bias(offset);
         info!("current phase bias = {}", offset);
+
+        find_motor_impedance(&mut foc, &mut driver, &mut p_adc, csa_gain, &mut sensor).await;
     }
 
     foc.set_run_mode(RunMode::Torque);
@@ -354,8 +359,9 @@ async fn foc_task(
     let command_receiver = COMMAND_CHANNEL.receiver();
     let response_sender = RESPONSE_CHANNEL.sender();
 
-    let mut monitor_period: u8 = 10;
-    let mut monitor_tick: u8 = 0;
+    let mut feedback_type = FeedbackType::Status;
+    let mut feedback_period: u8 = 10;
+    let mut feedback_tick: u8 = 0;
     let mut check_count: usize = 0;
     let mut last_logged_at = Instant::now();
     let mut phase_current = PhaseCurrent::new(0.0, 0.0, 0.0);
@@ -363,10 +369,11 @@ async fn foc_task(
     loop {
         if let Ok(command) = command_receiver.try_receive() {
             match command {
-                Command::SetMonitorInterval(period) => monitor_period = period,
+                Command::SetFeedbackInterval(period) => feedback_period = period,
+                Command::SetFeedbackType(typ) => feedback_type = typ,
                 _ => {
                     let _ = handle_command(&command, &mut foc, &response_sender)
-                        .with_timeout(Duration::from_micros(1))
+                        .with_timeout(Duration::from_micros(5))
                         .await;
                 }
             }
@@ -382,14 +389,28 @@ async fn foc_task(
                     Ok(duty) => {
                         driver.run(duty);
 
-                        monitor_tick += 1;
-                        if monitor_tick >= monitor_period {
-                            let motor_status = build_motor_status(foc.state);
-                            let _ = response_sender
-                                .send(ResponseBody::MotorStatus(motor_status))
-                                .with_timeout(Duration::from_micros(1))
-                                .await;
-                            monitor_tick = 0;
+                        feedback_tick += 1;
+                        if feedback_tick >= feedback_period {
+                            match feedback_type {
+                                FeedbackType::Status => {
+                                    let motor_status = build_motor_status(foc.state);
+                                    let _ = response_sender
+                                        .send(ResponseBody::MotorStatus(motor_status))
+                                        .with_timeout(Duration::from_micros(1))
+                                        .await;
+                                }
+                                FeedbackType::Current => {
+                                    let motor_current = MotorCurrent {
+                                        i_q: foc.state.i_q,
+                                        i_d: foc.state.i_d,
+                                    };
+                                    let _ = response_sender
+                                        .send(ResponseBody::MotorCurrent(motor_current))
+                                        .with_timeout(Duration::from_micros(1))
+                                        .await;
+                                }
+                            };
+                            feedback_tick = 0;
                         }
 
                         check_count += 1;
@@ -422,6 +443,161 @@ async fn foc_task(
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
     }
+}
+
+#[allow(dead_code)]
+pub struct MotorImpedance {
+    r_s: f32,
+    l_d: f32,
+    l_q: f32,
+}
+
+async fn find_motor_impedance<'a, Fsincos, TIM, T>(
+    foc: &mut FocController<Fsincos>,
+    driver: &mut PwmDriver<'a, TIM>,
+    p_adc: &mut adc::DummyAdc<T>,
+    csa_gain: drv8316::CsaGain,
+    sensor: &mut As5047P<'a>,
+) -> MotorImpedance
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+    TIM: AdvancedInstance4Channel,
+    T: stm32_adc::Instance + AdcSelector,
+{
+    let n_sample = 2048;
+    let test_voltage = 4.0;
+    let test_frequency = 512.0;
+    let _t0 = Instant::now().as_micros();
+
+    let mut t_buffer = [0f32; 2048];
+    let mut i_buffer = [0f32; 2048];
+    let mut v_buffer = [0f32; 2048];
+
+    // 1. use v_q = 0.0, v_d = sin(2 * pi * f * t to measure L_d)
+    info!("Acquiring L_d...");
+    for i in 0..(n_sample * 2) {
+        let now = Instant::now().as_micros();
+        let t = ((now - _t0) as f32) / 1e6;
+        let v_d = test_voltage * libm::sinf(2.0 * core::f32::consts::PI * test_frequency * t);
+        if let Ok(reading) = sensor.read_async().await {
+            let angle = reading.angle;
+            let electrical_angle = foc.to_electrical_angle(angle);
+            if let Ok(duty) = foc.get_vd_duty_cycle(v_d, angle) {
+                driver.run(duty);
+                if i >= n_sample {
+                    let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+                    let phase_current =
+                        drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+                    let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
+                    t_buffer[i - n_sample] = t;
+                    i_buffer[i - n_sample] = i_d;
+                    v_buffer[i - n_sample] = v_d;
+                }
+            }
+        }
+    }
+
+    let l_d = calculate_inductance(&v_buffer, &i_buffer, &t_buffer, test_frequency);
+    info!("L_d = {}", l_d);
+
+    // 2. use v_q = sin(2 * pi * f * t, v_d = 0.0) to measure L_q
+    info!("Acquiring L_q...");
+    for i in 0..(n_sample * 2) {
+        let now = Instant::now().as_micros();
+        let t = ((now - _t0) as f32) / 1e6;
+        let v_q = test_voltage * libm::sinf(2.0 * core::f32::consts::PI * test_frequency * t);
+        if let Ok(reading) = sensor.read_async().await {
+            let angle = reading.angle;
+            let electrical_angle = foc.to_electrical_angle(angle);
+            if let Ok(duty) = foc.get_vq_duty_cycle(v_q, angle) {
+                driver.run(duty);
+                if i >= n_sample {
+                    let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+                    let phase_current =
+                        drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+                    let (i_q, _) = foc.calculate_pq_currents(phase_current, electrical_angle);
+                    t_buffer[i - n_sample] = t;
+                    i_buffer[i - n_sample] = i_q;
+                    v_buffer[i - n_sample] = v_q;
+                }
+            }
+        }
+    }
+    let l_q = calculate_inductance(&v_buffer, &i_buffer, &t_buffer, test_frequency);
+    info!("L_q = {}", l_q);
+
+    // 3. use v_q = 0.0, v_d = 1.0 V to measure R_s
+    info!("Acquiring R_s...");
+    let mut i_avg = 0.0;
+    for i in 0..(n_sample * 2) {
+        let v_d = 1.0;
+        if let Ok(reading) = sensor.read_async().await {
+            let angle = reading.angle;
+            let electrical_angle = foc.to_electrical_angle(angle);
+            if let Ok(duty) = foc.get_vd_duty_cycle(v_d, angle) {
+                driver.run(duty);
+                let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+                let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+                let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
+                if i >= n_sample {
+                    i_avg += i_d / (n_sample as f32);
+                }
+            }
+        }
+    }
+    let r_s = 1.0 / i_avg;
+    info!("R_s = {}", r_s);
+
+    let bandwidth = 300.0;
+    let omega = core::f32::consts::TAU * bandwidth;
+    let kp = l_q * omega;
+    let ki = r_s * omega;
+    info!("set K_p = {}, K_i = {}", kp, ki);
+
+    MotorImpedance { l_d, l_q, r_s }
+}
+
+fn calculate_inductance(
+    v_buffer: &[f32],
+    i_buffer: &[f32],
+    t_buffer: &[f32],
+    test_frequency: f32,
+) -> f32 {
+    let n_sample = v_buffer.len();
+
+    let mut v_mean = 0.0;
+    let mut i_mean = 0.0;
+    for i in 0..n_sample {
+        v_mean += v_buffer[i] / (n_sample as f32);
+        i_mean += i_buffer[i] / (n_sample as f32);
+    }
+
+    let mut vc = 0.0;
+    let mut vs = 0.0;
+    let mut ic = 0.0;
+    let mut is = 0.0;
+    for i in 0..n_sample {
+        let angle = test_frequency * t_buffer[i];
+        let v = v_buffer[i] - v_mean;
+        let i = i_buffer[i] - i_mean;
+
+        vc += v * libm::cosf(angle);
+        vs += v * libm::sinf(angle);
+        ic += i * libm::cosf(angle);
+        is += i * libm::sinf(angle);
+    }
+
+    let norm = 2.0 / (n_sample as f32);
+    vc *= norm;
+    vs *= norm;
+    ic *= norm;
+    is *= norm;
+    let v_mag = libm::sqrtf(vc * vc + vs * vs);
+    let i_mag = libm::sqrtf(ic * ic + is * is);
+    let phi = libm::atan2f(vs, vc) - libm::atan2f(is, ic);
+    let z_mag = v_mag / i_mag;
+
+    (z_mag * libm::sinf(phi) / test_frequency).abs()
 }
 
 fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
@@ -491,7 +667,10 @@ async fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
         Command::Enable => foc.enable(),
         Command::Stop => foc.stop(),
 
-        Command::SetParameter(ParameterValue::RunMode(m)) => foc.set_run_mode(decode_run_mode(m)),
+        Command::SetParameter(ParameterValue::RunMode(m)) => {
+            info!("received runmode {}", *m as u8);
+            foc.set_run_mode(decode_run_mode(m));
+        }
         Command::SetParameter(ParameterValue::AngleRef(p)) => foc.set_target_angle(*p),
         Command::SetParameter(ParameterValue::SpeedRef(v)) => foc.set_target_velocity(*v),
         Command::SetParameter(ParameterValue::IqRef(t)) => foc.set_target_torque(*t),
@@ -509,8 +688,13 @@ async fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
 
         Command::SetParameter(ParameterValue::Spring(k)) => foc.set_spring(*k),
         Command::SetParameter(ParameterValue::Damping(b)) => foc.set_damping(*b),
+        Command::SetParameter(ParameterValue::VqRef(v)) => {
+            info!("received target Vq {}", v);
+            foc.set_target_voltage(*v);
+        }
 
         Command::GetParameter(p) => {
+            info!("parameter requested {}", *p as u16);
             let pv = match p {
                 ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
                 ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
@@ -540,6 +724,7 @@ async fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
                 }
                 ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
                 ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
+                ParameterIndex::VqRef => ParameterValue::Damping(foc.target.voltage),
             };
             let body = ResponseBody::ParameterValue(pv);
             response_sender.send(body).await;
@@ -554,6 +739,7 @@ fn decode_run_mode(m: &can_message::message::RunMode) -> foc::controller::RunMod
         can_message::message::RunMode::Angle => foc::controller::RunMode::Angle,
         can_message::message::RunMode::Velocity => foc::controller::RunMode::Velocity,
         can_message::message::RunMode::Torque => foc::controller::RunMode::Torque,
+        can_message::message::RunMode::Voltage => foc::controller::RunMode::Voltage,
     }
 }
 
@@ -563,6 +749,7 @@ fn encode_run_mode(m: &foc::controller::RunMode) -> can_message::message::RunMod
         foc::controller::RunMode::Angle => can_message::message::RunMode::Angle,
         foc::controller::RunMode::Velocity => can_message::message::RunMode::Velocity,
         foc::controller::RunMode::Torque => can_message::message::RunMode::Torque,
+        foc::controller::RunMode::Voltage => can_message::message::RunMode::Voltage,
     }
 }
 
@@ -623,7 +810,7 @@ async fn main(spawner: Spawner) {
     info!("Timer frequency: {}", timer.get_frequency());
 
     unwrap!(spawner.spawn(foc_task(
-        false, &SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc
+        true, &SPI, cs_out, cs_drv, drvoff_pin, timer, p_adc
     )));
 
     unwrap!(spawner.spawn(can_rx_task(can_rx)));

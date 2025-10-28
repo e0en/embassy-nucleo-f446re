@@ -2,12 +2,13 @@
 use std::fs::File;
 use std::io::prelude::Write;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 use std::{f32, thread};
 
 use can_message::message::{
-    CanMessage, Command, CommandMessage, ParameterIndex, ParameterValue, ResponseBody,
-    ResponseMessage, RunMode,
+    CanMessage, Command, CommandMessage, FeedbackType, ParameterIndex, ParameterValue,
+    ResponseBody, ResponseMessage, RunMode,
 };
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
@@ -96,6 +97,7 @@ struct MyApp {
     angle_string: String,
     velocity_string: String,
     iq_string: String,
+    vq_string: String,
 
     angle_kp_string: String,
     speed_kp_string: String,
@@ -107,6 +109,7 @@ struct MyApp {
     angle: f32,
     velocity: f32,
     iq: f32,
+    vq: f32,
 
     angle_kp: f32,
     speed_kp: f32,
@@ -118,7 +121,9 @@ struct MyApp {
     run_mode: RunMode,
 
     plot_type: PlotType,
-    plot_points: Vec<egui_plot::PlotPoint>,
+    plot_points_1: [egui_plot::PlotPoint; 100_000],
+    plot_points_2: [egui_plot::PlotPoint; 100_000],
+    n_plot_points: usize,
     is_plotting: bool,
 
     file_dialog: egui_file_dialog::FileDialog,
@@ -131,6 +136,7 @@ enum PlotType {
     Angle,
     Velocity,
     Torque,
+    Current,
 }
 
 impl MyApp {
@@ -138,6 +144,7 @@ impl MyApp {
         let angle = 0.0;
         let velocity = 0.0;
         let iq = 0.0;
+        let vq = 0.0;
 
         let angle_kp = 0.0;
         let speed_kp = 0.0;
@@ -146,10 +153,15 @@ impl MyApp {
         let iq_ki = 0.0;
 
         let _ = command_send.send(Command::GetParameter(ParameterIndex::AngleKp));
+        sleep(Duration::from_millis(1));
         let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKp));
+        sleep(Duration::from_millis(1));
         let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKi));
+        sleep(Duration::from_millis(1));
         let _ = command_send.send(Command::GetParameter(ParameterIndex::CurrentKp));
+        sleep(Duration::from_millis(1));
         let _ = command_send.send(Command::GetParameter(ParameterIndex::CurrentKi));
+        sleep(Duration::from_millis(1));
 
         Self {
             command_send,
@@ -158,6 +170,7 @@ impl MyApp {
             angle_string: angle.to_string(),
             velocity_string: velocity.to_string(),
             iq_string: iq.to_string(),
+            vq_string: vq.to_string(),
 
             angle_kp_string: angle_kp.to_string(),
             speed_kp_string: speed_kp.to_string(),
@@ -169,6 +182,7 @@ impl MyApp {
             angle,
             velocity,
             iq,
+            vq,
 
             angle_kp,
             speed_kp,
@@ -179,7 +193,9 @@ impl MyApp {
 
             plot_type: PlotType::Angle,
             run_mode: RunMode::Impedance,
-            plot_points: vec![],
+            plot_points_1: [egui_plot::PlotPoint::new(0.0, 0.0); 100_000],
+            plot_points_2: [egui_plot::PlotPoint::new(0.0, 0.0); 100_000],
+            n_plot_points: 0,
             is_plotting: false,
 
             file_dialog: egui_file_dialog::FileDialog::new(),
@@ -194,18 +210,52 @@ impl eframe::App for MyApp {
             match s.body {
                 ResponseBody::MotorStatus(x) => {
                     if self.is_plotting {
-                        let value = match self.plot_type {
+                        if self.plot_type == PlotType::Current {
+                            continue;
+                        }
+                        let y = match self.plot_type {
                             PlotType::Angle => x.angle,
                             PlotType::Velocity => x.velocity,
                             PlotType::Torque => x.torque,
+                            PlotType::Current => panic!(),
                         };
                         if let Some(now) = Instant::now().checked_duration_since(self.t0) {
                             if s.host_can_id != 0 {
                                 continue;
                             }
-                            let timestamp = now.as_micros() as f32 / 1e6;
-                            let new_point = egui_plot::PlotPoint::new(timestamp, value as f64);
-                            self.plot_points.push(new_point);
+                            let x = now.as_micros() as f32 / 1e6;
+                            let new_point = egui_plot::PlotPoint::new(x, y as f64);
+                            self.plot_points_1[self.n_plot_points] = new_point;
+                            self.n_plot_points += 1;
+                            if self.n_plot_points == 100_000 {
+                                self.n_plot_points = 0;
+                            }
+                        }
+                    }
+                }
+                ResponseBody::MotorCurrent(x) => {
+                    if self.is_plotting {
+                        if self.plot_type != PlotType::Current {
+                            continue;
+                        }
+                        let (y1, y2) = match self.plot_type {
+                            PlotType::Current => (x.i_q, x.i_d),
+                            _ => panic!(),
+                        };
+
+                        if let Some(now) = Instant::now().checked_duration_since(self.t0) {
+                            if s.host_can_id != 0 {
+                                continue;
+                            }
+                            let x = now.as_micros() as f32 / 1e6;
+                            let p1 = egui_plot::PlotPoint::new(x, y1 as f64);
+                            let p2 = egui_plot::PlotPoint::new(x, y2 as f64);
+                            self.plot_points_1[self.n_plot_points] = p1;
+                            self.plot_points_2[self.n_plot_points] = p2;
+                            self.n_plot_points += 1;
+                            if self.n_plot_points == 100_000 {
+                                self.n_plot_points = 0;
+                            }
                         }
                     }
                 }
@@ -258,6 +308,7 @@ impl eframe::App for MyApp {
                 ui.selectable_value(&mut self.run_mode, RunMode::Angle, "Angle");
                 ui.selectable_value(&mut self.run_mode, RunMode::Velocity, "Velocity");
                 ui.selectable_value(&mut self.run_mode, RunMode::Torque, "Torque");
+                ui.selectable_value(&mut self.run_mode, RunMode::Voltage, "Voltage");
             });
             if old_mode != self.run_mode {
                 let _ = self
@@ -335,6 +386,29 @@ impl eframe::App for MyApp {
                         let _ = self
                             .command_send
                             .send(Command::SetParameter(ParameterValue::IqRef(self.iq)));
+                    };
+
+                    ui.end_row();
+
+                    let name_label = ui.label("V_q Ref");
+                    ui.text_edit_singleline(&mut self.vq_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.vq_string.parse::<f32>() {
+                        Ok(n) => self.vq = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::VqRef(self.vq)));
                     };
 
                     ui.end_row();
@@ -472,21 +546,31 @@ impl eframe::App for MyApp {
                 ui.selectable_value(&mut self.plot_type, PlotType::Angle, "Angle");
                 ui.selectable_value(&mut self.plot_type, PlotType::Velocity, "Velocity");
                 ui.selectable_value(&mut self.plot_type, PlotType::Torque, "Torque");
+                ui.selectable_value(&mut self.plot_type, PlotType::Current, "Current");
             });
             if before != self.plot_type {
-                self.plot_points.clear();
+                if self.plot_type == PlotType::Current {
+                    let _ = self
+                        .command_send
+                        .send(Command::SetFeedbackType(FeedbackType::Current));
+                } else {
+                    let _ = self
+                        .command_send
+                        .send(Command::SetFeedbackType(FeedbackType::Status));
+                }
+                self.n_plot_points = 0;
             }
             if ui.button("Plot").clicked() {
                 if !self.is_plotting {
-                    self.plot_points.clear();
+                    self.n_plot_points = 0;
                 }
                 self.is_plotting = !self.is_plotting;
             }
 
-            let export_txt = format!("Export {} samples", self.plot_points.len());
+            let export_txt = format!("Export {} samples", self.plot_points_1.len());
             if ui
                 .add_enabled(
-                    !self.plot_points.is_empty(),
+                    !self.plot_points_1.is_empty(),
                     egui::Button::new(export_txt.as_str()),
                 )
                 .clicked()
@@ -497,20 +581,31 @@ impl eframe::App for MyApp {
             if let Some(path) = self.file_dialog.update(ctx).picked()
                 && let Ok(mut file) = File::open(path)
             {
-                for p in &self.plot_points {
+                for i in 0..self.n_plot_points {
+                    let p = self.plot_points_1[i];
                     let line = format!("{},{}\n", p.x, p.y);
                     let _ = file.write_all(line.as_bytes());
                 }
             }
 
             egui_plot::Plot::new("plot").show(ui, |plot_ui| {
-                let points = egui_plot::PlotPoints::Borrowed(&self.plot_points);
-                let line = egui_plot::Line::new("Sine", points)
-                    .name("Sine")
+                let points_1 =
+                    egui_plot::PlotPoints::Borrowed(&self.plot_points_1[0..self.n_plot_points]);
+                let line_1 = egui_plot::Line::new("y1", points_1)
+                    .name("y1")
                     .style(egui_plot::LineStyle::Solid)
                     .color(egui::Color32::RED)
                     .width(2.0);
-                plot_ui.line(line);
+                plot_ui.line(line_1);
+
+                let points_2 =
+                    egui_plot::PlotPoints::Borrowed(&self.plot_points_2[0..self.n_plot_points]);
+                let line_2 = egui_plot::Line::new("y2", points_2)
+                    .name("y2")
+                    .style(egui_plot::LineStyle::Solid)
+                    .color(egui::Color32::GREEN)
+                    .width(2.0);
+                plot_ui.line(line_2);
             });
             ctx.request_repaint();
         });

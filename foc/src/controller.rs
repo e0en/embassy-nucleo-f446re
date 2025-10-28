@@ -25,14 +25,16 @@ pub struct Target {
     pub torque: f32,
     pub spring: f32,
     pub damping: f32,
+    pub voltage: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
     Angle,
     Velocity,
     Torque,
     Impedance,
+    Voltage,
 }
 
 #[derive(Clone, Copy)]
@@ -186,6 +188,7 @@ where
                 torque: 0.0,
                 spring: 0.0,
                 damping: 0.0,
+                voltage: 0.0,
             },
             is_running: false,
             f_sincos,
@@ -331,6 +334,10 @@ where
         self.target.damping = damping;
     }
 
+    pub fn set_target_voltage(&mut self, v_q: f32) {
+        self.target.voltage = v_q;
+    }
+
     pub fn set_velocity_limit(&mut self, velocity: f32) {
         self.velocity_limit = Some(velocity);
     }
@@ -440,6 +447,7 @@ where
                     + self.target.torque
             }
             RunMode::Torque => self.target.torque,
+            RunMode::Voltage => self.target.voltage,
         };
 
         if self.sensor_direction == Direction::CounterClockWise {
@@ -463,18 +471,13 @@ where
         let electrical_angle = self.to_electrical_angle(s.angle);
 
         let (v_q, v_d) = {
-            if self.use_current_sensing {
+            if self.mode == RunMode::Voltage {
+                (self.target.voltage, 0.0)
+            } else if self.use_current_sensing {
                 self.state.electrical_angle = electrical_angle;
 
-                let c = self.normalize_current(measured_current);
-
-                // clarke transform
-                let (i_alpha, i_beta) = clarke_transform(c.a, c.b, c.c);
-
-                // park transform
-                let current_angle = electrical_angle + self.current_phase_bias;
                 let (mut i_q, mut i_d) =
-                    park_transform(i_alpha, i_beta, current_angle, &self.f_sincos);
+                    self.calculate_pq_currents(measured_current, electrical_angle);
 
                 i_q = self.current_q_filter.apply(i_q, s.dt);
                 i_d = self.current_d_filter.apply(i_d, s.dt);
@@ -499,10 +502,36 @@ where
         Ok(duty_cycle)
     }
 
+    pub fn calculate_pq_currents(
+        &mut self,
+        measured_current: PhaseCurrent,
+        electrical_angle: f32,
+    ) -> (f32, f32) {
+        let c = self.normalize_current(measured_current);
+
+        // clarke transform
+        let (i_alpha, i_beta) = clarke_transform(c.a, c.b, c.c);
+
+        // park transform
+        let current_angle = electrical_angle + self.current_phase_bias;
+        park_transform(i_alpha, i_beta, current_angle, &self.f_sincos)
+    }
+
     pub fn get_vq_duty_cycle(&mut self, v_q: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
         let duty_cycle = svpwm(
             v_q,
             0.0,
+            self.to_electrical_angle(angle),
+            self.psu_voltage,
+            &self.f_sincos,
+        )?;
+        Ok(duty_cycle)
+    }
+
+    pub fn get_vd_duty_cycle(&mut self, v_d: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
+        let duty_cycle = svpwm(
+            0.0,
+            v_d,
             self.to_electrical_angle(angle),
             self.psu_voltage,
             &self.f_sincos,

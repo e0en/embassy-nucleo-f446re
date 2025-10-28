@@ -5,6 +5,7 @@ pub enum RunMode {
     Angle = 0x01,
     Velocity = 0x02,
     Torque = 0x03,
+    Voltage = 0x04,
 }
 
 impl TryFrom<u8> for RunMode {
@@ -15,6 +16,7 @@ impl TryFrom<u8> for RunMode {
             0x01 => Ok(RunMode::Angle),
             0x02 => Ok(RunMode::Velocity),
             0x03 => Ok(RunMode::Torque),
+            0x04 => Ok(RunMode::Voltage),
             _ => Err(()),
         }
     }
@@ -36,10 +38,12 @@ pub struct ResponseMessage {
 #[derive(Copy, Clone)]
 pub enum ResponseBody {
     MotorStatus(MotorStatus),
+    MotorCurrent(MotorCurrent),
     ParameterValue(ParameterValue),
 }
 
 #[repr(u16)]
+#[derive(Copy, Clone)]
 pub enum ParameterIndex {
     RunMode = 0x7005,
     IqRef = 0x7006,
@@ -60,6 +64,7 @@ pub enum ParameterIndex {
 
     Spring = 0x7021,
     Damping = 0x7022,
+    VqRef = 0x7023,
 }
 
 impl TryFrom<u16> for ParameterIndex {
@@ -84,6 +89,7 @@ impl TryFrom<u16> for ParameterIndex {
             0x7020 => Ok(Self::SpeedKi),
             0x7021 => Ok(Self::Spring),
             0x7022 => Ok(Self::Damping),
+            0x7023 => Ok(Self::VqRef),
             _ => Err(()),
         }
     }
@@ -109,6 +115,7 @@ pub enum ParameterValue {
     SpeedKi(f32),
     Spring(f32),
     Damping(f32),
+    VqRef(f32),
 }
 
 impl TryFrom<[u8; 8]> for ParameterValue {
@@ -144,6 +151,7 @@ impl TryFrom<[u8; 8]> for ParameterValue {
 
             ParameterIndex::Spring => Self::Spring(value),
             ParameterIndex::Damping => Self::Damping(value),
+            ParameterIndex::VqRef => Self::VqRef(value),
         })
     }
 }
@@ -171,6 +179,7 @@ impl From<ParameterValue> for [u8; 8] {
 
             ParameterValue::Spring(_) => ParameterIndex::Spring,
             ParameterValue::Damping(_) => ParameterIndex::Damping,
+            ParameterValue::VqRef(_) => ParameterIndex::VqRef,
         };
         data[0..2].copy_from_slice(&(address as u16).to_le_bytes());
 
@@ -194,6 +203,7 @@ impl From<ParameterValue> for [u8; 8] {
 
             ParameterValue::Spring(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::Damping(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::VqRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
         };
         data
     }
@@ -205,6 +215,24 @@ impl ResponseMessage {
             motor_can_id,
             host_can_id,
             body,
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum FeedbackType {
+    Status = 0x00,
+    Current = 0x01,
+}
+
+impl TryFrom<u8> for FeedbackType {
+    type Error = ();
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(Self::Status),
+            0x01 => Ok(Self::Current),
+            _ => Err(()),
         }
     }
 }
@@ -256,6 +284,32 @@ impl From<MotorStatus> for [u8; 8] {
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct MotorCurrent {
+    pub i_q: f32,
+    pub i_d: f32,
+}
+
+impl From<[u8; 8]> for MotorCurrent {
+    fn from(val: [u8; 8]) -> MotorCurrent {
+        let mut f32_buffer = [0x00u8; 4];
+        f32_buffer.copy_from_slice(&val[0..4]);
+        let i_q = f32::from_le_bytes(f32_buffer);
+        f32_buffer.copy_from_slice(&val[4..8]);
+        let i_d = f32::from_le_bytes(f32_buffer);
+        MotorCurrent { i_q, i_d }
+    }
+}
+
+impl From<MotorCurrent> for [u8; 8] {
+    fn from(val: MotorCurrent) -> [u8; 8] {
+        let mut data = [0x00u8; 8];
+        data[0..4].copy_from_slice(&val.i_q.to_le_bytes());
+        data[4..8].copy_from_slice(&val.i_d.to_le_bytes());
+        data
+    }
+}
+
 const ANGLE_MIN: f32 = -1000.0;
 const ANGLE_MAX: f32 = 1000.0;
 const VELOCITY_MIN: f32 = -500.0;
@@ -278,6 +332,10 @@ impl TryFrom<CanMessage> for ResponseMessage {
                 let pv = ParameterValue::try_from(val.data)?;
                 ResponseBody::ParameterValue(pv)
             }
+            0x17 => {
+                let motor_current = MotorCurrent::from(val.data);
+                ResponseBody::MotorCurrent(motor_current)
+            }
             _ => return Err(()),
         };
         Ok(ResponseMessage {
@@ -293,11 +351,13 @@ impl TryFrom<ResponseMessage> for CanMessage {
     fn try_from(val: ResponseMessage) -> Result<Self, Self::Error> {
         let response_type = match val.body {
             ResponseBody::MotorStatus(_) => 0x02,
+            ResponseBody::MotorCurrent(_) => 0x17,
             ResponseBody::ParameterValue(_) => 0x11,
         };
         let id = (response_type << 24) | (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
         let data = match val.body {
             ResponseBody::MotorStatus(x) => x.into(),
+            ResponseBody::MotorCurrent(x) => x.into(),
             ResponseBody::ParameterValue(x) => x.into(),
         };
         Ok(CanMessage {
@@ -326,7 +386,8 @@ pub enum Command {
     GetParameter(ParameterIndex),
     SetParameter(ParameterValue),
     RequestStatus(u8),
-    SetMonitorInterval(u8),
+    SetFeedbackInterval(u8),
+    SetFeedbackType(FeedbackType),
 }
 
 pub enum CommandError {
@@ -372,7 +433,12 @@ impl TryFrom<CanMessage> for CommandMessage {
                 Command::SetParameter(pv)
             }
             0x15 => Command::RequestStatus(host_can_id),
-            0x16 => Command::SetMonitorInterval(command_content),
+            0x16 => Command::SetFeedbackInterval(command_content),
+            0x17 => Command::SetFeedbackType(
+                command_content
+                    .try_into()
+                    .map_err(|_| CommandError::WrongCommand)?,
+            ),
 
             _ => return Err(CommandError::WrongCommand),
         };
@@ -410,13 +476,17 @@ impl TryFrom<CommandMessage> for CanMessage {
                 command_id = 0x07;
                 command_content = x;
             }
-            Command::SetMonitorInterval(x) => {
-                command_id = 0x16;
-                command_content = x;
-            }
             Command::RequestStatus(x) => {
                 command_id = 0x15;
                 command_content = x;
+            }
+            Command::SetFeedbackInterval(x) => {
+                command_id = 0x16;
+                command_content = x;
+            }
+            Command::SetFeedbackType(x) => {
+                command_id = 0x17;
+                command_content = x as u8;
             }
         }
 
