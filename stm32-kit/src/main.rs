@@ -10,6 +10,7 @@ mod current_tuning;
 mod drv8316;
 mod gm2804;
 mod gm3506;
+mod motor_tuning;
 mod pwm;
 
 use foc::current::PhaseCurrent;
@@ -367,6 +368,10 @@ async fn foc_task(
     foc.set_run_mode(RunMode::Torque);
     foc.set_target_torque(0.0);
     foc.enable();
+
+    let kv = motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, &mut sensor)
+        .await;
+    info!("Motor kv rating = {}", kv);
 
     let command_receiver = COMMAND_CHANNEL.receiver();
     let response_sender = RESPONSE_CHANNEL.sender();
