@@ -165,7 +165,6 @@ impl<'d> AngleInput for As5047P<'d> {
                 Ok(AngleReading {
                     angle: self.previous_angle,
                     velocity: 0.0,
-                    velocity_raw: 0.0,
                     dt: 0.0,
                 })
             }
@@ -203,15 +202,13 @@ impl<'d> AngleInput for As5047P<'d> {
                     angle += 2.0 * core::f32::consts::PI;
                     self.full_rotations -= 1;
                 }
-                let velocity_raw = angular_change / dt;
-                let velocity = self.velocity_filter.apply(velocity_raw, dt);
+                let velocity = self.velocity_filter.apply(angular_change / dt, dt);
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
                 Ok(AngleReading {
                     angle: angle + 2.0 * core::f32::consts::PI * self.full_rotations as f32,
                     velocity,
-                    velocity_raw,
                     dt,
                 })
             }

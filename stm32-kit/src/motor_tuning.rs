@@ -50,7 +50,7 @@ where
                 }
 
                 if let Some(dt) = now.checked_duration_since(t0)
-                    && dt > Duration::from_secs(1)
+                    && dt > Duration::from_secs(2)
                 {
                     *v_avg += reading.velocity / n_sample as f32;
                     i_sample += 1;

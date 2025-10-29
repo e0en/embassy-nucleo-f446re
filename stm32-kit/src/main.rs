@@ -257,7 +257,7 @@ async fn foc_task(
     let slew_rate = drv8316::SlewRate::Rate200V;
     let psu_voltage = 16.0;
     let align_voltage: f32 = 3.0;
-    let velocity_filter: f32 = 0.05;
+    let velocity_filter: f32 = 0.005;
 
     drvoff_pin.set_high();
     let mut driver = PwmDriver::new(pwm_timer.timer);

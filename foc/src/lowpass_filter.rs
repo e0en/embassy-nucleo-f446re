@@ -12,7 +12,7 @@ impl LowPassFilter {
     }
 
     pub fn apply(&mut self, value: f32, dt_seconds: f32) -> f32 {
-        if dt_seconds > 0.3 {
+        if dt_seconds > 0.1 {
             self.last_value = Some(value);
             value
         } else {
