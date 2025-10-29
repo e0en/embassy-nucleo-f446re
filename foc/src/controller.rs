@@ -19,6 +19,15 @@ pub enum Direction {
     CounterClockWise,
 }
 
+impl Direction {
+    pub fn sign(&self) -> f32 {
+        match self {
+            Self::Clockwise => 1.0,
+            Self::CounterClockWise => -1.0,
+        }
+    }
+}
+
 pub struct Target {
     pub angle: f32,
     pub velocity: f32,
@@ -443,9 +452,7 @@ where
             RunMode::Voltage => self.target.voltage,
         };
 
-        if self.sensor_direction == Direction::CounterClockWise {
-            i_ref *= -1.0;
-        }
+        i_ref *= self.sensor_direction.sign();
 
         if let Some(c) = self.current_limit {
             i_ref = i_ref.min(c).max(-c);
