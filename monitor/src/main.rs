@@ -598,14 +598,16 @@ impl eframe::App for MyApp {
                     .width(2.0);
                 plot_ui.line(line_1);
 
-                let points_2 =
-                    egui_plot::PlotPoints::Borrowed(&self.plot_points_2[0..self.n_plot_points]);
-                let line_2 = egui_plot::Line::new("y2", points_2)
-                    .name("y2")
-                    .style(egui_plot::LineStyle::Solid)
-                    .color(egui::Color32::GREEN)
-                    .width(2.0);
-                plot_ui.line(line_2);
+                if self.plot_type == PlotType::Current {
+                    let points_2 =
+                        egui_plot::PlotPoints::Borrowed(&self.plot_points_2[0..self.n_plot_points]);
+                    let line_2 = egui_plot::Line::new("y2", points_2)
+                        .name("y2")
+                        .style(egui_plot::LineStyle::Solid)
+                        .color(egui::Color32::GREEN)
+                        .width(2.0);
+                    plot_ui.line(line_2);
+                }
             });
             ctx.request_repaint();
         });
