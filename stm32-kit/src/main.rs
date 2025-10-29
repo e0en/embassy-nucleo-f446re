@@ -336,8 +336,6 @@ async fn foc_task(
         .await;
         let current_gain = calculate_current_pi(impedance, 500.0);
         info!("current kp={}, ki={}", current_gain.p, current_gain.i);
-        foc.set_current_kp(current_gain.p);
-        foc.set_current_ki(current_gain.i);
     }
 
     foc.set_run_mode(RunMode::Torque);
