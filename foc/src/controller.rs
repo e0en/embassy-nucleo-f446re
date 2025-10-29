@@ -208,12 +208,12 @@ where
     pub async fn align_sensor<'a, FSensor, FMotor, FWait, FutUnit>(
         &mut self,
         align_voltage: f32,
-        mut read_sensor: FSensor,
+        read_sensor: FSensor,
         mut set_motor: FMotor,
         wait_function: FWait,
     ) -> Result<(), FocError>
     where
-        FSensor: AsyncFnMut() -> AngleReading + Send + 'a,
+        FSensor: Fn() -> AngleReading,
         FMotor: FnMut(DutyCycle3Phase),
         FWait: Fn(f32) -> FutUnit + 'a,
         FutUnit: Future<Output = ()> + Send + 'a,
@@ -232,7 +232,7 @@ where
         let mut angle = 0.0;
         let mut last_angle = 0.0;
         for _ in 0..100 {
-            angle = read_sensor().await.angle;
+            angle = read_sensor().angle;
             wait_function(0.01).await;
             if angle == last_angle {
                 break;
@@ -255,7 +255,7 @@ where
             )?;
             set_motor(signal);
             wait_function(0.01).await;
-            velocity_sum += read_sensor().await.velocity;
+            velocity_sum += read_sensor().velocity;
         }
         let direction_forward = velocity_sum > 0.0;
 
@@ -272,7 +272,7 @@ where
             )?;
             set_motor(signal);
             wait_function(0.01).await;
-            velocity_sum += read_sensor().await.velocity;
+            velocity_sum += read_sensor().velocity;
         }
         let direction_backward = velocity_sum < 0.0;
 

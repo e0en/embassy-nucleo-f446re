@@ -1,29 +1,29 @@
 use crate::adc;
 use crate::adc::AdcSelector;
-use crate::as5047p::As5047P;
 use crate::bldc_driver::PwmDriver;
 use crate::drv8316;
 
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::AngleInput;
+use foc::angle_input::AngleReading;
 use foc::controller::{FocController, RunMode};
 use foc::pwm_output::PwmOutput;
 
-pub async fn find_kv_rating<'a, Fsincos, TIM, T>(
+pub async fn find_kv_rating<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: drv8316::CsaGain,
-    sensor: &mut As5047P<'a>,
+    read_sensor: Fsensor,
 ) -> f32
 where
     Fsincos: Fn(f32) -> (f32, f32),
+    Fsensor: Fn() -> AngleReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
-    let n_sample = 1000;
+    let n_sample = 256;
     let old_mode = foc.mode;
     let old_v = foc.target.voltage;
 
@@ -42,20 +42,20 @@ where
         i_sample = 0;
         while i_sample < n_sample {
             let now = Instant::now();
-            if let Ok(reading) = sensor.read_async().await {
-                let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-                let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-                if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
-                    driver.run(duty);
-                }
-
-                if let Some(dt) = now.checked_duration_since(t0)
-                    && dt > Duration::from_secs(2)
-                {
-                    *v_avg += reading.velocity / n_sample as f32;
-                    i_sample += 1;
-                }
+            let reading = read_sensor();
+            let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+            let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+                driver.run(duty);
             }
+
+            if let Some(dt) = now.checked_duration_since(t0)
+                && dt > Duration::from_secs(2)
+            {
+                *v_avg += reading.velocity / n_sample as f32;
+                i_sample += 1;
+            }
+            Timer::after_millis(1).await;
         }
     }
 
