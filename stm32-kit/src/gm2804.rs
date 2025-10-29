@@ -13,28 +13,14 @@ pub const CURRENT_PID: foc::pid::PID = foc::pid::PID {
 };
 
 #[allow(dead_code)]
-pub const ANGLE_PID_CS: foc::pid::PID = foc::pid::PID {
-    p: 0.0,
-    i: 0.0,
-    d: 0.0,
-};
-
-#[allow(dead_code)]
-pub const VELOCITY_PID_CS: foc::pid::PID = foc::pid::PID {
-    p: 0.0,
-    i: 0.0,
-    d: 0.0,
-};
-
-#[allow(dead_code)]
-pub const ANGLE_PID_NOCS: foc::pid::PID = foc::pid::PID {
+pub const ANGLE_PID: foc::pid::PID = foc::pid::PID {
     p: 4.0,
     i: 0.0,
     d: 0.0,
 };
 
 #[allow(dead_code)]
-pub const VELOCITY_PID_NOCS: foc::pid::PID = foc::pid::PID {
+pub const VELOCITY_PID: foc::pid::PID = foc::pid::PID {
     p: 0.4,
     i: 1.6,
     d: 0.0,

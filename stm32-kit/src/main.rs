@@ -266,35 +266,18 @@ async fn foc_task(
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
     gate_driver.initialize(csa_gain, slew_rate).await;
 
-    let mut foc = {
-        if use_current_sensing {
-            FocController::new(
-                motor::SETUP,
-                psu_voltage,
-                motor::CURRENT_PID,
-                motor::ANGLE_PID_CS,
-                motor::VELOCITY_PID_CS,
-                OutputLimit {
-                    max_value: 16.0,
-                    ramp: 1000.0,
-                },
-                sincos,
-            )
-        } else {
-            FocController::new(
-                motor::SETUP,
-                psu_voltage,
-                motor::CURRENT_PID,
-                motor::ANGLE_PID_NOCS,
-                motor::VELOCITY_PID_NOCS,
-                OutputLimit {
-                    max_value: 16.0,
-                    ramp: 1000.0,
-                },
-                sincos,
-            )
-        }
-    };
+    let mut foc = FocController::new(
+        motor::SETUP,
+        psu_voltage,
+        motor::CURRENT_PID,
+        motor::ANGLE_PID,
+        motor::VELOCITY_PID,
+        OutputLimit {
+            max_value: 16.0,
+            ramp: 1000.0,
+        },
+        sincos,
+    );
 
     if !use_current_sensing {
         foc.disable_current_sensing();
