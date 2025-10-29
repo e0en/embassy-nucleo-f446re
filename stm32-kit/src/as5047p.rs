@@ -2,6 +2,7 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
 use foc::angle_input::{AngleInput, AngleReading};
+use foc::lowpass_filter::LowPassFilter;
 
 const RAW_ANGLE_MAX: u16 = 1 << 14;
 const RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / (RAW_ANGLE_MAX as f32);
@@ -13,6 +14,7 @@ pub struct As5047P<'d> {
     full_rotations: i32,
     spi_mutex: &'static SpiMutex,
     cs_pin: gpio::Output<'d>,
+    velocity_filter: LowPassFilter,
 }
 
 #[allow(dead_code)]
@@ -39,7 +41,11 @@ impl From<spi::Error> for Error {
 }
 
 impl<'d> As5047P<'d> {
-    pub fn new(spi_mutex: &'static SpiMutex, cs_pin: gpio::Output<'d>) -> Self {
+    pub fn new(
+        spi_mutex: &'static SpiMutex,
+        cs_pin: gpio::Output<'d>,
+        velocity_filter_constant: f32,
+    ) -> Self {
         As5047P {
             previous_raw_angle: None,
             previous_angle: 0.0,
@@ -47,6 +53,7 @@ impl<'d> As5047P<'d> {
             full_rotations: 0,
             spi_mutex,
             cs_pin,
+            velocity_filter: LowPassFilter::new(velocity_filter_constant),
         }
     }
 
@@ -158,6 +165,7 @@ impl<'d> AngleInput for As5047P<'d> {
                 Ok(AngleReading {
                     angle: self.previous_angle,
                     velocity: 0.0,
+                    velocity_raw: 0.0,
                     dt: 0.0,
                 })
             }
@@ -195,13 +203,15 @@ impl<'d> AngleInput for As5047P<'d> {
                     angle += 2.0 * core::f32::consts::PI;
                     self.full_rotations -= 1;
                 }
-                let velocity = angular_change / dt;
+                let velocity_raw = angular_change / dt;
+                let velocity = self.velocity_filter.apply(velocity_raw, dt);
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
                 Ok(AngleReading {
                     angle: angle + 2.0 * core::f32::consts::PI * self.full_rotations as f32,
                     velocity,
+                    velocity_raw,
                     dt,
                 })
             }

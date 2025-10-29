@@ -57,7 +57,7 @@ pub struct MotorSetup {
 pub struct FocState {
     pub angle: f32,
     pub angular_change: f32,
-    pub filtered_velocity: f32,
+    pub velocity: f32,
 
     pub velocity_error: f32,
     pub velocity_integral: f32,
@@ -97,7 +97,6 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     pub angle_pid: PIDController,
     pub velocity_pid: PIDController,
     _velocity_output_limit: f32, // Volts per second
-    pub velocity_filter: LowPassFilter,
     pub current_q_filter: LowPassFilter,
     pub current_d_filter: LowPassFilter,
     pub mode: RunMode,
@@ -135,7 +134,7 @@ where
 
             angle: 0.0,
             angular_change: 0.0,
-            filtered_velocity: 0.0,
+            velocity: 0.0,
             velocity_error: 0.0,
             velocity_integral: 0.0,
             dt: 0.0,
@@ -174,7 +173,6 @@ where
             ),
             angle_pid: PIDController::new(angle_pid_gains, max_velocity, max_velocity_ramp),
             velocity_pid: PIDController::new(velocity_pid_gains, max_current, max_current_ramp),
-            velocity_filter: LowPassFilter::new(0.005),
             _velocity_output_limit: 1000.0,
             current_q_filter: LowPassFilter::new(0.001),
             current_d_filter: LowPassFilter::new(0.001),
@@ -377,10 +375,6 @@ where
         self.current_d_filter = LowPassFilter::new(f);
     }
 
-    pub fn set_velocity_gain(&mut self, tf: f32) {
-        self.velocity_filter = LowPassFilter::new(tf);
-    }
-
     pub fn set_angle_kp(&mut self, kp: f32) {
         self.angle_pid.gains.p = kp;
     }
@@ -413,10 +407,9 @@ where
     ) -> Result<DutyCycle3Phase, FocError> {
         let s = angle_reading;
         self.state.dt = s.dt;
-        let velocity = self.velocity_filter.apply(s.velocity, s.dt);
 
         self.state.angle = s.angle;
-        self.state.filtered_velocity = velocity;
+        self.state.velocity = s.velocity;
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
@@ -426,20 +419,20 @@ where
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
                 }
-                let velocity_error = target_velocity - velocity;
+                let velocity_error = target_velocity - s.velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Velocity => {
-                let velocity_error = self.target.velocity - velocity;
+                let velocity_error = self.target.velocity - s.velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Impedance => {
                 let angle_error = self.target.angle - s.angle;
-                let velocity_error = self.target.velocity - velocity;
+                let velocity_error = self.target.velocity - s.velocity;
                 self.state.angle_error = angle_error;
                 self.state.velocity_error = velocity_error;
                 self.target.spring * angle_error

@@ -237,7 +237,7 @@ where
 fn build_motor_status(state: FocState) -> MotorStatus {
     MotorStatus {
         angle: state.angle,
-        velocity: state.filtered_velocity,
+        velocity: state.velocity,
         torque: state.i_q,
         temperature: 0.0,
     }
@@ -257,10 +257,11 @@ async fn foc_task(
     let slew_rate = drv8316::SlewRate::Rate200V;
     let psu_voltage = 16.0;
     let align_voltage: f32 = 3.0;
+    let velocity_filter: f32 = 0.05;
 
     drvoff_pin.set_high();
     let mut driver = PwmDriver::new(pwm_timer.timer);
-    let mut sensor = As5047P::new(p_spi, cs_sensor_pin);
+    let mut sensor = As5047P::new(p_spi, cs_sensor_pin, velocity_filter);
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
     gate_driver.initialize(csa_gain, slew_rate).await;
 
@@ -468,7 +469,7 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
     let freq = (check_count as f32) / dt_seconds;
     info!(
         "MEASURED: a={}, v={}, t={}, {} Hz",
-        state.angle, state.filtered_velocity, state.v_q, freq
+        state.angle, state.velocity, state.v_q, freq
     );
 }
 
@@ -563,7 +564,7 @@ async fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
                 ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
                 ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
                 ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
-                ParameterIndex::Speed => ParameterValue::Speed(foc.state.filtered_velocity),
+                ParameterIndex::Speed => ParameterValue::Speed(foc.state.velocity),
                 ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
                 ParameterIndex::SpeedLimit => {
                     ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
