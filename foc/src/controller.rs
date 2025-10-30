@@ -463,15 +463,13 @@ where
             i_ref = i_ref.min(t).max(-t);
         }
 
-        if !self.is_running {
-            i_ref = 0.0;
-        }
-
         self.state.i_ref = i_ref;
         let electrical_angle = self.to_electrical_angle(s.angle);
 
         let (v_q, v_d) = {
-            if self.mode == RunMode::Voltage {
+            if !self.is_running {
+                (0.0, 0.0)
+            } else if self.mode == RunMode::Voltage {
                 (self.target.voltage, 0.0)
             } else if self.use_current_sensing {
                 self.state.electrical_angle = electrical_angle;
