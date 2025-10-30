@@ -196,6 +196,12 @@ impl<'d> Drv8316<'d> {
         self.write_address(CONTROL_REGISTER_2, new_data).await
     }
 
+    pub async fn clear_fault(&mut self) -> Result<(), Error> {
+        let current_reg = self.read_address(CONTROL_REGISTER_2).await?;
+        let new_data = (current_reg & 0xFF) as u8 | 0x01;
+        self.write_address(CONTROL_REGISTER_2, new_data).await
+    }
+
     pub async fn unlock_registers(&mut self) -> Result<(), Error> {
         self.write_address(CONTROL_REGISTER_1, 0x03).await
     }
@@ -204,7 +210,6 @@ impl<'d> Drv8316<'d> {
         self.write_address(CONTROL_REGISTER_1, 0x06).await
     }
 
-    #[allow(dead_code)]
     pub async fn read_ic_status(&mut self) -> Result<IcStatusRegister, Error> {
         let reg_value = self.read_address(IC_STATUS_REGISTER).await?;
         Ok(IcStatusRegister::from((reg_value & 0xFF) as u8))
