@@ -120,6 +120,10 @@ struct MyApp {
 
     run_mode: RunMode,
 
+    frequency: f32,
+    is_nonzero: bool,
+    last_nonzero_at: Instant,
+
     plot_type: PlotType,
     plot_points_1: [egui_plot::PlotPoint; 100_000],
     plot_points_2: [egui_plot::PlotPoint; 100_000],
@@ -190,6 +194,10 @@ impl MyApp {
 
             iq_kp,
             iq_ki,
+
+            frequency: 0.0,
+            is_nonzero: false,
+            last_nonzero_at: Instant::now(),
 
             plot_type: PlotType::Angle,
             run_mode: RunMode::Impedance,
@@ -532,6 +540,76 @@ impl eframe::App for MyApp {
                     };
                     ui.end_row();
                 });
+
+            let name_label = ui.label("On-off frequency");
+            let mut frequency_str = self.frequency.to_string();
+            ui.text_edit_singleline(&mut frequency_str)
+                .labelled_by(name_label.id);
+            match frequency_str.parse::<f32>() {
+                Ok(n) => self.frequency = n,
+                _ => self.frequency = 0.0,
+            }
+
+            if self.frequency > 0.0 {
+                let now = Instant::now();
+                let max_dt = Duration::from_millis((1000.0 / self.frequency) as u64);
+                if (now - self.last_nonzero_at) > max_dt {
+                    self.last_nonzero_at = now;
+                    if !self.is_nonzero {
+                        match self.run_mode {
+                            RunMode::Angle => {
+                                let _ = self
+                                    .command_send
+                                    .send(Command::SetParameter(ParameterValue::AngleRef(0.0)));
+                            }
+                            RunMode::Velocity => {
+                                let _ = self
+                                    .command_send
+                                    .send(Command::SetParameter(ParameterValue::SpeedRef(0.0)));
+                            }
+                            RunMode::Torque => {
+                                let _ = self
+                                    .command_send
+                                    .send(Command::SetParameter(ParameterValue::IqRef(0.0)));
+                            }
+                            RunMode::Voltage => {
+                                let _ = self
+                                    .command_send
+                                    .send(Command::SetParameter(ParameterValue::VqRef(0.0)));
+                            }
+                            _ => (),
+                        }
+                        self.is_nonzero = true;
+                    } else {
+                        match self.run_mode {
+                            RunMode::Angle => {
+                                let _ = self.command_send.send(Command::SetParameter(
+                                    ParameterValue::AngleRef(self.angle),
+                                ));
+                            }
+                            RunMode::Velocity => {
+                                let _ = self.command_send.send(Command::SetParameter(
+                                    ParameterValue::SpeedRef(self.velocity),
+                                ));
+                            }
+                            RunMode::Torque => {
+                                let _ = self
+                                    .command_send
+                                    .send(Command::SetParameter(ParameterValue::IqRef(self.iq)));
+                            }
+                            RunMode::Voltage => {
+                                let _ = self
+                                    .command_send
+                                    .send(Command::SetParameter(ParameterValue::VqRef(self.vq)));
+                            }
+                            _ => (),
+                        }
+                        self.is_nonzero = false;
+                    }
+                }
+            }
+
+            ui.end_row();
 
             if ui.button("disable").clicked() {
                 let _ = self.command_send.send(Command::Stop);
