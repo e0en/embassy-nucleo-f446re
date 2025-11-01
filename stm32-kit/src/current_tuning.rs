@@ -16,9 +16,9 @@ const IMPEDANCE_SAMPLE_COUNT: usize = 2048;
 
 #[allow(dead_code)]
 pub struct MotorImpedance {
-    r_s: f32,
-    l_d: f32,
-    l_q: f32,
+    pub r_s: f32,
+    pub l_d: f32,
+    pub l_q: f32,
 }
 
 pub async fn find_motor_impedance<'a, Fsincos, Fsensor, TIM, T>(
