@@ -8,6 +8,7 @@ mod clock;
 mod cordic;
 mod current_tuning;
 mod drv8316;
+mod flycat5010;
 mod gm2804;
 mod gm3506;
 mod motor_tuning;
@@ -27,7 +28,7 @@ use crate::{
     drv8316::Drv8316,
 };
 
-use crate::gm3506 as motor;
+use crate::flycat5010 as motor;
 
 use can_message::message::{
     Command, FeedbackType, MotorCurrent, MotorStatus, ParameterIndex, ParameterValue, ResponseBody,
@@ -288,14 +289,8 @@ async fn foc_task(
     gate_driver.turn_on();
     if use_current_sensing {
         let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
-        if let Some(m) = get_phase_mapping(
-            &mut p_adc,
-            &mut driver,
-            csa_gain,
-            current_offset,
-            align_voltage / foc.motor.phase_resistance,
-        )
-        .await
+        if let Some(m) =
+            get_phase_mapping(&mut p_adc, &mut driver, csa_gain, current_offset, 0.1).await
         {
             info!("phase mapping = {} {} {}", m.0, m.1, m.2);
             foc.current_mapping = m;

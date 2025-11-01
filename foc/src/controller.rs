@@ -318,6 +318,7 @@ where
     }
 
     pub fn set_run_mode(&mut self, mode: RunMode) {
+        self.reset();
         self.mode = mode;
     }
 
