@@ -132,6 +132,7 @@ impl<'d> Drv8316<'d> {
     pub async fn initialize(&mut self, csa_gain: CsaGain, slew_rate: SlewRate) {
         Timer::after_millis(1).await; // ready time of gate driver
         self.unlock_registers().await.unwrap();
+        self.clear_fault().await.unwrap();
         self.set_csa_gain(csa_gain).await.unwrap();
         self.set_slew_rate(slew_rate).await.unwrap();
         let config = BuckRegulatorConfig {
