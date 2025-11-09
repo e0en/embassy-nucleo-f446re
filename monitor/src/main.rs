@@ -106,6 +106,9 @@ struct MyApp {
     iq_kp_string: String,
     iq_ki_string: String,
 
+    spring_string: String,
+    damping_string: String,
+
     angle: f32,
     velocity: f32,
     iq: f32,
@@ -117,6 +120,9 @@ struct MyApp {
 
     iq_kp: f32,
     iq_ki: f32,
+
+    spring: f32,
+    damping: f32,
 
     run_mode: RunMode,
 
@@ -156,6 +162,9 @@ impl MyApp {
         let iq_kp = 0.0;
         let iq_ki = 0.0;
 
+        let spring = 0.0;
+        let damping = 0.0;
+
         let _ = command_send.send(Command::GetParameter(ParameterIndex::AngleKp));
         sleep(Duration::from_millis(1));
         let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKp));
@@ -183,6 +192,9 @@ impl MyApp {
             iq_kp_string: iq_kp.to_string(),
             iq_ki_string: iq_ki.to_string(),
 
+            spring_string: spring.to_string(),
+            damping_string: damping.to_string(),
+
             angle,
             velocity,
             iq,
@@ -194,6 +206,9 @@ impl MyApp {
 
             iq_kp,
             iq_ki,
+
+            spring,
+            damping,
 
             frequency: 0.0,
             is_nonzero: false,
@@ -300,6 +315,14 @@ impl eframe::App for MyApp {
                     ParameterValue::CurrentKi(x) => {
                         self.iq_ki = x;
                         self.iq_ki_string = x.to_string();
+                    }
+                    ParameterValue::Spring(x) => {
+                        self.spring = x;
+                        self.spring_string = x.to_string();
+                    }
+                    ParameterValue::Damping(x) => {
+                        self.damping = x;
+                        self.damping_string = x.to_string();
                     }
                     _ => (),
                 },
@@ -537,6 +560,50 @@ impl eframe::App for MyApp {
                         let _ = self
                             .command_send
                             .send(Command::SetParameter(ParameterValue::CurrentKi(self.iq_ki)));
+                    };
+                    ui.end_row();
+
+                    let name_label = ui.label("Spring");
+                    ui.text_edit_singleline(&mut self.spring_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.spring_string.parse::<f32>() {
+                        Ok(n) => self.spring = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::Spring(self.spring)));
+                    };
+                    ui.end_row();
+
+                    let name_label = ui.label("Damping");
+                    ui.text_edit_singleline(&mut self.damping_string)
+                        .labelled_by(name_label.id);
+
+                    let mut is_button_active = true;
+                    match self.damping_string.parse::<f32>() {
+                        Ok(n) => self.damping = n,
+                        _ => {
+                            is_button_active = false;
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_button_active, egui::Button::new("Set"))
+                        .clicked()
+                    {
+                        let _ = self
+                            .command_send
+                            .send(Command::SetParameter(ParameterValue::Damping(self.damping)));
                     };
                     ui.end_row();
                 });
