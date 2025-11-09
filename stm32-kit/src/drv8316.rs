@@ -243,7 +243,7 @@ impl<'d> Drv8316<'d> {
             new_data |= 0b0000_0001;
         }
         new_data |= (config.voltage as u8) << 1;
-        new_data |= (config.current_limit as u8) << 2;
+        new_data |= (config.current_limit as u8) << 3;
         self.write_address(CONTROL_REGISTER_6, new_data).await
     }
 
