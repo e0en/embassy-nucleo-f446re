@@ -410,7 +410,7 @@ async fn foc_task(
                         last_logged_at = now;
                     }
                     if let Ok(x) = gate_driver.read_ic_status().await {
-                        if x.fault {
+                        if x.device_fault {
                             let _ = gate_driver.unlock_registers().await;
                             let _ = gate_driver.clear_fault().await;
                             let _ = gate_driver.lock_registers().await;

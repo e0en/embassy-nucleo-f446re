@@ -74,14 +74,13 @@ pub struct BuckRegulatorConfig {
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct IcStatusRegister {
-    pub fault: bool,             // Bit 0: Fault condition
-    pub ot_warning: bool,        // Bit 1: Over-temperature warning
-    pub ot_shutdown: bool,       // Bit 2: Over-temperature shutdown
-    pub buck_error: bool,        // Bit 3: Buck regulator error
-    pub charge_pump_error: bool, // Bit 4: Charge pump error
-    pub ocp_ls_c: bool,          // Bit 5: Overcurrent on low-side C
-    pub ocp_hs_c: bool,          // Bit 6: Overcurrent on high-side C
-    pub ocp_ls_b: bool,          // Bit 7: Overcurrent on low-side B
+    pub device_fault: bool,
+    pub overtemperature_fault: bool,
+    pub supply_overvoltage_protection: bool,
+    pub supply_on_reset: bool,
+    pub overcurrent_protection: bool,
+    pub spi_fault: bool,
+    pub buck_fault: bool,
 }
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -104,14 +103,13 @@ impl From<u8> for SpiStatus {
 impl From<u8> for IcStatusRegister {
     fn from(value: u8) -> Self {
         Self {
-            fault: (value & 0x01) != 0,
-            ot_warning: (value & 0x02) != 0,
-            ot_shutdown: (value & 0x04) != 0,
-            buck_error: (value & 0x08) != 0,
-            charge_pump_error: (value & 0x10) != 0,
-            ocp_ls_c: (value & 0x20) != 0,
-            ocp_hs_c: (value & 0x40) != 0,
-            ocp_ls_b: (value & 0x80) != 0,
+            device_fault: (value & 0x01) != 0,
+            overtemperature_fault: (value & 0x02) != 0,
+            supply_overvoltage_protection: (value & 0x04) != 0,
+            supply_on_reset: (value & 0x08) != 0,
+            overcurrent_protection: (value & 0x10) != 0,
+            spi_fault: (value & 0x20) != 0,
+            buck_fault: (value & 0x40) != 0,
         }
     }
 }
