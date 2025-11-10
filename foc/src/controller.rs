@@ -134,7 +134,7 @@ where
         f_sincos: Fsincos,
     ) -> Self {
         let max_velocity = motor.max_velocity;
-        let max_velocity_ramp = 1000.0;
+        let max_velocity_ramp = motor.max_velocity;
         let max_current = output_limit.max_value; // / motor.phase_resistance;
         let max_current_ramp = output_limit.ramp / motor.phase_resistance;
         let state = FocState {
