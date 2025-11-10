@@ -334,7 +334,7 @@ async fn foc_task(
             "R_s = {}, L_q = {}, L_d = {}",
             impedance.r_s, impedance.l_q, impedance.l_d
         );
-        let current_gain = calculate_current_pi(impedance, 500.0);
+        let current_gain = calculate_current_pi(impedance, 300.0);
         info!("current kp={}, ki={}", current_gain.p, current_gain.i);
     }
 
