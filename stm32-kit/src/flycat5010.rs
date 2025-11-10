@@ -7,8 +7,8 @@ pub const SETUP: foc::controller::MotorSetup = foc::controller::MotorSetup {
 
 #[allow(dead_code)]
 pub const CURRENT_PID: foc::pid::PID = foc::pid::PID {
-    p: 1.0,
-    i: 100.0,
+    p: 3.0,
+    i: 900.0,
     d: 0.0,
 };
 
@@ -21,7 +21,7 @@ pub const ANGLE_PID: foc::pid::PID = foc::pid::PID {
 
 #[allow(dead_code)]
 pub const VELOCITY_PID: foc::pid::PID = foc::pid::PID {
-    p: 1.0,
+    p: 0.1,
     i: 10.0,
     d: 0.0,
 };
