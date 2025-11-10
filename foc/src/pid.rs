@@ -41,6 +41,16 @@ impl PIDController {
         self.last_output = 0.0;
     }
 
+    pub fn set_max_output(&mut self, max_output: f32) {
+        self.max_integral = match self.gains.i {
+            i if i <= 0.0 => max_output,
+            i => max_output / i,
+        };
+        self.max_output = max_output;
+        self.last_output = self.last_output.min(max_output);
+        self.integral = self.integral.min(self.max_integral);
+    }
+
     pub fn update(&mut self, error: f32, dt_seconds: f32) -> f32 {
         self.integral += 0.5 * (error + self.last_error) * dt_seconds;
         self.integral = self.integral.min(self.max_integral).max(-self.max_integral);

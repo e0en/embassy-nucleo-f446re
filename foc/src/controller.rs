@@ -356,6 +356,13 @@ where
 
     pub fn set_current_limit(&mut self, current: f32) {
         self.current_limit = Some(current);
+        let voltage_limit = current * self.motor.phase_resistance;
+        self.set_voltage_limit(voltage_limit);
+    }
+
+    fn set_voltage_limit(&mut self, voltage: f32) {
+        self.current_q_pid.set_max_output(voltage);
+        self.current_d_pid.set_max_output(voltage);
     }
 
     pub fn set_current_kp(&mut self, kp: f32) {
@@ -374,10 +381,12 @@ where
 
     pub fn set_velocity_kp(&mut self, kp: f32) {
         self.velocity_pid.gains.p = kp;
+        self.velocity_pid.reset();
     }
 
     pub fn set_velocity_ki(&mut self, ki: f32) {
         self.velocity_pid.gains.i = ki;
+        self.velocity_pid.reset();
     }
 
     pub fn set_current_filter(&mut self, f: f32) {
@@ -387,6 +396,7 @@ where
 
     pub fn set_angle_kp(&mut self, kp: f32) {
         self.angle_pid.gains.p = kp;
+        self.angle_pid.reset();
     }
 
     pub fn normalize_current(&self, c: PhaseCurrent) -> PhaseCurrent {

@@ -10,6 +10,8 @@ const CONTROL_REGISTER_2: u8 = 0x04u8;
 const CONTROL_REGISTER_5: u8 = 0x07u8;
 const CONTROL_REGISTER_6: u8 = 0x08u8;
 
+pub const MAX_CURRENT: f32 = 8.0;
+
 pub struct Drv8316<'d> {
     spi_mutex: &'static SpiMutex,
     cs_pin: gpio::Output<'d>,

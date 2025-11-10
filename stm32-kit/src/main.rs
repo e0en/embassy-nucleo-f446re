@@ -279,6 +279,7 @@ async fn foc_task(
         },
         sincos,
     );
+    foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
 
     if !use_current_sensing {
         foc.disable_current_sensing();
