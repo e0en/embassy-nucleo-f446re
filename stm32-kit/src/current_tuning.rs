@@ -35,8 +35,8 @@ where
     T: stm32_adc::Instance + AdcSelector,
 {
     let n_sample = IMPEDANCE_SAMPLE_COUNT;
-    let test_voltage = 1.0;
-    let test_frequency = 512.0;
+    let test_voltage = 0.5;
+    let test_frequency = 256.0;
     let _t0 = Instant::now().as_micros();
 
     let mut t_buffer = [0f32; IMPEDANCE_SAMPLE_COUNT];
