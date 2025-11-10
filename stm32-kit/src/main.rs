@@ -199,7 +199,7 @@ where
     Fsincos: Fn(f32) -> (f32, f32),
 {
     // assumption: mechanical angle and voltage (electrical) angle are aligned
-    let a_duty = 0.2;
+    let a_duty = 0.1;
 
     // start with zero voltage
     let mut duty = DutyCycle3Phase::zero();
@@ -260,7 +260,7 @@ async fn foc_task(
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let slew_rate = drv8316::SlewRate::Rate200V;
     let psu_voltage = 16.0;
-    let align_voltage: f32 = 3.0;
+    let align_voltage: f32 = 2.0;
 
     drvoff_pin.set_high();
     let mut driver = PwmDriver::new(pwm_timer.timer);
@@ -291,7 +291,7 @@ async fn foc_task(
     if use_current_sensing {
         let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
         if let Some(m) =
-            get_phase_mapping(&mut p_adc, &mut driver, csa_gain, current_offset, 0.1).await
+            get_phase_mapping(&mut p_adc, &mut driver, csa_gain, current_offset, 0.05).await
         {
             info!("phase mapping = {} {} {}", m.0, m.1, m.2);
             foc.current_mapping = m;
