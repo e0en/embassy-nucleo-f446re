@@ -14,14 +14,14 @@ pub const CURRENT_PID: foc::pid::PID = foc::pid::PID {
 
 #[allow(dead_code)]
 pub const ANGLE_PID: foc::pid::PID = foc::pid::PID {
-    p: 16.0,
+    p: 8.0,
     i: 0.0,
     d: 0.0,
 };
 
 #[allow(dead_code)]
 pub const VELOCITY_PID: foc::pid::PID = foc::pid::PID {
-    p: 0.5,
-    i: 0.001,
+    p: 1.0,
+    i: 10.0,
     d: 0.0,
 };
