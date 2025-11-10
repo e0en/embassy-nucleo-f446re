@@ -31,10 +31,11 @@ where
     // set to voltage mode
     foc.set_run_mode(RunMode::Voltage);
     let mut i_sample;
-    let mut v_sample = [0.0f32; 5];
+    let mut v_sample = [0.0f32; 4];
+    let voltage_step = 0.1;
 
     for (i_voltage, v_avg) in v_sample.iter_mut().enumerate() {
-        let voltage = 1.0 + i_voltage as f32 / 2.0;
+        let voltage = 1.0 + i_voltage as f32 * voltage_step;
         foc.set_target_voltage(voltage);
         let t0 = Instant::now();
         Timer::after_secs(1).await;
@@ -60,15 +61,15 @@ where
     }
 
     for (i_voltage, v_avg) in v_sample.iter_mut().enumerate() {
-        let voltage = 1.0 + i_voltage as f32 / 2.0;
+        let voltage = 1.0 + i_voltage as f32 * voltage_step;
         defmt::info!("{}: {}", voltage, v_avg);
     }
 
-    let x_mean = 1.0 + (5 - 1) as f32 / 2.0 * 0.5;
+    let x_mean = 1.0 + (5 - 1) as f32 * voltage_step * 0.5;
     let mut x_sum = 0.0;
     let mut y_sum = 0.0;
     for (i_voltage, v) in v_sample.iter().enumerate() {
-        let voltage = 1.0 + i_voltage as f32 / 2.0;
+        let voltage = 1.0 + i_voltage as f32 * voltage_step;
         x_sum += voltage * (voltage - x_mean);
         y_sum += v * (voltage - x_mean);
     }
