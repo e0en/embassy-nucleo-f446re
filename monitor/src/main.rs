@@ -127,7 +127,7 @@ struct MyApp {
     run_mode: RunMode,
 
     frequency: f32,
-    is_nonzero: bool,
+    is_non_inverted: bool,
     last_nonzero_at: Instant,
 
     plot_type: PlotType,
@@ -211,7 +211,7 @@ impl MyApp {
             damping,
 
             frequency: 0.0,
-            is_nonzero: false,
+            is_non_inverted: false,
             last_nonzero_at: Instant::now(),
 
             plot_type: PlotType::Angle,
@@ -622,31 +622,31 @@ impl eframe::App for MyApp {
                 let max_dt = Duration::from_millis((1000.0 / self.frequency) as u64);
                 if (now - self.last_nonzero_at) > max_dt {
                     self.last_nonzero_at = now;
-                    if !self.is_nonzero {
+                    if !self.is_non_inverted {
                         match self.run_mode {
                             RunMode::Angle => {
-                                let _ = self
-                                    .command_send
-                                    .send(Command::SetParameter(ParameterValue::AngleRef(0.0)));
+                                let _ = self.command_send.send(Command::SetParameter(
+                                    ParameterValue::AngleRef(-self.angle),
+                                ));
                             }
                             RunMode::Velocity => {
-                                let _ = self
-                                    .command_send
-                                    .send(Command::SetParameter(ParameterValue::SpeedRef(0.0)));
+                                let _ = self.command_send.send(Command::SetParameter(
+                                    ParameterValue::SpeedRef(-self.velocity),
+                                ));
                             }
                             RunMode::Torque => {
                                 let _ = self
                                     .command_send
-                                    .send(Command::SetParameter(ParameterValue::IqRef(0.0)));
+                                    .send(Command::SetParameter(ParameterValue::IqRef(-self.iq)));
                             }
                             RunMode::Voltage => {
                                 let _ = self
                                     .command_send
-                                    .send(Command::SetParameter(ParameterValue::VqRef(0.0)));
+                                    .send(Command::SetParameter(ParameterValue::VqRef(-self.vq)));
                             }
                             _ => (),
                         }
-                        self.is_nonzero = true;
+                        self.is_non_inverted = true;
                     } else {
                         match self.run_mode {
                             RunMode::Angle => {
@@ -671,7 +671,7 @@ impl eframe::App for MyApp {
                             }
                             _ => (),
                         }
-                        self.is_nonzero = false;
+                        self.is_non_inverted = false;
                     }
                 }
             }
