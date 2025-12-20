@@ -410,13 +410,13 @@ async fn foc_task(
                         check_count = 0;
                         last_logged_at = now;
                     }
-                    if let Ok(x) = gate_driver.read_ic_status().await {
-                        if x.device_fault {
-                            let _ = gate_driver.unlock_registers().await;
-                            let _ = gate_driver.clear_fault().await;
-                            let _ = gate_driver.lock_registers().await;
-                        }
-                        info!("DRV8316 status = {}", x);
+                    if let Ok(x) = gate_driver.read_ic_status().await
+                        && x.device_fault
+                    {
+                        let _ = gate_driver.unlock_registers().await;
+                        let _ = gate_driver.clear_fault().await;
+                        let _ = gate_driver.lock_registers().await;
+                        warn!("DRV8316 status = {}", x);
                     }
                 }
             }
