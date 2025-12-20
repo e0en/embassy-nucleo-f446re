@@ -9,7 +9,7 @@ pub struct PIDController {
     pub gains: PID,
 
     pub max_output: f32,
-    pub max_rate: f32,
+    pub max_rate: Option<f32>,
 
     pub integral: f32,
     pub last_error: f32,
@@ -17,7 +17,7 @@ pub struct PIDController {
 }
 
 impl PIDController {
-    pub fn new(pid: PID, max_output: f32, max_rate: f32) -> Self {
+    pub fn new(pid: PID, max_output: f32, max_rate: Option<f32>) -> Self {
         PIDController {
             gains: pid,
             max_output,
@@ -53,11 +53,13 @@ impl PIDController {
         let mut output = self.gains.p * error + self.integral + d_term;
         output = output.min(self.max_output).max(-self.max_output);
 
-        let output_rate = (output - self.last_output) / dt_seconds;
-        if output_rate > self.max_rate {
-            output = self.last_output + self.max_rate * dt_seconds;
-        } else if output_rate < -self.max_rate {
-            output = self.last_output - self.max_rate * dt_seconds;
+        if let Some(max_rate) = self.max_rate {
+            let output_rate = (output - self.last_output) / dt_seconds;
+            if output_rate > max_rate {
+                output = self.last_output + max_rate * dt_seconds;
+            } else if output_rate < -max_rate {
+                output = self.last_output - max_rate * dt_seconds;
+            }
         }
 
         self.last_error = error;

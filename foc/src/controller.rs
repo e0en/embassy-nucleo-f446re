@@ -134,9 +134,8 @@ where
         f_sincos: Fsincos,
     ) -> Self {
         let max_velocity = motor.max_velocity;
-        let max_velocity_ramp = motor.max_velocity;
         let max_current = output_limit.max_value; // / motor.phase_resistance;
-        let max_current_ramp = output_limit.ramp / motor.phase_resistance;
+        let max_current_ramp = output_limit.ramp;
         let state = FocState {
             angle_error: 0.0,
             angle_integral: 0.0,
@@ -169,19 +168,23 @@ where
             psu_voltage,
             torque_limit: None,
             current_limit: None,
-            velocity_limit: None,
+            velocity_limit: Some(motor.max_velocity),
             current_q_pid: PIDController::new(
                 current_pid_gains,
                 output_limit.max_value,
-                output_limit.ramp,
+                Some(output_limit.ramp),
             ),
             current_d_pid: PIDController::new(
                 current_pid_gains,
                 output_limit.max_value,
-                output_limit.ramp,
+                Some(output_limit.ramp),
             ),
-            angle_pid: PIDController::new(angle_pid_gains, max_velocity, max_velocity_ramp),
-            velocity_pid: PIDController::new(velocity_pid_gains, max_current, max_current_ramp),
+            angle_pid: PIDController::new(angle_pid_gains, max_velocity, None),
+            velocity_pid: PIDController::new(
+                velocity_pid_gains,
+                max_current,
+                Some(max_current_ramp),
+            ),
             _velocity_output_limit: 1000.0,
             current_q_filter: LowPassFilter::new(0.001),
             current_d_filter: LowPassFilter::new(0.001),
