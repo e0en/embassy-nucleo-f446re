@@ -113,7 +113,7 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     pub use_current_sensing: bool,
     current_offset: PhaseCurrent,
 
-    psu_voltage: f32,
+    psu_voltage: Option<f32>,
     pub torque_limit: Option<f32>,
     pub current_limit: Option<f32>,
     pub velocity_limit: Option<f32>,
@@ -142,7 +142,6 @@ where
 {
     pub fn new(
         motor: MotorSetup,
-        psu_voltage: f32,
         current_pid_gains: PID,
         angle_pid_gains: PID,
         velocity_pid_gains: PID,
@@ -181,7 +180,7 @@ where
             sensor_direction: Direction::Clockwise,
             current_mapping: (0, 1, 2),
             state,
-            psu_voltage,
+            psu_voltage: None,
             torque_limit: None,
             current_limit: None,
             velocity_limit: Some(motor.max_velocity),
@@ -250,12 +249,14 @@ where
         FWait: Fn(f32) -> FutUnit + 'a,
         FutUnit: Future<Output = ()> + Send + 'a,
     {
+        let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
+
         // keep sending zero
         let zero_signal = svpwm(
             align_voltage,
             0.0,
             3.0 * core::f32::consts::FRAC_PI_2,
-            self.psu_voltage,
+            psu_voltage,
             &self.f_sincos,
         )?;
         set_motor(zero_signal);
@@ -282,7 +283,7 @@ where
                 align_voltage,
                 0.0,
                 target_angle,
-                self.psu_voltage,
+                psu_voltage,
                 &self.f_sincos,
             )?;
             set_motor(signal);
@@ -299,7 +300,7 @@ where
                 align_voltage,
                 0.0,
                 target_angle,
-                self.psu_voltage,
+                psu_voltage,
                 &self.f_sincos,
             )?;
             set_motor(signal);
@@ -367,6 +368,10 @@ where
 
     pub fn set_target_voltage(&mut self, v_q: f32) {
         self.target.voltage = v_q;
+    }
+
+    pub fn set_psu_voltage(&mut self, voltage: f32) {
+        self.psu_voltage = Some(voltage);
     }
 
     pub fn set_velocity_limit(&mut self, velocity: f32) {
@@ -462,6 +467,7 @@ where
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
                 }
+                self.target.velocity = target_velocity;
                 let velocity_error = target_velocity - s.velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
@@ -530,7 +536,8 @@ where
         self.state.v_q = v_q;
         self.state.v_d = v_d;
 
-        let duty_cycle = svpwm(v_q, v_d, electrical_angle, self.psu_voltage, &self.f_sincos)?;
+        let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
+        let duty_cycle = svpwm(v_q, v_d, electrical_angle, psu_voltage, &self.f_sincos)?;
         Ok(duty_cycle)
     }
 
@@ -546,22 +553,24 @@ where
     }
 
     pub fn get_vq_duty_cycle(&mut self, v_q: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
+        let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
         let duty_cycle = svpwm(
             v_q,
             0.0,
             self.to_electrical_angle(angle),
-            self.psu_voltage,
+            psu_voltage,
             &self.f_sincos,
         )?;
         Ok(duty_cycle)
     }
 
     pub fn get_vd_duty_cycle(&mut self, v_d: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
+        let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
         let duty_cycle = svpwm(
             0.0,
             v_d,
             self.to_electrical_angle(angle),
-            self.psu_voltage,
+            psu_voltage,
             &self.f_sincos,
         )?;
         Ok(duty_cycle)

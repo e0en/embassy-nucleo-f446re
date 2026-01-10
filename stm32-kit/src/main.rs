@@ -22,6 +22,7 @@ use core::sync::atomic::AtomicU32;
 use foc::angle_input::AngleReading;
 
 use crate::{
+    adc::measure_vm_sense,
     as5047p::As5047P,
     bldc_driver::PwmDriver,
     can::{convert_response_message, parse_command_frame},
@@ -120,10 +121,9 @@ static FLASH: FlashMutex = FlashMutex::new(None);
 
 type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
 
-fn create_foc_controller(psu_voltage: f32, use_current_sensing: bool) -> FocControllerType {
+fn create_foc_controller(use_current_sensing: bool) -> FocControllerType {
     let mut foc = FocController::new(
         motor::SETUP,
-        psu_voltage,
         motor::CURRENT_PID,
         motor::ANGLE_PID,
         motor::VELOCITY_PID,
@@ -223,7 +223,6 @@ async fn init_foc(
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let slew_rate = drv8316::SlewRate::Rate200V;
-    let psu_voltage = PSU_VOLTAGE;
     let align_voltage = ALIGN_VOLTAGE;
 
     // Try to load stored configuration
@@ -243,8 +242,10 @@ async fn init_foc(
     let mut gate_driver = Drv8316::new(p_spi, cs_drv, drvoff_pin);
     gate_driver.initialize(csa_gain, slew_rate).await;
 
-    let mut foc = create_foc_controller(psu_voltage, use_current_sensing);
+    let mut foc = create_foc_controller(use_current_sensing);
     gate_driver.turn_on();
+
+    foc.set_psu_voltage(measure_vm_sense());
 
     if let Some(config) = &stored_config {
         flash_config::apply_to_foc(&mut foc, config);
@@ -306,8 +307,15 @@ async fn init_foc(
 #[embassy_executor::task]
 async fn monitor_task(mut gate_driver: Drv8316<'static>) {
     let mut last_logged_at = Instant::now();
+    let mut psu_voltage_tick: u8 = 0;
     loop {
         Timer::after_millis(100).await;
+
+        psu_voltage_tick += 1;
+        if psu_voltage_tick >= 10 {
+            foc_isr::with_foc(|foc| foc.set_psu_voltage(adc::measure_vm_sense()));
+            psu_voltage_tick = 0;
+        }
 
         let loop_count = foc_isr::get_loop_counter();
         if loop_count > 0 {
