@@ -7,6 +7,8 @@ use embassy_stm32::interrupt;
 use embassy_stm32::interrupt::InterruptExt;
 use embassy_stm32::pac;
 
+use crate::foc_isr;
+
 const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
 
 const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES12_5;
@@ -85,7 +87,8 @@ where
 
 #[interrupt]
 fn ADC1_2() {
-    // this runs on ADC1_2 event.
+    // This runs on ADC1_2 injected end-of-sequence event,
+    // triggered by TIM1 TRGO at PWM frequency (~41.5 kHz).
 
     let tim1 = pac::TIM1;
     let t = tim1.cnt().read().0;
@@ -97,10 +100,17 @@ fn ADC1_2() {
         let ia = adc1.jdr(1).read().0 as u16;
         let ib = adc1.jdr(2).read().0 as u16;
         let ic = adc1.jdr(3).read().0 as u16;
+
+        // Store raw values for calibration/debugging access
         IA_RAW.store(ia, Ordering::Relaxed);
         IB_RAW.store(ib, Ordering::Relaxed);
         IC_RAW.store(ic, Ordering::Relaxed);
         CNT.store(t, Ordering::Relaxed);
+
+        // Run FOC computation if initialized
+        if foc_isr::is_initialized() {
+            foc_isr::run_foc_iteration(ia, ib, ic);
+        }
 
         // Clear JEOS
         adc1.isr().write(|w| w.set_jeos(true));

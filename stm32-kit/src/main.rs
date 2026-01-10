@@ -9,6 +9,7 @@ mod cordic;
 mod current_tuning;
 mod drv8316;
 mod flycat5010;
+mod foc_isr;
 mod gm2804;
 mod gm3506;
 mod motor_tuning;
@@ -31,8 +32,7 @@ use crate::{
 use crate::gm3506 as motor;
 
 use can_message::message::{
-    Command, FeedbackType, MotorCurrent, MotorStatus, ParameterIndex, ParameterValue, ResponseBody,
-    ResponseMessage,
+    Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -54,10 +54,10 @@ use embassy_stm32::{
     spi as stm32_spi,
 };
 use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex,
+    blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
     channel::{Channel, Sender},
 };
-use embassy_time::{Duration, Instant, Timer, WithTimeout};
+use embassy_time::{Duration, Instant, Timer};
 
 use crate::cordic::atan2;
 use embedded_can::Id;
@@ -76,7 +76,8 @@ static VELOCITY: AtomicU32 = AtomicU32::new(0);
 static DT: AtomicU32 = AtomicU32::new(0);
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 32> = Channel::new();
-static RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, ResponseBody, 64> = Channel::new();
+/// Response channel uses CriticalSectionRawMutex because it's accessed from ADC interrupt
+static RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, ResponseBody, 64> = Channel::new();
 
 type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
@@ -239,17 +240,9 @@ where
     }
 }
 
-fn build_motor_status(state: FocState) -> MotorStatus {
-    MotorStatus {
-        angle: state.angle,
-        velocity: state.velocity,
-        torque: state.i_q,
-        temperature: 0.0,
-    }
-}
-
+/// FOC initialization task - sets up motor and starts interrupt-driven control
 #[embassy_executor::task]
-async fn foc_task(
+async fn foc_init_task(
     use_current_sensing: bool,
     p_spi: &'static SpiMutex,
     cs_drv_pin: gpio::Output<'static>,
@@ -267,7 +260,9 @@ async fn foc_task(
     let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
     gate_driver.initialize(csa_gain, slew_rate).await;
 
-    let mut foc = FocController::new(
+    // Create FOC controller with sincos function pointer (not closure)
+    // This allows it to be stored in static context
+    let mut foc: FocController<fn(f32) -> (f32, f32)> = FocController::new(
         motor::SETUP,
         psu_voltage,
         motor::CURRENT_PID,
@@ -277,7 +272,7 @@ async fn foc_task(
             max_value: 16.0,
             ramp: 1000.0,
         },
-        sincos,
+        sincos as fn(f32) -> (f32, f32),
     );
     foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
 
@@ -346,88 +341,169 @@ async fn foc_task(
         .await;
     info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 
+    // Initialize FOC context for interrupt-driven control
+    // From this point on, FOC runs in the ADC interrupt at ~41.5 kHz
+    foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
+    info!("FOC interrupt-driven control started");
+
+    // Keep task alive for monitoring and gate driver fault handling
+    let mut last_logged_at = Instant::now();
+    loop {
+        Timer::after_millis(100).await;
+
+        // Periodic logging
+        let loop_count = foc_isr::get_loop_counter();
+        if loop_count > 0 {
+            let now = Instant::now();
+            if let Some(dt) = now.checked_duration_since(last_logged_at) {
+                if let Some(state) = foc_isr::get_foc_state() {
+                    log_state(&state, &dt, loop_count as usize);
+                }
+                last_logged_at = now;
+            }
+        }
+
+        // Check gate driver status
+        if let Ok(x) = gate_driver.read_ic_status().await
+            && x.device_fault
+        {
+            let _ = gate_driver.unlock_registers().await;
+            let _ = gate_driver.clear_fault().await;
+            let _ = gate_driver.lock_registers().await;
+            warn!("DRV8316 status = {}", x);
+        }
+    }
+}
+
+/// Command handling task - processes commands from CAN and updates FOC parameters
+#[embassy_executor::task]
+async fn command_task() {
     let command_receiver = COMMAND_CHANNEL.receiver();
     let response_sender = RESPONSE_CHANNEL.sender();
 
-    let mut feedback_type = FeedbackType::Status;
-    let mut feedback_period: u8 = 10;
-    let mut feedback_tick: u8 = 0;
-    let mut check_count: usize = 0;
-    let mut last_logged_at = Instant::now();
-    let mut phase_current = PhaseCurrent::new(0.0, 0.0, 0.0);
-
     loop {
-        if let Ok(command) = command_receiver.try_receive() {
-            match command {
-                Command::SetFeedbackInterval(period) => feedback_period = period,
-                Command::SetFeedbackType(typ) => feedback_type = typ,
-                _ => {
-                    let _ = handle_command(&command, &mut foc, &response_sender)
-                        .with_timeout(Duration::from_micros(5))
-                        .await;
-                }
+        let command = command_receiver.receive().await;
+
+        match command {
+            Command::SetFeedbackInterval(period) => {
+                foc_isr::set_feedback_period(period);
+            }
+            Command::SetFeedbackType(typ) => {
+                foc_isr::set_feedback_type(typ);
+            }
+            _ => {
+                handle_command_isr(&command, &response_sender).await;
             }
         }
-        let reading = read_sensor();
-        if use_current_sensing {
-            let (ia_raw, ib_raw, ic_raw) = p_adc.read();
-            phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+    }
+}
+
+/// Handle commands by updating FOC controller via critical section
+async fn handle_command_isr(
+    command: &Command,
+    response_sender: &Sender<'static, CriticalSectionRawMutex, ResponseBody, 64>,
+) {
+    match command {
+        Command::Enable => {
+            foc_isr::with_foc(|foc| foc.enable());
+        }
+        Command::Stop => {
+            foc_isr::with_foc(|foc| foc.stop());
         }
 
-        match foc.get_duty_cycle(&reading, phase_current) {
-            Ok(duty) => {
-                driver.run(duty);
+        Command::SetParameter(ParameterValue::RunMode(m)) => {
+            info!("received runmode {}", *m as u8);
+            foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
+        }
+        Command::SetParameter(ParameterValue::AngleRef(p)) => {
+            foc_isr::with_foc(|foc| foc.set_target_angle(*p));
+        }
+        Command::SetParameter(ParameterValue::SpeedRef(v)) => {
+            foc_isr::with_foc(|foc| foc.set_target_velocity(*v));
+        }
+        Command::SetParameter(ParameterValue::IqRef(t)) => {
+            foc_isr::with_foc(|foc| foc.set_target_torque(*t));
+        }
+        Command::SetParameter(ParameterValue::SpeedLimit(v)) => {
+            foc_isr::with_foc(|foc| foc.set_velocity_limit(*v));
+        }
+        Command::SetParameter(ParameterValue::CurrentLimit(i)) => {
+            foc_isr::with_foc(|foc| foc.set_current_limit(*i));
+        }
+        Command::SetParameter(ParameterValue::TorqueLimit(t)) => {
+            foc_isr::with_foc(|foc| foc.set_torque_limit(*t));
+        }
 
-                feedback_tick += 1;
-                if feedback_tick >= feedback_period {
-                    match feedback_type {
-                        FeedbackType::Status => {
-                            let motor_status = build_motor_status(foc.state);
-                            let _ = response_sender
-                                .send(ResponseBody::MotorStatus(motor_status))
-                                .with_timeout(Duration::from_micros(100))
-                                .await;
-                        }
-                        FeedbackType::Current => {
-                            let motor_current = MotorCurrent {
-                                i_q: foc.state.i_q,
-                                i_d: foc.state.i_d,
-                            };
-                            let _ = response_sender
-                                .send(ResponseBody::MotorCurrent(motor_current))
-                                .with_timeout(Duration::from_micros(100))
-                                .await;
-                        }
-                    };
-                    feedback_tick = 0;
-                }
+        Command::SetParameter(ParameterValue::CurrentKp(kp)) => {
+            foc_isr::with_foc(|foc| foc.set_current_kp(*kp));
+        }
+        Command::SetParameter(ParameterValue::CurrentKi(ki)) => {
+            foc_isr::with_foc(|foc| foc.set_current_ki(*ki));
+        }
 
-                check_count += 1;
-                if check_count.is_multiple_of(5_000) {
-                    let now = Instant::now();
-                    if let Some(dt) = now.checked_duration_since(last_logged_at) {
-                        log_state(&foc.state, &dt, check_count);
-                        check_count = 0;
-                        last_logged_at = now;
-                    }
-                    if let Ok(x) = gate_driver.read_ic_status().await
-                        && x.device_fault
-                    {
-                        let _ = gate_driver.unlock_registers().await;
-                        let _ = gate_driver.clear_fault().await;
-                        let _ = gate_driver.lock_registers().await;
-                        warn!("DRV8316 status = {}", x);
-                    }
+        Command::SetParameter(ParameterValue::SpeedKp(kp)) => {
+            foc_isr::with_foc(|foc| foc.set_velocity_kp(*kp));
+        }
+        Command::SetParameter(ParameterValue::SpeedKi(ki)) => {
+            foc_isr::with_foc(|foc| foc.set_velocity_ki(*ki));
+        }
+        Command::SetParameter(ParameterValue::Iq(f)) => {
+            foc_isr::with_foc(|foc| foc.set_current_filter(*f));
+        }
+        Command::SetParameter(ParameterValue::AngleKp(kp)) => {
+            foc_isr::with_foc(|foc| foc.set_angle_kp(*kp));
+        }
+
+        Command::SetParameter(ParameterValue::Spring(k)) => {
+            foc_isr::with_foc(|foc| foc.set_spring(*k));
+        }
+        Command::SetParameter(ParameterValue::Damping(b)) => {
+            foc_isr::with_foc(|foc| foc.set_damping(*b));
+        }
+        Command::SetParameter(ParameterValue::VqRef(v)) => {
+            info!("received target Vq {}", v);
+            foc_isr::with_foc(|foc| foc.set_target_voltage(*v));
+        }
+
+        Command::GetParameter(p) => {
+            info!("parameter requested {}", *p as u16);
+            let pv = foc_isr::with_foc(|foc| match p {
+                ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
+                ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
+                ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
+                ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
+                ParameterIndex::Speed => ParameterValue::Speed(foc.state.velocity),
+                ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
+                ParameterIndex::SpeedLimit => {
+                    ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
                 }
+                ParameterIndex::TorqueLimit => {
+                    ParameterValue::TorqueLimit(foc.torque_limit.unwrap_or(0.0))
+                }
+                ParameterIndex::Iq => ParameterValue::Iq(foc.state.i_q),
+
+                ParameterIndex::AngleKp => ParameterValue::AngleKp(foc.angle_pid.gains.p),
+                ParameterIndex::SpeedKp => ParameterValue::SpeedKp(foc.velocity_pid.gains.p),
+                ParameterIndex::SpeedKi => ParameterValue::SpeedKi(foc.velocity_pid.gains.i),
+
+                ParameterIndex::CurrentKp => ParameterValue::CurrentKp(foc.current_q_pid.gains.p),
+                ParameterIndex::CurrentKi => ParameterValue::CurrentKi(foc.current_q_pid.gains.i),
+                ParameterIndex::CurrentFilter => {
+                    ParameterValue::CurrentFilter(foc.current_q_filter.time_constant)
+                }
+                ParameterIndex::CurrentLimit => {
+                    ParameterValue::CurrentLimit(foc.current_limit.unwrap_or(0.0))
+                }
+                ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
+                ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
+                ParameterIndex::VqRef => ParameterValue::Damping(foc.target.voltage),
+            });
+            if let Some(pv) = pv {
+                let body = ResponseBody::ParameterValue(pv);
+                response_sender.send(body).await;
             }
-            Err(e) => match e {
-                foc::pwm::FocError::AlignError => error!("AlignError"),
-                foc::pwm::FocError::CalculationError => error!("CalculationError"),
-                foc::pwm::FocError::InvalidParameters => error!("InvalidParam"),
-            },
         }
-
-        Timer::after_micros(5).await;
+        _ => (),
     }
 }
 
@@ -536,81 +612,6 @@ async fn can_rx_task(mut can_rx: CanRx<'static>) {
     }
 }
 
-async fn handle_command<Fsincos: Fn(f32) -> (f32, f32)>(
-    command: &Command,
-    foc: &mut FocController<Fsincos>,
-    response_sender: &Sender<'static, ThreadModeRawMutex, ResponseBody, 64>,
-) {
-    match command {
-        Command::Enable => foc.enable(),
-        Command::Stop => foc.stop(),
-
-        Command::SetParameter(ParameterValue::RunMode(m)) => {
-            info!("received runmode {}", *m as u8);
-            foc.set_run_mode(decode_run_mode(m));
-        }
-        Command::SetParameter(ParameterValue::AngleRef(p)) => foc.set_target_angle(*p),
-        Command::SetParameter(ParameterValue::SpeedRef(v)) => foc.set_target_velocity(*v),
-        Command::SetParameter(ParameterValue::IqRef(t)) => foc.set_target_torque(*t),
-        Command::SetParameter(ParameterValue::SpeedLimit(v)) => foc.set_velocity_limit(*v),
-        Command::SetParameter(ParameterValue::CurrentLimit(i)) => foc.set_current_limit(*i),
-        Command::SetParameter(ParameterValue::TorqueLimit(t)) => foc.set_torque_limit(*t),
-
-        Command::SetParameter(ParameterValue::CurrentKp(kp)) => foc.set_current_kp(*kp),
-        Command::SetParameter(ParameterValue::CurrentKi(ki)) => foc.set_current_ki(*ki),
-
-        Command::SetParameter(ParameterValue::SpeedKp(kp)) => foc.set_velocity_kp(*kp),
-        Command::SetParameter(ParameterValue::SpeedKi(ki)) => foc.set_velocity_ki(*ki),
-        Command::SetParameter(ParameterValue::Iq(f)) => foc.set_current_filter(*f),
-        Command::SetParameter(ParameterValue::AngleKp(kp)) => foc.set_angle_kp(*kp),
-
-        Command::SetParameter(ParameterValue::Spring(k)) => foc.set_spring(*k),
-        Command::SetParameter(ParameterValue::Damping(b)) => foc.set_damping(*b),
-        Command::SetParameter(ParameterValue::VqRef(v)) => {
-            info!("received target Vq {}", v);
-            foc.set_target_voltage(*v);
-        }
-
-        Command::GetParameter(p) => {
-            info!("parameter requested {}", *p as u16);
-            let pv = match p {
-                ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
-                ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
-                ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
-                ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
-                ParameterIndex::Speed => ParameterValue::Speed(foc.state.velocity),
-                ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
-                ParameterIndex::SpeedLimit => {
-                    ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
-                }
-                ParameterIndex::TorqueLimit => {
-                    ParameterValue::TorqueLimit(foc.torque_limit.unwrap_or(0.0))
-                }
-                ParameterIndex::Iq => ParameterValue::Iq(foc.state.i_q),
-
-                ParameterIndex::AngleKp => ParameterValue::AngleKp(foc.angle_pid.gains.p),
-                ParameterIndex::SpeedKp => ParameterValue::SpeedKp(foc.velocity_pid.gains.p),
-                ParameterIndex::SpeedKi => ParameterValue::SpeedKi(foc.velocity_pid.gains.i),
-
-                ParameterIndex::CurrentKp => ParameterValue::CurrentKp(foc.current_q_pid.gains.p),
-                ParameterIndex::CurrentKi => ParameterValue::CurrentKi(foc.current_q_pid.gains.i),
-                ParameterIndex::CurrentFilter => {
-                    ParameterValue::CurrentFilter(foc.current_q_filter.time_constant)
-                }
-                ParameterIndex::CurrentLimit => {
-                    ParameterValue::CurrentLimit(foc.current_limit.unwrap_or(0.0))
-                }
-                ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
-                ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
-                ParameterIndex::VqRef => ParameterValue::Damping(foc.target.voltage),
-            };
-            let body = ResponseBody::ParameterValue(pv);
-            response_sender.send(body).await;
-        }
-        _ => (),
-    }
-}
-
 fn decode_run_mode(m: &can_message::message::RunMode) -> foc::controller::RunMode {
     match m {
         can_message::message::RunMode::Impedance => foc::controller::RunMode::Impedance,
@@ -696,7 +697,8 @@ async fn main(spawner: Spawner) {
     }
 
     unwrap!(spawner.spawn(encoder_task(sensor)));
-    unwrap!(spawner.spawn(foc_task(true, &SPI, cs_drv, drvoff_pin, timer, p_adc)));
+    unwrap!(spawner.spawn(foc_init_task(true, &SPI, cs_drv, drvoff_pin, timer, p_adc)));
+    unwrap!(spawner.spawn(command_task()));
 
     unwrap!(spawner.spawn(can_rx_task(can_rx)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));

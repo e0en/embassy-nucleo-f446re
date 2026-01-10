@@ -703,6 +703,7 @@ dependencies = [
  "can_message",
  "cortex-m",
  "cortex-m-rt",
+ "critical-section",
  "defmt 1.0.1",
  "defmt-rtt",
  "embassy-executor",
