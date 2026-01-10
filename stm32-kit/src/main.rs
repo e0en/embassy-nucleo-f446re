@@ -649,9 +649,9 @@ async fn main(spawner: Spawner) {
     let drvoff_pin = gpio::Output::new(p.PB12, gpio::Level::High, gpio::Speed::Medium);
     let cs_drv = gpio::Output::new(p.PB5, gpio::Level::High, gpio::Speed::VeryHigh);
 
-    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PC2);
+    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PA2);
     p_adc.calibrate();
-    p_adc.initialize(1, 2, 8);
+    p_adc.initialize(1, 2, 3);
 
     let mut timer = pwm::Pwm6Timer::new(p.TIM1, p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15);
     timer.initialize(foc_isr::MAX_COMPARE_VALUE as u16);
