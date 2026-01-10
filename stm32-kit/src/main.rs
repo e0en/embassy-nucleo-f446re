@@ -28,7 +28,7 @@ use crate::{
     drv8316::Drv8316,
 };
 
-use crate::flycat5010 as motor;
+use crate::gm3506 as motor;
 
 use can_message::message::{
     Command, FeedbackType, MotorCurrent, MotorStatus, ParameterIndex, ParameterValue, ResponseBody,
