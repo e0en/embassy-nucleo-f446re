@@ -9,6 +9,7 @@ pub enum FocError {
     InvalidParameters,
     CalculationError,
     AlignError,
+    PsuVoltageNotSet,
 }
 
 const HALF_SQRT3: f32 = 0.866_025_4;

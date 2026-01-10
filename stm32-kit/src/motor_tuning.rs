@@ -10,6 +10,7 @@ use foc::angle_input::AngleReading;
 use foc::controller::{FocController, RunMode};
 use foc::pwm_output::PwmOutput;
 
+#[allow(dead_code)]
 pub async fn find_kv_rating<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,

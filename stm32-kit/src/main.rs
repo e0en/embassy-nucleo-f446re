@@ -307,7 +307,7 @@ async fn init_foc(
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let slew_rate = drv8316::SlewRate::Rate200V;
-    let psu_voltage = 16.0;
+    let psu_voltage = adc::measure_vm_sense();
     let align_voltage: f32 = 2.0;
 
     // Try to load stored configuration
@@ -330,7 +330,6 @@ async fn init_foc(
     // This allows it to be stored in static context
     let mut foc: FocController<fn(f32) -> (f32, f32)> = FocController::new(
         motor::SETUP,
-        psu_voltage,
         motor::CURRENT_PID,
         motor::ANGLE_PID,
         motor::VELOCITY_PID,
@@ -340,6 +339,7 @@ async fn init_foc(
         },
         sincos as fn(f32) -> (f32, f32),
     );
+    foc.set_psu_voltage(psu_voltage);
     foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
 
     if use_current_sensing {
@@ -449,8 +449,15 @@ async fn init_foc(
 #[embassy_executor::task]
 async fn monitor_task(mut gate_driver: Drv8316<'static>) {
     let mut last_logged_at = Instant::now();
+    let mut psu_voltage_tick: u8 = 0;
     loop {
         Timer::after_millis(100).await;
+
+        psu_voltage_tick += 1;
+        if psu_voltage_tick >= 10 {
+            foc_isr::with_foc(|foc| foc.set_psu_voltage(adc::measure_vm_sense()));
+            psu_voltage_tick = 0;
+        }
 
         let loop_count = foc_isr::get_loop_counter();
         if loop_count > 0 {

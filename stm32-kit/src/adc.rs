@@ -9,6 +9,14 @@ use embassy_stm32::pac;
 
 use crate::foc_isr;
 
+// VM_SENSE voltage divider: 110kΩ (top) + 10kΩ (bottom)
+// V_adc = V_motor * 10k / (110k + 10k) = V_motor / 12
+const VM_SENSE_DIVIDER_RATIO: f32 = 12.0;
+// ADC reference voltage from AP2112K-3.3 LDO
+const ADC_VREF: f32 = 3.3;
+// 12-bit ADC resolution
+const ADC_MAX_VALUE: f32 = 4096.0;
+
 const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
 
 const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES12_5;
@@ -135,6 +143,55 @@ pub fn calibrate(adc1: pac::adc::Adc) {
     adc1.isr().write(|w| w.set_adrdy(true));
     adc1.cr().modify(|w| w.set_aden(true));
     while !adc1.isr().read().adrdy() {}
+}
+
+/// Measure motor supply voltage from VM_SENSE pin (PA3 = ADC1_IN4).
+/// Performs a single software-triggered conversion on the regular group.
+/// Returns the measured voltage in volts.
+pub fn measure_vm_sense() -> f32 {
+    let adc1 = pac::ADC1;
+
+    // VM_SENSE is on PA3 = ADC1 channel 4
+    const VM_SENSE_CHANNEL: u8 = 4;
+
+    // Save current JSQR state (injected sequence used for current sensing)
+    let jsqr_backup = adc1.jsqr().read();
+
+    // Stop any ongoing injected conversion
+    adc1.cr()
+        .modify(|w| w.set_jadstp(pac::adc::vals::Adstp::STOP));
+    while adc1.cr().read().jadstart() {}
+
+    // Configure regular sequence for single channel conversion
+    adc1.sqr1().modify(|w| {
+        w.set_l(0); // 1 conversion (L = 0 means 1 conversion)
+        w.set_sq(1, VM_SENSE_CHANNEL);
+    });
+
+    // Set sample time for the VM_SENSE channel
+    adc1.smpr().modify(|w| {
+        w.set_smp(VM_SENSE_CHANNEL as usize, SAMPLE_DURATION);
+    });
+
+    // Start regular conversion
+    adc1.cr().modify(|w| w.set_adstart(true));
+
+    // Wait for conversion to complete (EOC flag)
+    while !adc1.isr().read().eoc() {}
+
+    // Read the result
+    let raw_value = adc1.dr().read().0 as u16;
+
+    // Clear EOC flag
+    adc1.isr().write(|w| w.set_eoc(true));
+
+    // Restore injected sequence and restart
+    adc1.jsqr().write_value(jsqr_backup);
+    adc1.cr().modify(|w| w.set_jadstart(true));
+
+    // Convert raw ADC value to voltage
+    let adc_voltage = (raw_value as f32) * ADC_VREF / ADC_MAX_VALUE;
+    adc_voltage * VM_SENSE_DIVIDER_RATIO
 }
 
 pub fn initialize(adc1: pac::adc::Adc, ch1: u8, ch2: u8, ch3: u8) {
