@@ -44,15 +44,11 @@ use embassy_stm32::{
     gpio, i2c as stm32_i2c,
     interrupt::{self, InterruptExt},
     mode::Async,
-    peripherals::{self, ADC1, TIM1},
+    peripherals,
     time::mhz,
     timer::AdvancedInstance4Channel,
 };
-use embassy_stm32::{
-    adc as stm32_adc,
-    peripherals::{PA8, PA9, PA10, PB13, PB14, PB15},
-    spi as stm32_spi,
-};
+use embassy_stm32::{adc as stm32_adc, spi as stm32_spi};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
     channel::{Channel, Sender},
@@ -240,24 +236,34 @@ where
     }
 }
 
-/// FOC initialization task - sets up motor and starts interrupt-driven control
-#[embassy_executor::task]
-async fn foc_init_task(
-    use_current_sensing: bool,
+/// Initialize FOC controller and start interrupt-driven control
+/// Returns the gate driver for monitoring, or None on failure
+#[inline]
+async fn init_foc(
     p_spi: &'static SpiMutex,
-    cs_drv_pin: gpio::Output<'static>,
+    cs_drv: gpio::Output<'static>,
     mut drvoff_pin: gpio::Output<'static>,
-    pwm_timer: pwm::Pwm6Timer<'static, TIM1, PA8, PA9, PA10, PB13, PB14, PB15>,
-    mut p_adc: adc::DummyAdc<ADC1>,
-) {
+    timer: pwm::Pwm6Timer<
+        'static,
+        peripherals::TIM1,
+        peripherals::PA8,
+        peripherals::PA9,
+        peripherals::PA10,
+        peripherals::PB13,
+        peripherals::PB14,
+        peripherals::PB15,
+    >,
+    mut p_adc: adc::DummyAdc<peripherals::ADC1>,
+) -> Option<Drv8316<'static>> {
+    let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let slew_rate = drv8316::SlewRate::Rate200V;
     let psu_voltage = 16.0;
     let align_voltage: f32 = 2.0;
 
     drvoff_pin.set_high();
-    let mut driver = PwmDriver::new(pwm_timer.timer);
-    let mut gate_driver = Drv8316::new(p_spi, cs_drv_pin, drvoff_pin);
+    let mut driver = PwmDriver::new(timer.timer);
+    let mut gate_driver = Drv8316::new(p_spi, cs_drv, drvoff_pin);
     gate_driver.initialize(csa_gain, slew_rate).await;
 
     // Create FOC controller with sincos function pointer (not closure)
@@ -276,10 +282,10 @@ async fn foc_init_task(
     );
     foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
 
-    if !use_current_sensing {
-        foc.disable_current_sensing();
-    } else {
+    if use_current_sensing {
         foc.enable_current_sensing();
+    } else {
+        foc.disable_current_sensing();
     }
 
     gate_driver.turn_on();
@@ -293,7 +299,7 @@ async fn foc_init_task(
         } else {
             error!("Current phase mapping failed");
             gate_driver.turn_off();
-            return;
+            return None;
         }
         foc.set_current_offset(current_offset);
     }
@@ -308,7 +314,7 @@ async fn foc_init_task(
     {
         error!("Sensor align failed");
         gate_driver.turn_off();
-        return;
+        return None;
     }
 
     if use_current_sensing
@@ -346,7 +352,17 @@ async fn foc_init_task(
     foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
     info!("FOC interrupt-driven control started");
 
-    // Keep task alive for monitoring and gate driver fault handling
+    // Leak the driver to prevent TIM1 from being stopped when it goes out of scope.
+    // The ISR accesses TIM1 directly via PAC, but Embassy's Timer wrapper
+    // may stop the hardware timer on drop.
+    core::mem::forget(driver);
+
+    Some(gate_driver)
+}
+
+/// Gate driver monitoring task - checks for faults and logs FOC state
+#[embassy_executor::task]
+async fn monitor_task(mut gate_driver: Drv8316<'static>) {
     let mut last_logged_at = Instant::now();
     loop {
         Timer::after_millis(100).await;
@@ -696,10 +712,17 @@ async fn main(spawner: Spawner) {
         return;
     }
 
+    // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor)));
-    unwrap!(spawner.spawn(foc_init_task(true, &SPI, cs_drv, drvoff_pin, timer, p_adc)));
-    unwrap!(spawner.spawn(command_task()));
 
+    // Initialize FOC and start interrupt-driven control
+    let Some(gate_driver) = init_foc(&SPI, cs_drv, drvoff_pin, timer, p_adc).await else {
+        return;
+    };
+
+    // Spawn remaining tasks
+    unwrap!(spawner.spawn(monitor_task(gate_driver)));
+    unwrap!(spawner.spawn(command_task()));
     unwrap!(spawner.spawn(can_rx_task(can_rx)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));
 }
