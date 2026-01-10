@@ -1,8 +1,19 @@
-use libm::fmodf;
-
 use crate::current::PhaseCurrent;
 
 const INV_SQRT3: f32 = 0.577_350_26;
+
+/// Compute floating-point remainder (equivalent to libm::fmodf)
+/// Returns x - n*y where n = trunc(x/y)
+#[inline]
+fn fmodf(x: f32, y: f32) -> f32 {
+    let quot = x / y;
+    let trunc_quot = if quot >= 0.0 {
+        quot as i32 as f32
+    } else {
+        -((-quot) as i32 as f32)
+    };
+    x - trunc_quot * y
+}
 
 use crate::{
     angle_input::AngleReading,
@@ -574,4 +585,103 @@ where
     let i_q = beta * cos - alpha * sin;
     let i_d = alpha * cos + beta * sin;
     (i_q, i_d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmodf;
+
+    #[test]
+    fn test_fmodf_positive_values() {
+        // Basic positive cases
+        assert!((fmodf(5.0, 3.0) - 2.0).abs() < 1e-6);
+        assert!((fmodf(10.0, 3.0) - 1.0).abs() < 1e-6);
+        assert!((fmodf(7.5, 2.5) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fmodf_negative_dividend() {
+        // Negative x, positive y
+        assert!((fmodf(-5.0, 3.0) - (-2.0)).abs() < 1e-6);
+        assert!((fmodf(-10.0, 3.0) - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fmodf_negative_divisor() {
+        // Positive x, negative y
+        assert!((fmodf(5.0, -3.0) - 2.0).abs() < 1e-6);
+        assert!((fmodf(10.0, -3.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fmodf_both_negative() {
+        // Both negative
+        assert!((fmodf(-5.0, -3.0) - (-2.0)).abs() < 1e-6);
+        assert!((fmodf(-10.0, -3.0) - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fmodf_fractional() {
+        // Fractional values
+        assert!((fmodf(5.5, 2.0) - 1.5).abs() < 1e-6);
+        assert!((fmodf(3.75, 1.25) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fmodf_less_than_divisor() {
+        // x < y should return x
+        assert!((fmodf(2.0, 5.0) - 2.0).abs() < 1e-6);
+        assert!((fmodf(0.5, 1.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fmodf_angle_wrapping() {
+        // Test case used in to_electrical_angle: fmodf(angle, 2*PI)
+        use core::f32::consts::PI;
+        let two_pi = 2.0 * PI;
+
+        // Positive angles
+        let angle = 3.0 * PI; // 1.5 rotations
+        let wrapped = fmodf(angle, two_pi);
+        assert!((wrapped - PI).abs() < 1e-5);
+
+        // Negative angles
+        let angle = -3.0 * PI;
+        let wrapped = fmodf(angle, two_pi);
+        assert!((wrapped - (-PI)).abs() < 1e-5);
+
+        // Large angles
+        let angle = 10.0 * PI;
+        let wrapped = fmodf(angle, two_pi);
+        assert!(wrapped.abs() < 1e-5); // Should be ~0
+    }
+
+    #[test]
+    fn test_fmodf_matches_libm() {
+        // Compare against libm::fmodf for various inputs
+        let test_cases = [
+            (5.0, 3.0),
+            (-5.0, 3.0),
+            (5.0, -3.0),
+            (-5.0, -3.0),
+            (10.5, 3.2),
+            (-10.5, 3.2),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (100.0, 7.0),
+        ];
+
+        for (x, y) in test_cases {
+            let our_result = fmodf(x, y);
+            let libm_result = libm::fmodf(x, y);
+            assert!(
+                (our_result - libm_result).abs() < 1e-6,
+                "fmodf({}, {}): our={}, libm={}",
+                x,
+                y,
+                our_result,
+                libm_result
+            );
+        }
+    }
 }

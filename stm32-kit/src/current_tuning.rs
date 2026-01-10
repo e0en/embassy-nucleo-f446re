@@ -1,6 +1,7 @@
 use crate::adc;
 use crate::adc::AdcSelector;
 use crate::bldc_driver::PwmDriver;
+use crate::cordic;
 use crate::drv8316;
 
 use foc::angle_input::AngleReading;
@@ -47,7 +48,8 @@ where
     for i in 0..(n_sample * 2) {
         let now = Instant::now().as_micros();
         let t = ((now - _t0) as f32) / 1e6;
-        let v_d = test_voltage * libm::sinf(2.0 * core::f32::consts::PI * test_frequency * t);
+        let (sin_val, _) = cordic::sincos(2.0 * core::f32::consts::PI * test_frequency * t);
+        let v_d = test_voltage * sin_val;
         let reading = read_sensor();
         let angle = reading.angle;
         let electrical_angle = foc.to_electrical_angle(angle);
@@ -70,7 +72,8 @@ where
     for i in 0..(n_sample * 2) {
         let now = Instant::now().as_micros();
         let t = ((now - _t0) as f32) / 1e6;
-        let v_q = test_voltage * libm::sinf(2.0 * core::f32::consts::PI * test_frequency * t);
+        let (sin_val, _) = cordic::sincos(2.0 * core::f32::consts::PI * test_frequency * t);
+        let v_q = test_voltage * sin_val;
         let reading = read_sensor();
         let angle = reading.angle;
         let electrical_angle = foc.to_electrical_angle(angle);
@@ -145,10 +148,11 @@ pub fn calculate_inductance(
         let v = v_buffer[i] - v_mean;
         let i = i_buffer[i] - i_mean;
 
-        vc += v * libm::cosf(angle);
-        vs += v * libm::sinf(angle);
-        ic += i * libm::cosf(angle);
-        is += i * libm::sinf(angle);
+        let (sin_a, cos_a) = cordic::sincos(angle);
+        vc += v * cos_a;
+        vs += v * sin_a;
+        ic += i * cos_a;
+        is += i * sin_a;
     }
 
     let norm = 2.0 / (n_sample as f32);
@@ -156,10 +160,11 @@ pub fn calculate_inductance(
     vs *= norm;
     ic *= norm;
     is *= norm;
-    let v_mag = libm::sqrtf(vc * vc + vs * vs);
-    let i_mag = libm::sqrtf(ic * ic + is * is);
-    let phi = libm::atan2f(vs, vc) - libm::atan2f(is, ic);
+    let v_mag = cordic::sqrt_scaled(vc * vc + vs * vs);
+    let i_mag = cordic::sqrt_scaled(ic * ic + is * is);
+    let phi = cordic::atan2(vs, vc) - cordic::atan2(is, ic);
     let z_mag = v_mag / i_mag;
 
-    (z_mag * libm::sinf(phi) / test_frequency).abs()
+    let (sin_phi, _) = cordic::sincos(phi);
+    (z_mag * sin_phi / test_frequency).abs()
 }

@@ -23,7 +23,7 @@ use crate::{
     as5047p::As5047P,
     bldc_driver::PwmDriver,
     can::{convert_response_message, parse_command_frame},
-    cordic::{initialize_cordic, sincos},
+    cordic::{initialize_cordic, run_and_log_validation_tests, sincos},
     current_tuning::calculate_current_pi,
     drv8316::Drv8316,
 };
@@ -59,6 +59,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant, Timer, WithTimeout};
 
+use crate::cordic::atan2;
 use embedded_can::Id;
 use foc::{
     angle_input::AngleInput,
@@ -69,7 +70,6 @@ use foc::{
     controller::{clarke_transform, park_transform},
     pwm_output::PwmOutput,
 };
-use libm::atan2f;
 
 static ANGLE: AtomicU32 = AtomicU32::new(0);
 static VELOCITY: AtomicU32 = AtomicU32::new(0);
@@ -223,7 +223,7 @@ where
 
         let (i_alpha, i_beta) = clarke_transform(mapped.a, mapped.b, mapped.c);
         let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle, sincos);
-        let i_angle = atan2f(i_q, i_d);
+        let i_angle = atan2(i_q, i_d);
         avg_angle += i_angle - e_angle;
         n_success += 1;
 
@@ -644,6 +644,7 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     clock::set_clock(&mut config);
     initialize_cordic();
+    run_and_log_validation_tests();
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
