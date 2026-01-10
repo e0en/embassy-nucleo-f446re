@@ -385,7 +385,7 @@ async fn foc_task(
                             let motor_status = build_motor_status(foc.state);
                             let _ = response_sender
                                 .send(ResponseBody::MotorStatus(motor_status))
-                                .with_timeout(Duration::from_micros(1))
+                                .with_timeout(Duration::from_micros(100))
                                 .await;
                         }
                         FeedbackType::Current => {
@@ -395,7 +395,7 @@ async fn foc_task(
                             };
                             let _ = response_sender
                                 .send(ResponseBody::MotorCurrent(motor_current))
-                                .with_timeout(Duration::from_micros(1))
+                                .with_timeout(Duration::from_micros(100))
                                 .await;
                         }
                     };
