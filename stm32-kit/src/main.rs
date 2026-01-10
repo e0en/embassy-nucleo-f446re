@@ -75,7 +75,7 @@ static ANGLE: AtomicU32 = AtomicU32::new(0);
 static VELOCITY: AtomicU32 = AtomicU32::new(0);
 static DT: AtomicU32 = AtomicU32::new(0);
 
-static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 3> = Channel::new();
+static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 32> = Channel::new();
 static RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, ResponseBody, 64> = Channel::new();
 
 type SpiMutex = embassy_sync::mutex::Mutex<
