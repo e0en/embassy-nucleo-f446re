@@ -88,7 +88,7 @@ where
 #[interrupt]
 fn ADC1_2() {
     // This runs on ADC1_2 injected end-of-sequence event,
-    // triggered by TIM1 TRGO at PWM frequency (~41.5 kHz).
+    // triggered by TIM1 TRGO at PWM frequency.
 
     let tim1 = pac::TIM1;
     let t = tim1.cnt().read().0;

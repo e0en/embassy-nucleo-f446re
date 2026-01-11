@@ -434,7 +434,7 @@ async fn init_foc(
     }
 
     // Initialize FOC context for interrupt-driven control
-    // From this point on, FOC runs in the ADC interrupt at ~41.5 kHz
+    // From this point on, FOC runs in the ADC interrupt
     foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
     info!("FOC interrupt-driven control started");
 
@@ -854,7 +854,7 @@ async fn main(spawner: Spawner) {
     p_adc.initialize(1, 2, 8);
 
     let mut timer = pwm::Pwm6Timer::new(p.TIM1, p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15);
-    timer.initialize((1 << 12) - 1);
+    timer.initialize(foc_isr::MAX_COMPARE_VALUE as u16);
     info!("Timer frequency: {}", timer.get_frequency());
 
     let velocity_filter: f32 = 0.005;

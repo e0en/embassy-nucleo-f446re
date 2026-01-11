@@ -17,14 +17,14 @@ use foc::pwm_output::DutyCycle3Phase;
 use crate::drv8316::{self, CsaGain};
 use crate::{RESPONSE_CHANNEL, read_sensor};
 
-/// Maximum PWM compare value (12-bit: 4095)
-const MAX_COMPARE_VALUE: u32 = (1 << 12) - 1;
+/// Maximum PWM compare value (11-bit: 2047)
+pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
 const MAX_DUTY: u32 = MAX_COMPARE_VALUE + 1;
 
 static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new(None));
 
 static FEEDBACK_TYPE: AtomicU8 = AtomicU8::new(0); // 0 = Status, 1 = Current
-static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(100); // ~256 Hz at 25.6 kHz FOC rate
+static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(100);
 static FEEDBACK_COUNTER: AtomicU8 = AtomicU8::new(0);
 
 static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);

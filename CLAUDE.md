@@ -39,7 +39,7 @@ Target: `thumbv7em-none-eabihf` (Cortex-M4F). Requires nightly Rust.
 
 ## Patterns
 
-- FOC loop in ADC ISR for deterministic timing (~25.6 kHz)
+- FOC loop in ADC ISR for deterministic timing
 - Hardware CORDIC instead of libm for trig
 - Embassy framework for async tasks
 - defmt + RTT for debug logging
