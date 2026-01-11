@@ -58,3 +58,8 @@ path = "src/main.rs"
 test = false
 doctest = false
 bench = false
+
+[profile.release]
+lto = "fat"
+opt-level = "s"
+codegen-units = 1
