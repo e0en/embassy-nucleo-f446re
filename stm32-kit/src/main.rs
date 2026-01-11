@@ -807,6 +807,9 @@ bind_interrupts!(
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // Delay for probe-rs to attach during firmware flashing
+    cortex_m::asm::delay(160_000); // ~10ms at 16MHz HSI
+
     let mut config = Config::default();
     clock::set_clock(&mut config);
     initialize_cordic();
