@@ -531,11 +531,7 @@ where
         electrical_angle: f32,
     ) -> (f32, f32) {
         let c = self.normalize_current(measured_current);
-
-        // clarke transform
         let (i_alpha, i_beta) = clarke_transform(c.a, c.b, c.c);
-
-        // park transform
         let current_angle = electrical_angle + self.current_phase_bias;
         park_transform(i_alpha, i_beta, current_angle, &self.f_sincos)
     }

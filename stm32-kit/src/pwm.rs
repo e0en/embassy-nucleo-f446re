@@ -87,7 +87,6 @@ impl<
             w.set_dir(pac::timer::vals::Dir::DOWN); // start by counting down
         });
 
-        // set timer max compare value
         self.timer
             .regs_advanced()
             .arr()
@@ -211,7 +210,6 @@ impl<
             w.set_dir(pac::timer::vals::Dir::DOWN); // start by counting down
         });
 
-        // set timer max compare value
         self.timer
             .regs_advanced()
             .arr()

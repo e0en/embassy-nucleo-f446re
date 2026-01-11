@@ -198,14 +198,11 @@ where
     // assumption: mechanical angle and voltage (electrical) angle are aligned
     let a_duty = 0.1;
 
-    // start with zero voltage
     let mut duty = DutyCycle3Phase::zero();
     duty.t1 = a_duty;
     driver.run(duty);
     Timer::after_millis(100).await;
 
-    // set voltage phase to zero
-    // measure current phase n_measure times and take average
     let n_max_try = 100;
     let n_measure = 100;
     let mut n_success = 0;
@@ -236,8 +233,6 @@ where
     }
 }
 
-/// Initialize FOC controller and start interrupt-driven control
-/// Returns the gate driver for monitoring, or None on failure
 #[inline]
 async fn init_foc(
     p_spi: &'static SpiMutex,
@@ -360,14 +355,12 @@ async fn init_foc(
     Some(gate_driver)
 }
 
-/// Gate driver monitoring task - checks for faults and logs FOC state
 #[embassy_executor::task]
 async fn monitor_task(mut gate_driver: Drv8316<'static>) {
     let mut last_logged_at = Instant::now();
     loop {
         Timer::after_millis(100).await;
 
-        // Periodic logging
         let loop_count = foc_isr::get_loop_counter();
         if loop_count > 0 {
             let now = Instant::now();
@@ -379,7 +372,6 @@ async fn monitor_task(mut gate_driver: Drv8316<'static>) {
             }
         }
 
-        // Check gate driver status
         if let Ok(x) = gate_driver.read_ic_status().await
             && x.device_fault
         {
@@ -391,7 +383,6 @@ async fn monitor_task(mut gate_driver: Drv8316<'static>) {
     }
 }
 
-/// Command handling task - processes commands from CAN and updates FOC parameters
 #[embassy_executor::task]
 async fn command_task() {
     let command_receiver = COMMAND_CHANNEL.receiver();
@@ -414,7 +405,6 @@ async fn command_task() {
     }
 }
 
-/// Handle commands by updating FOC controller via critical section
 async fn handle_command_isr(
     command: &Command,
     response_sender: &Sender<'static, CriticalSectionRawMutex, ResponseBody, 64>,
@@ -715,12 +705,10 @@ async fn main(spawner: Spawner) {
     // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor)));
 
-    // Initialize FOC and start interrupt-driven control
     let Some(gate_driver) = init_foc(&SPI, cs_drv, drvoff_pin, timer, p_adc).await else {
         return;
     };
 
-    // Spawn remaining tasks
     unwrap!(spawner.spawn(monitor_task(gate_driver)));
     unwrap!(spawner.spawn(command_task()));
     unwrap!(spawner.spawn(can_rx_task(can_rx)));

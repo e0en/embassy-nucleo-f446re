@@ -23,9 +23,6 @@ pub fn svpwm<Fsincos>(
 where
     Fsincos: Fn(f32) -> (f32, f32),
 {
-    // Calculate the duty cycles for the three phases based on the voltage and angle
-
-    // Check input parameters and theoretical SVPWM maximum (sqrt(3)/2 * v_max)
     if v_max <= 0.0 {
         return Err(FocError::InvalidParameters);
     }

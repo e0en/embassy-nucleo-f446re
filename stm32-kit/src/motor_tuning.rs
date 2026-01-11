@@ -27,8 +27,6 @@ where
     let old_mode = foc.mode;
     let old_v = foc.target.voltage;
 
-    // store run mode and Vq_ref
-    // set to voltage mode
     foc.set_run_mode(RunMode::Voltage);
     let mut i_sample;
     let mut v_sample = [0.0f32; 4];
@@ -75,7 +73,6 @@ where
     }
     let kv = (y_sum / x_sum).abs();
 
-    // restore run mode and Vq_ref
     foc.set_run_mode(old_mode);
     foc.set_target_voltage(old_v);
     kv

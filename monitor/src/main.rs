@@ -50,8 +50,8 @@ fn forward_command(command_recv: Receiver<Command>, socket: CanSocket) {
     loop {
         for command in command_recv.try_iter() {
             let command_msg = CommandMessage {
-                host_can_id: 0x00,  // Default host CAN ID
-                motor_can_id: 0x0F, // Default motor CAN ID
+                host_can_id: 0x00,
+                motor_can_id: 0x0F,
                 command,
             };
             if let Ok(can_msg) = CanMessage::try_from(command_msg) {
