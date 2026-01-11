@@ -228,6 +228,10 @@ where
         self.current_offset = offset;
     }
 
+    pub fn current_offset(&self) -> PhaseCurrent {
+        self.current_offset
+    }
+
     pub async fn align_sensor<'a, FSensor, FMotor, FWait, FutUnit>(
         &mut self,
         align_voltage: f32,

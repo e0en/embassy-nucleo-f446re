@@ -8,6 +8,7 @@ mod clock;
 mod cordic;
 mod current_tuning;
 mod drv8316;
+mod flash_config;
 mod flycat5010;
 mod foc_isr;
 mod gm2804;
@@ -41,6 +42,7 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, bind_interrupts,
     can::{self as stm32_can, CanRx, CanTx},
+    flash::Flash,
     gpio, i2c as stm32_i2c,
     interrupt::{self, InterruptExt},
     mode::Async,
@@ -81,6 +83,15 @@ type SpiMutex = embassy_sync::mutex::Mutex<
 >;
 
 static SPI: SpiMutex = SpiMutex::new(None);
+
+type FlashMutex = embassy_sync::mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+    Option<Flash<'static, embassy_stm32::flash::Blocking>>,
+>;
+
+static FLASH: FlashMutex = FlashMutex::new(None);
+
+type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
 
 async fn get_average_adc<T>(
     p_adc: &mut adc::DummyAdc<T>,
@@ -233,6 +244,48 @@ where
     }
 }
 
+/// Apply stored configuration to FOC controller
+fn apply_config(foc: &mut FocControllerType, config: &flash_config::ConfigData) {
+    foc.current_mapping = config.current_mapping;
+    foc.bias_angle = config.bias_angle;
+    foc.sensor_direction = config.get_sensor_direction();
+    foc.set_current_phase_bias(config.current_phase_bias);
+    foc.set_current_offset(config.get_current_offset());
+
+    // Apply PID gains
+    foc.set_current_kp(config.current_kp);
+    foc.set_current_ki(config.current_ki);
+    foc.set_velocity_kp(config.velocity_kp);
+    foc.set_velocity_ki(config.velocity_ki);
+    foc.set_angle_kp(config.angle_kp);
+}
+
+/// Save current FOC configuration to flash
+fn save_config(
+    flash: &mut Flash<'_, embassy_stm32::flash::Blocking>,
+    foc: &FocControllerType,
+    can_id: u8,
+) -> Result<(), flash_config::ConfigError> {
+    let current_offset = foc.current_offset();
+    let mut config = flash_config::ConfigData::new();
+
+    config.current_mapping = foc.current_mapping;
+    config.bias_angle = foc.bias_angle;
+    config.set_sensor_direction(foc.sensor_direction);
+    config.current_phase_bias = foc.current_phase_bias;
+    config.set_current_offset(current_offset);
+
+    config.current_kp = foc.current_q_pid.gains.p;
+    config.current_ki = foc.current_q_pid.gains.i;
+    config.velocity_kp = foc.velocity_pid.gains.p;
+    config.velocity_ki = foc.velocity_pid.gains.i;
+    config.angle_kp = foc.angle_pid.gains.p;
+
+    config.can_id = can_id;
+
+    flash_config::write_config(flash, &mut config)
+}
+
 #[inline]
 async fn init_foc(
     p_spi: &'static SpiMutex,
@@ -249,12 +302,24 @@ async fn init_foc(
         peripherals::PB15,
     >,
     mut p_adc: adc::DummyAdc<peripherals::ADC1>,
-) -> Option<Drv8316<'static>> {
+    mut p_flash: Flash<'_, embassy_stm32::flash::Blocking>,
+) -> Option<(Drv8316<'static>, u8)> {
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let slew_rate = drv8316::SlewRate::Rate200V;
     let psu_voltage = 16.0;
     let align_voltage: f32 = 2.0;
+
+    // Try to load stored configuration
+    let stored_config = flash_config::read_config(&mut p_flash);
+    let has_stored_config = stored_config.is_some();
+    let can_id = stored_config.as_ref().map(|c| c.can_id).unwrap_or(0x0F);
+
+    if has_stored_config {
+        info!("Found stored calibration, skipping motor calibration");
+    } else {
+        info!("No stored calibration found, running motor calibration");
+    }
 
     drvoff_pin.set_high();
     let mut driver = PwmDriver::new(timer.timer);
@@ -284,63 +349,89 @@ async fn init_foc(
     }
 
     gate_driver.turn_on();
-    if use_current_sensing {
-        let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
-        if let Some(m) =
-            get_phase_mapping(&mut p_adc, &mut driver, csa_gain, current_offset, 0.05).await
+
+    if let Some(config) = &stored_config {
+        // Apply stored calibration
+        apply_config(&mut foc, config);
+        info!(
+            "Loaded calibration: mapping=({},{},{}), bias_angle={}",
+            config.current_mapping.0,
+            config.current_mapping.1,
+            config.current_mapping.2,
+            config.bias_angle
+        );
+    } else {
+        // Run calibration
+        if use_current_sensing {
+            let current_offset = get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
+            if let Some(m) =
+                get_phase_mapping(&mut p_adc, &mut driver, csa_gain, current_offset, 0.05).await
+            {
+                info!("phase mapping = {} {} {}", m.0, m.1, m.2);
+                foc.current_mapping = m;
+            } else {
+                error!("Current phase mapping failed");
+                gate_driver.turn_off();
+                return None;
+            }
+            foc.set_current_offset(current_offset);
+        }
+
+        let set_motor = |d: DutyCycle3Phase| driver.run(d);
+        let wait_seconds =
+            async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
+
+        if foc
+            .align_sensor(align_voltage, read_sensor, set_motor, wait_seconds)
+            .await
+            .is_err()
         {
-            info!("phase mapping = {} {} {}", m.0, m.1, m.2);
-            foc.current_mapping = m;
-        } else {
-            error!("Current phase mapping failed");
+            error!("Sensor align failed");
             gate_driver.turn_off();
             return None;
         }
-        foc.set_current_offset(current_offset);
-    }
 
-    let set_motor = |d: DutyCycle3Phase| driver.run(d);
-    let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
+        if use_current_sensing
+            && let Some(offset) = align_current(&mut p_adc, &mut driver, csa_gain, &foc).await
+        {
+            foc.set_current_phase_bias(offset);
+            info!("current phase bias = {}", offset);
 
-    if foc
-        .align_sensor(align_voltage, read_sensor, set_motor, wait_seconds)
-        .await
-        .is_err()
-    {
-        error!("Sensor align failed");
-        gate_driver.turn_off();
-        return None;
-    }
+            let impedance = current_tuning::find_motor_impedance(
+                &mut foc,
+                &mut driver,
+                &mut p_adc,
+                csa_gain,
+                read_sensor,
+            )
+            .await;
+            info!(
+                "R_s = {}, L_q = {}, L_d = {}",
+                impedance.r_s, impedance.l_q, impedance.l_d
+            );
+            let current_gain = calculate_current_pi(impedance, 300.0);
+            info!("current kp={}, ki={}", current_gain.p, current_gain.i);
+        }
 
-    if use_current_sensing
-        && let Some(offset) = align_current(&mut p_adc, &mut driver, csa_gain, &foc).await
-    {
-        foc.set_current_phase_bias(offset);
-        info!("current phase bias = {}", offset);
-
-        let impedance = current_tuning::find_motor_impedance(
-            &mut foc,
-            &mut driver,
-            &mut p_adc,
-            csa_gain,
-            read_sensor,
-        )
-        .await;
-        info!(
-            "R_s = {}, L_q = {}, L_d = {}",
-            impedance.r_s, impedance.l_q, impedance.l_d
-        );
-        let current_gain = calculate_current_pi(impedance, 300.0);
-        info!("current kp={}, ki={}", current_gain.p, current_gain.i);
+        // Save calibration to flash
+        if let Err(e) = save_config(&mut p_flash, &foc, can_id) {
+            warn!("Failed to save calibration to flash: {:?}", e);
+        } else {
+            info!("Calibration saved to flash");
+        }
     }
 
     foc.set_run_mode(RunMode::Torque);
     foc.set_target_torque(0.0);
     foc.enable();
 
-    let kv = motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
-        .await;
-    info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
+    if !has_stored_config {
+        // Only measure KV on fresh calibration
+        let kv =
+            motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
+                .await;
+        info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
+    }
 
     // Initialize FOC context for interrupt-driven control
     // From this point on, FOC runs in the ADC interrupt at ~41.5 kHz
@@ -352,7 +443,7 @@ async fn init_foc(
     // may stop the hardware timer on drop.
     core::mem::forget(driver);
 
-    Some(gate_driver)
+    Some((gate_driver, can_id))
 }
 
 #[embassy_executor::task]
@@ -397,6 +488,59 @@ async fn command_task() {
             }
             Command::SetFeedbackType(typ) => {
                 foc_isr::set_feedback_type(typ);
+            }
+            Command::Recalibrate => {
+                info!("Recalibrate command received, clearing config and resetting");
+                // Clear stored config and trigger system reset
+                {
+                    let mut flash_guard = FLASH.lock().await;
+                    if let Some(flash) = flash_guard.as_mut() {
+                        if let Err(e) = flash_config::clear_config(flash) {
+                            error!("Failed to clear config: {:?}", e);
+                        } else {
+                            info!("Config cleared, resetting system");
+                            cortex_m::peripheral::SCB::sys_reset();
+                        }
+                    }
+                }
+            }
+            Command::SaveConfig => {
+                info!("SaveConfig command received");
+                // Save current FOC state to flash
+                {
+                    let mut flash_guard = FLASH.lock().await;
+                    if let Some(flash) = flash_guard.as_mut() {
+                        // Get CAN ID from stored config or use default
+                        let can_id = flash_config::read_config(flash)
+                            .map(|c| c.can_id)
+                            .unwrap_or(0x0F);
+
+                        foc_isr::with_foc(|foc| {
+                            let current_offset = foc.current_offset();
+                            let mut config = flash_config::ConfigData::new();
+
+                            config.current_mapping = foc.current_mapping;
+                            config.bias_angle = foc.bias_angle;
+                            config.set_sensor_direction(foc.sensor_direction);
+                            config.current_phase_bias = foc.current_phase_bias;
+                            config.set_current_offset(current_offset);
+
+                            config.current_kp = foc.current_q_pid.gains.p;
+                            config.current_ki = foc.current_q_pid.gains.i;
+                            config.velocity_kp = foc.velocity_pid.gains.p;
+                            config.velocity_ki = foc.velocity_pid.gains.i;
+                            config.angle_kp = foc.angle_pid.gains.p;
+
+                            config.can_id = can_id;
+
+                            if let Err(e) = flash_config::write_config(flash, &mut config) {
+                                error!("Failed to save config: {:?}", e);
+                            } else {
+                                info!("Config saved to flash");
+                            }
+                        });
+                    }
+                }
             }
             _ => {
                 handle_command_isr(&command, &response_sender).await;
@@ -587,8 +731,8 @@ async fn can_tx_task(mut can_tx: CanTx<'static>) {
 }
 
 #[embassy_executor::task]
-async fn can_rx_task(mut can_rx: CanRx<'static>) {
-    let mut can_id: u8 = 0x0F;
+async fn can_rx_task(mut can_rx: CanRx<'static>, initial_can_id: u8) {
+    let mut can_id: u8 = initial_can_id;
     let command_sender = COMMAND_CHANNEL.sender();
 
     loop {
@@ -600,6 +744,21 @@ async fn can_rx_task(mut can_rx: CanRx<'static>) {
                 match message.command {
                     Command::SetCanId(new_can_id) => {
                         can_id = new_can_id;
+                        info!("CAN ID changed to {}", new_can_id);
+                        // Save new CAN ID to flash
+                        {
+                            let mut flash_guard = FLASH.lock().await;
+                            if let Some(flash) = flash_guard.as_mut()
+                                && let Some(mut config) = flash_config::read_config(flash)
+                            {
+                                config.can_id = new_can_id;
+                                if let Err(e) = flash_config::write_config(flash, &mut config) {
+                                    warn!("Failed to save CAN ID to flash: {:?}", e);
+                                } else {
+                                    info!("CAN ID saved to flash");
+                                }
+                            }
+                        }
                     }
                     cmd => {
                         if command_sender.try_send(cmd).is_err() {
@@ -702,15 +861,30 @@ async fn main(spawner: Spawner) {
         return;
     }
 
+    // Create flash peripheral for config storage
+    let p_flash = Flash::new_blocking(p.FLASH);
+
     // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor)));
 
-    let Some(gate_driver) = init_foc(&SPI, cs_drv, drvoff_pin, timer, p_adc).await else {
+    let Some((gate_driver, can_id)) =
+        init_foc(&SPI, cs_drv, drvoff_pin, timer, p_adc, p_flash).await
+    else {
         return;
     };
 
+    // Store flash in static for use by command handlers
+    {
+        let flash = Flash::new_blocking(unsafe {
+            // SAFETY: We're taking ownership of FLASH again after init_foc is done
+            // This is safe because init_foc doesn't hold a reference to flash after returning
+            embassy_stm32::Peripherals::steal().FLASH
+        });
+        *(FLASH.lock().await) = Some(flash);
+    }
+
     unwrap!(spawner.spawn(monitor_task(gate_driver)));
     unwrap!(spawner.spawn(command_task()));
-    unwrap!(spawner.spawn(can_rx_task(can_rx)));
+    unwrap!(spawner.spawn(can_rx_task(can_rx, can_id)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));
 }

@@ -388,6 +388,8 @@ pub enum Command {
     RequestStatus(u8),
     SetFeedbackInterval(u8),
     SetFeedbackType(FeedbackType),
+    Recalibrate,
+    SaveConfig,
 }
 
 pub enum CommandError {
@@ -439,6 +441,8 @@ impl TryFrom<CanMessage> for CommandMessage {
                     .try_into()
                     .map_err(|_| CommandError::WrongCommand)?,
             ),
+            0x18 => Command::Recalibrate,
+            0x19 => Command::SaveConfig,
 
             _ => return Err(CommandError::WrongCommand),
         };
@@ -487,6 +491,12 @@ impl TryFrom<CommandMessage> for CanMessage {
             Command::SetFeedbackType(x) => {
                 command_id = 0x17;
                 command_content = x as u8;
+            }
+            Command::Recalibrate => {
+                command_id = 0x18;
+            }
+            Command::SaveConfig => {
+                command_id = 0x19;
             }
         }
 
