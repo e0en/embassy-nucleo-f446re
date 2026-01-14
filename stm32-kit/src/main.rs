@@ -86,6 +86,30 @@ static FLASH: FlashMutex = FlashMutex::new(None);
 
 type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
 
+fn create_foc_controller(psu_voltage: f32, use_current_sensing: bool) -> FocControllerType {
+    let mut foc = FocController::new(
+        motor::SETUP,
+        psu_voltage,
+        motor::CURRENT_PID,
+        motor::ANGLE_PID,
+        motor::VELOCITY_PID,
+        OutputLimit {
+            max_value: 16.0,
+            ramp: 1000.0,
+        },
+        sincos as fn(f32) -> (f32, f32),
+    );
+    foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
+
+    if use_current_sensing {
+        foc.enable_current_sensing();
+    } else {
+        foc.disable_current_sensing();
+    }
+
+    foc
+}
+
 /// Apply stored configuration to FOC controller
 fn apply_config(foc: &mut FocControllerType, config: &flash_config::ConfigData) {
     foc.current_mapping = config.current_mapping;
@@ -128,6 +152,58 @@ fn save_config(
     flash_config::write_config(flash, &mut config)
 }
 
+/// Run motor calibration: current offset, phase mapping, sensor alignment, impedance measurement
+async fn run_motor_calibration(
+    foc: &mut FocControllerType,
+    p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
+    driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    csa_gain: drv8316::CsaGain,
+    align_voltage: f32,
+    use_current_sensing: bool,
+) -> Result<(), &'static str> {
+    if use_current_sensing {
+        let current_offset = calibration::get_current_offset(p_adc, driver, csa_gain).await;
+        if let Some(m) =
+            calibration::get_phase_mapping(p_adc, driver, csa_gain, current_offset, 0.05).await
+        {
+            info!("phase mapping = {} {} {}", m.0, m.1, m.2);
+            foc.current_mapping = m;
+        } else {
+            return Err("Current phase mapping failed");
+        }
+        foc.set_current_offset(current_offset);
+    }
+
+    let set_motor = |d: DutyCycle3Phase| driver.run(d);
+    let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
+
+    if foc
+        .align_sensor(align_voltage, read_sensor, set_motor, wait_seconds)
+        .await
+        .is_err()
+    {
+        return Err("Sensor align failed");
+    }
+
+    if use_current_sensing
+        && let Some(offset) = calibration::align_current(p_adc, driver, csa_gain, foc).await
+    {
+        foc.set_current_phase_bias(offset);
+        info!("current phase bias = {}", offset);
+
+        let impedance =
+            current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor).await;
+        info!(
+            "R_s = {}, L_q = {}, L_d = {}",
+            impedance.r_s, impedance.l_q, impedance.l_d
+        );
+        let current_gain = calculate_current_pi(impedance, 300.0);
+        info!("current kp={}, ki={}", current_gain.p, current_gain.i);
+    }
+
+    Ok(())
+}
+
 #[inline]
 async fn init_foc(
     p_spi: &'static SpiMutex,
@@ -163,37 +239,16 @@ async fn init_foc(
         info!("No stored calibration found, running motor calibration");
     }
 
+    // Initialize hardware
     drvoff_pin.set_high();
     let mut driver = PwmDriver::new(timer.timer);
     let mut gate_driver = Drv8316::new(p_spi, cs_drv, drvoff_pin);
     gate_driver.initialize(csa_gain, slew_rate).await;
 
-    // Create FOC controller with sincos function pointer (not closure)
-    // This allows it to be stored in static context
-    let mut foc: FocController<fn(f32) -> (f32, f32)> = FocController::new(
-        motor::SETUP,
-        psu_voltage,
-        motor::CURRENT_PID,
-        motor::ANGLE_PID,
-        motor::VELOCITY_PID,
-        OutputLimit {
-            max_value: 16.0,
-            ramp: 1000.0,
-        },
-        sincos as fn(f32) -> (f32, f32),
-    );
-    foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
-
-    if use_current_sensing {
-        foc.enable_current_sensing();
-    } else {
-        foc.disable_current_sensing();
-    }
-
+    let mut foc = create_foc_controller(psu_voltage, use_current_sensing);
     gate_driver.turn_on();
 
     if let Some(config) = &stored_config {
-        // Apply stored calibration
         apply_config(&mut foc, config);
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
@@ -203,67 +258,21 @@ async fn init_foc(
             config.bias_angle
         );
     } else {
-        // Run calibration
-        if use_current_sensing {
-            let current_offset =
-                calibration::get_current_offset(&mut p_adc, &mut driver, csa_gain).await;
-            if let Some(m) = calibration::get_phase_mapping(
-                &mut p_adc,
-                &mut driver,
-                csa_gain,
-                current_offset,
-                0.05,
-            )
-            .await
-            {
-                info!("phase mapping = {} {} {}", m.0, m.1, m.2);
-                foc.current_mapping = m;
-            } else {
-                error!("Current phase mapping failed");
-                gate_driver.turn_off();
-                return None;
-            }
-            foc.set_current_offset(current_offset);
-        }
-
-        let set_motor = |d: DutyCycle3Phase| driver.run(d);
-        let wait_seconds =
-            async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
-
-        if foc
-            .align_sensor(align_voltage, read_sensor, set_motor, wait_seconds)
-            .await
-            .is_err()
+        if let Err(e) = run_motor_calibration(
+            &mut foc,
+            &mut p_adc,
+            &mut driver,
+            csa_gain,
+            align_voltage,
+            use_current_sensing,
+        )
+        .await
         {
-            error!("Sensor align failed");
+            error!("{}", e);
             gate_driver.turn_off();
             return None;
         }
 
-        if use_current_sensing
-            && let Some(offset) =
-                calibration::align_current(&mut p_adc, &mut driver, csa_gain, &foc).await
-        {
-            foc.set_current_phase_bias(offset);
-            info!("current phase bias = {}", offset);
-
-            let impedance = current_tuning::find_motor_impedance(
-                &mut foc,
-                &mut driver,
-                &mut p_adc,
-                csa_gain,
-                read_sensor,
-            )
-            .await;
-            info!(
-                "R_s = {}, L_q = {}, L_d = {}",
-                impedance.r_s, impedance.l_q, impedance.l_d
-            );
-            let current_gain = calculate_current_pi(impedance, 300.0);
-            info!("current kp={}, ki={}", current_gain.p, current_gain.i);
-        }
-
-        // Save calibration to flash
         if let Err(e) = save_config(&mut p_flash, &foc, can_id) {
             warn!("Failed to save calibration to flash: {:?}", e);
         } else {
@@ -276,7 +285,6 @@ async fn init_foc(
     foc.enable();
 
     if !has_stored_config {
-        // Only measure KV on fresh calibration
         let kv =
             motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
                 .await;
