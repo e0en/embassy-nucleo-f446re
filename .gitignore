@@ -1,3 +1,4 @@
 /target
 /tuning
 /**/*.dwf3work
+.claude/

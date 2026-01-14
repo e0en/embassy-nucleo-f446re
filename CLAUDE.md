@@ -46,6 +46,8 @@ Target: `thumbv7em-none-eabihf` (Cortex-M4F). Requires nightly Rust.
 
 ## Code Style
 
+- Prefer shorter functions.
+- Utilize rust's zero-cost abstraction to shorten functions
 - `f32` only, no f64 (CORDIC hardware, embedded constraints)
 - `p_` prefix for peripheral variables (e.g., `p_adc`, `p_spi`)
 - `f_` prefix for function pointers (e.g., `f_sincos`)
@@ -64,3 +66,7 @@ Target: `thumbv7em-none-eabihf` (Cortex-M4F). Requires nightly Rust.
 - Note execution context: "called from thread mode", "accessed from ADC interrupt"
 - Note performance on hot path: "keep it fast!", "no Embassy overhead"
 - Document hardware constraints inline (CORDIC input ranges, voltage divider ratios, pin mappings)
+
+## Code Validation
+
+- Every commited code must pass all tests, and formatted properly with `cargo fmt`
