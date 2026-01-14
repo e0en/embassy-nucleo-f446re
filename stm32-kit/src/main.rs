@@ -525,20 +525,7 @@ async fn can_rx_task(mut can_rx: CanRx<'static>, initial_can_id: u8) {
                     Command::SetCanId(new_can_id) => {
                         can_id = new_can_id;
                         info!("CAN ID changed to {}", new_can_id);
-                        // Save new CAN ID to flash
-                        {
-                            let mut flash_guard = FLASH.lock().await;
-                            if let Some(flash) = flash_guard.as_mut()
-                                && let Some(mut config) = flash_config::read_config(flash)
-                            {
-                                config.can_id = new_can_id;
-                                if let Err(e) = flash_config::write_config(flash, &mut config) {
-                                    warn!("Failed to save CAN ID to flash: {:?}", e);
-                                } else {
-                                    info!("CAN ID saved to flash");
-                                }
-                            }
-                        }
+                        save_can_id_to_flash(new_can_id).await;
                     }
                     cmd => {
                         if command_sender.try_send(cmd).is_err() {
@@ -574,6 +561,20 @@ fn encode_run_mode(m: &foc::controller::RunMode) -> can_message::message::RunMod
         foc::controller::RunMode::Velocity => can_message::message::RunMode::Velocity,
         foc::controller::RunMode::Torque => can_message::message::RunMode::Torque,
         foc::controller::RunMode::Voltage => can_message::message::RunMode::Voltage,
+    }
+}
+
+async fn save_can_id_to_flash(new_can_id: u8) {
+    let mut flash_guard = FLASH.lock().await;
+    if let Some(flash) = flash_guard.as_mut()
+        && let Some(mut config) = flash_config::read_config(flash)
+    {
+        config.can_id = new_can_id;
+        if let Err(e) = flash_config::write_config(flash, &mut config) {
+            warn!("Failed to save CAN ID to flash: {:?}", e);
+        } else {
+            info!("CAN ID saved to flash");
+        }
     }
 }
 
