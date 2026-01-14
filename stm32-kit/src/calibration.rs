@@ -53,6 +53,29 @@ where
     get_average_adc(p_adc, csa_gain, 100).await
 }
 
+async fn ramp_and_measure_phase<T, TIM>(
+    p_adc: &mut adc::DummyAdc<T>,
+    driver: &mut PwmDriver<'_, TIM>,
+    csa_gain: CsaGain,
+    offset: PhaseCurrent,
+    align_ratio: f32,
+    phase_setter: impl Fn(&mut DutyCycle3Phase, f32),
+) -> Option<u8>
+where
+    T: stm32_adc::Instance + AdcSelector,
+    TIM: AdvancedInstance4Channel,
+{
+    let mut phase = DutyCycle3Phase::zero();
+    for i in 0..100 {
+        phase_setter(&mut phase, align_ratio * (i as f32) / 100.0);
+        driver.run(phase);
+        Timer::after_millis(1).await;
+    }
+    Timer::after_millis(100).await;
+    let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
+    max_index(c.a, c.b, c.c)
+}
+
 pub async fn get_phase_mapping<'a, T, TIM>(
     p_adc: &mut adc::DummyAdc<T>,
     driver: &mut PwmDriver<'a, TIM>,
@@ -64,39 +87,23 @@ where
     T: stm32_adc::Instance + AdcSelector,
     TIM: AdvancedInstance4Channel,
 {
-    let mut phase = DutyCycle3Phase::zero();
-    for i in 0..100 {
-        phase.t1 = align_ratio * (i as f32) / 100.0;
-        driver.run(phase);
-        Timer::after_millis(1).await;
-    }
-    Timer::after_millis(100).await;
-    let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
-    let phase_1 = max_index(c.a, c.b, c.c)?;
+    let phase_1 = ramp_and_measure_phase(p_adc, driver, csa_gain, offset, align_ratio, |p, v| {
+        p.t1 = v
+    })
+    .await?;
 
-    phase = DutyCycle3Phase::zero();
-    for i in 0..100 {
-        phase.t2 = align_ratio * (i as f32) / 100.0;
-        driver.run(phase);
-        Timer::after_millis(1).await;
-    }
-    Timer::after_millis(100).await;
-    let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
-    let phase_2 = max_index(c.a, c.b, c.c)?;
+    let phase_2 = ramp_and_measure_phase(p_adc, driver, csa_gain, offset, align_ratio, |p, v| {
+        p.t2 = v
+    })
+    .await?;
     if phase_2 == phase_1 {
         return None;
     }
 
-    phase = DutyCycle3Phase::zero();
-    for i in 0..100 {
-        phase.t3 = align_ratio * (i as f32) / 100.0;
-        driver.run(phase);
-        Timer::after_millis(1).await;
-    }
-    driver.run(phase);
-    Timer::after_millis(100).await;
-    let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
-    let phase_3 = max_index(c.a, c.b, c.c)?;
+    let phase_3 = ramp_and_measure_phase(p_adc, driver, csa_gain, offset, align_ratio, |p, v| {
+        p.t3 = v
+    })
+    .await?;
     if phase_3 == phase_1 || phase_3 == phase_2 {
         return None;
     }
