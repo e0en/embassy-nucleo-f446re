@@ -224,3 +224,45 @@ pub fn clear_config(flash: &mut Flash<'_, Blocking>) -> Result<(), ConfigError> 
         .blocking_erase(CONFIG_OFFSET, CONFIG_OFFSET + CONFIG_PAGE_SIZE)
         .map_err(|_| ConfigError::FlashError)
 }
+
+/// Apply stored configuration to FOC controller
+pub fn apply_to_foc<Fsincos>(foc: &mut foc::controller::FocController<Fsincos>, config: &ConfigData)
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+{
+    foc.current_mapping = config.current_mapping;
+    foc.bias_angle = config.bias_angle;
+    foc.sensor_direction = config.get_sensor_direction();
+    foc.set_current_phase_bias(config.current_phase_bias);
+    foc.set_current_offset(config.get_current_offset());
+
+    foc.set_current_kp(config.current_kp);
+    foc.set_current_ki(config.current_ki);
+    foc.set_velocity_kp(config.velocity_kp);
+    foc.set_velocity_ki(config.velocity_ki);
+    foc.set_angle_kp(config.angle_kp);
+}
+
+/// Create ConfigData from current FOC state
+pub fn from_foc<Fsincos>(foc: &foc::controller::FocController<Fsincos>, can_id: u8) -> ConfigData
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+{
+    let current_offset = foc.current_offset();
+    let mut config = ConfigData::new();
+
+    config.current_mapping = foc.current_mapping;
+    config.bias_angle = foc.bias_angle;
+    config.set_sensor_direction(foc.sensor_direction);
+    config.current_phase_bias = foc.current_phase_bias;
+    config.set_current_offset(current_offset);
+
+    config.current_kp = foc.current_q_pid.gains.p;
+    config.current_ki = foc.current_q_pid.gains.i;
+    config.velocity_kp = foc.velocity_pid.gains.p;
+    config.velocity_ki = foc.velocity_pid.gains.i;
+    config.angle_kp = foc.angle_pid.gains.p;
+
+    config.can_id = can_id;
+    config
+}

@@ -110,48 +110,6 @@ fn create_foc_controller(psu_voltage: f32, use_current_sensing: bool) -> FocCont
     foc
 }
 
-/// Apply stored configuration to FOC controller
-fn apply_config(foc: &mut FocControllerType, config: &flash_config::ConfigData) {
-    foc.current_mapping = config.current_mapping;
-    foc.bias_angle = config.bias_angle;
-    foc.sensor_direction = config.get_sensor_direction();
-    foc.set_current_phase_bias(config.current_phase_bias);
-    foc.set_current_offset(config.get_current_offset());
-
-    // Apply PID gains
-    foc.set_current_kp(config.current_kp);
-    foc.set_current_ki(config.current_ki);
-    foc.set_velocity_kp(config.velocity_kp);
-    foc.set_velocity_ki(config.velocity_ki);
-    foc.set_angle_kp(config.angle_kp);
-}
-
-/// Save current FOC configuration to flash
-fn save_config(
-    flash: &mut Flash<'_, embassy_stm32::flash::Blocking>,
-    foc: &FocControllerType,
-    can_id: u8,
-) -> Result<(), flash_config::ConfigError> {
-    let current_offset = foc.current_offset();
-    let mut config = flash_config::ConfigData::new();
-
-    config.current_mapping = foc.current_mapping;
-    config.bias_angle = foc.bias_angle;
-    config.set_sensor_direction(foc.sensor_direction);
-    config.current_phase_bias = foc.current_phase_bias;
-    config.set_current_offset(current_offset);
-
-    config.current_kp = foc.current_q_pid.gains.p;
-    config.current_ki = foc.current_q_pid.gains.i;
-    config.velocity_kp = foc.velocity_pid.gains.p;
-    config.velocity_ki = foc.velocity_pid.gains.i;
-    config.angle_kp = foc.angle_pid.gains.p;
-
-    config.can_id = can_id;
-
-    flash_config::write_config(flash, &mut config)
-}
-
 /// Run motor calibration: current offset, phase mapping, sensor alignment, impedance measurement
 async fn run_motor_calibration(
     foc: &mut FocControllerType,
@@ -249,7 +207,7 @@ async fn init_foc(
     gate_driver.turn_on();
 
     if let Some(config) = &stored_config {
-        apply_config(&mut foc, config);
+        flash_config::apply_to_foc(&mut foc, config);
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
             config.current_mapping.0,
@@ -273,7 +231,8 @@ async fn init_foc(
             return None;
         }
 
-        if let Err(e) = save_config(&mut p_flash, &foc, can_id) {
+        let mut config = flash_config::from_foc(&foc, can_id);
+        if let Err(e) = flash_config::write_config(&mut p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
         } else {
             info!("Calibration saved to flash");
@@ -364,40 +323,20 @@ async fn command_task() {
             }
             Command::SaveConfig => {
                 info!("SaveConfig command received");
-                // Save current FOC state to flash
-                {
-                    let mut flash_guard = FLASH.lock().await;
-                    if let Some(flash) = flash_guard.as_mut() {
-                        // Get CAN ID from stored config or use default
-                        let can_id = flash_config::read_config(flash)
-                            .map(|c| c.can_id)
-                            .unwrap_or(0x0F);
+                let mut flash_guard = FLASH.lock().await;
+                if let Some(flash) = flash_guard.as_mut() {
+                    let can_id = flash_config::read_config(flash)
+                        .map(|c| c.can_id)
+                        .unwrap_or(0x0F);
 
-                        foc_isr::with_foc(|foc| {
-                            let current_offset = foc.current_offset();
-                            let mut config = flash_config::ConfigData::new();
-
-                            config.current_mapping = foc.current_mapping;
-                            config.bias_angle = foc.bias_angle;
-                            config.set_sensor_direction(foc.sensor_direction);
-                            config.current_phase_bias = foc.current_phase_bias;
-                            config.set_current_offset(current_offset);
-
-                            config.current_kp = foc.current_q_pid.gains.p;
-                            config.current_ki = foc.current_q_pid.gains.i;
-                            config.velocity_kp = foc.velocity_pid.gains.p;
-                            config.velocity_ki = foc.velocity_pid.gains.i;
-                            config.angle_kp = foc.angle_pid.gains.p;
-
-                            config.can_id = can_id;
-
-                            if let Err(e) = flash_config::write_config(flash, &mut config) {
-                                error!("Failed to save config: {:?}", e);
-                            } else {
-                                info!("Config saved to flash");
-                            }
-                        });
-                    }
+                    foc_isr::with_foc(|foc| {
+                        let mut config = flash_config::from_foc(foc, can_id);
+                        if let Err(e) = flash_config::write_config(flash, &mut config) {
+                            error!("Failed to save config: {:?}", e);
+                        } else {
+                            info!("Config saved to flash");
+                        }
+                    });
                 }
             }
             _ => {
