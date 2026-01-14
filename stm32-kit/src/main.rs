@@ -50,6 +50,16 @@ macro_rules! dispatch_set_param {
     };
 }
 
+macro_rules! dispatch_get_param {
+    ($p:expr, $( $variant:ident => $value:expr ),* $(,)?) => {
+        match $p {
+            $(
+                ParameterIndex::$variant => ParameterValue::$variant($value),
+            )*
+        }
+    };
+}
+
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
@@ -399,36 +409,28 @@ async fn handle_command_isr(
 
     if let Command::GetParameter(p) = command {
         info!("parameter requested {}", *p as u16);
-        let pv = foc_isr::with_foc(|foc| match p {
-            ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
-            ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
-            ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
-            ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
-            ParameterIndex::Speed => ParameterValue::Speed(foc.state.velocity),
-            ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
-            ParameterIndex::SpeedLimit => {
-                ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
-            }
-            ParameterIndex::TorqueLimit => {
-                ParameterValue::TorqueLimit(foc.torque_limit.unwrap_or(0.0))
-            }
-            ParameterIndex::Iq => ParameterValue::Iq(foc.state.i_q),
-
-            ParameterIndex::AngleKp => ParameterValue::AngleKp(foc.angle_pid.gains.p),
-            ParameterIndex::SpeedKp => ParameterValue::SpeedKp(foc.velocity_pid.gains.p),
-            ParameterIndex::SpeedKi => ParameterValue::SpeedKi(foc.velocity_pid.gains.i),
-
-            ParameterIndex::CurrentKp => ParameterValue::CurrentKp(foc.current_q_pid.gains.p),
-            ParameterIndex::CurrentKi => ParameterValue::CurrentKi(foc.current_q_pid.gains.i),
-            ParameterIndex::CurrentFilter => {
-                ParameterValue::CurrentFilter(foc.current_q_filter.time_constant)
-            }
-            ParameterIndex::CurrentLimit => {
-                ParameterValue::CurrentLimit(foc.current_limit.unwrap_or(0.0))
-            }
-            ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
-            ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
-            ParameterIndex::VqRef => ParameterValue::VqRef(foc.target.voltage),
+        let pv = foc_isr::with_foc(|foc| {
+            dispatch_get_param!(p,
+                RunMode => encode_run_mode(&foc.mode),
+                IqRef => foc.state.i_ref,
+                Angle => foc.state.angle,
+                AngleRef => foc.target.angle,
+                Speed => foc.state.velocity,
+                SpeedRef => foc.target.velocity,
+                SpeedLimit => foc.velocity_limit.unwrap_or(0.0),
+                TorqueLimit => foc.torque_limit.unwrap_or(0.0),
+                Iq => foc.state.i_q,
+                AngleKp => foc.angle_pid.gains.p,
+                SpeedKp => foc.velocity_pid.gains.p,
+                SpeedKi => foc.velocity_pid.gains.i,
+                CurrentKp => foc.current_q_pid.gains.p,
+                CurrentKi => foc.current_q_pid.gains.i,
+                CurrentFilter => foc.current_q_filter.time_constant,
+                CurrentLimit => foc.current_limit.unwrap_or(0.0),
+                Spring => foc.target.spring,
+                Damping => foc.target.damping,
+                VqRef => foc.target.voltage,
+            )
         });
         if let Some(pv) = pv {
             let body = ResponseBody::ParameterValue(pv);
