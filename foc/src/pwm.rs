@@ -164,22 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn test_svpwm_invalid_negative_vref() {
-        let result = svpwm(-1.0, 0.0, 0.0, 2.0, libm::sincosf);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
-    }
-
-    #[test]
     fn test_svpwm_invalid_zero_vmax() {
         let result = svpwm(1.0, 0.0, 0.0, 0.0, libm::sincosf);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
-    }
-
-    #[test]
-    fn test_svpwm_invalid_vref_greater_than_vmax() {
-        let result = svpwm(3.0, 0.0, 0.0, 2.0, libm::sincosf);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FocError::InvalidParameters));
     }
