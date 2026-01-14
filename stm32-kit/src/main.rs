@@ -428,7 +428,7 @@ async fn handle_command_isr(
             }
             ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
             ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
-            ParameterIndex::VqRef => ParameterValue::Damping(foc.target.voltage),
+            ParameterIndex::VqRef => ParameterValue::VqRef(foc.target.voltage),
         });
         if let Some(pv) = pv {
             let body = ResponseBody::ParameterValue(pv);
