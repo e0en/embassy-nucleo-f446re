@@ -37,6 +37,19 @@ use can_message::message::{
 };
 use {defmt_rtt as _, panic_probe as _};
 
+macro_rules! dispatch_set_param {
+    ($cmd:expr, $( $variant:ident => $setter:ident ),* $(,)?) => {
+        match $cmd {
+            $(
+                Command::SetParameter(ParameterValue::$variant(v)) => {
+                    foc_isr::with_foc(|foc| foc.$setter(*v));
+                }
+            )*
+            _ => {}
+        }
+    };
+}
+
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
@@ -362,95 +375,65 @@ async fn handle_command_isr(
             info!("received runmode {}", *m as u8);
             foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
         }
-        Command::SetParameter(ParameterValue::AngleRef(p)) => {
-            foc_isr::with_foc(|foc| foc.set_target_angle(*p));
-        }
-        Command::SetParameter(ParameterValue::SpeedRef(v)) => {
-            foc_isr::with_foc(|foc| foc.set_target_velocity(*v));
-        }
-        Command::SetParameter(ParameterValue::IqRef(t)) => {
-            foc_isr::with_foc(|foc| foc.set_target_torque(*t));
-        }
-        Command::SetParameter(ParameterValue::SpeedLimit(v)) => {
-            foc_isr::with_foc(|foc| foc.set_velocity_limit(*v));
-        }
-        Command::SetParameter(ParameterValue::CurrentLimit(i)) => {
-            foc_isr::with_foc(|foc| foc.set_current_limit(*i));
-        }
-        Command::SetParameter(ParameterValue::TorqueLimit(t)) => {
-            foc_isr::with_foc(|foc| foc.set_torque_limit(*t));
-        }
 
-        Command::SetParameter(ParameterValue::CurrentKp(kp)) => {
-            foc_isr::with_foc(|foc| foc.set_current_kp(*kp));
+        _ => {
+            dispatch_set_param!(command,
+                AngleRef => set_target_angle,
+                SpeedRef => set_target_velocity,
+                IqRef => set_target_torque,
+                SpeedLimit => set_velocity_limit,
+                CurrentLimit => set_current_limit,
+                TorqueLimit => set_torque_limit,
+                CurrentKp => set_current_kp,
+                CurrentKi => set_current_ki,
+                SpeedKp => set_velocity_kp,
+                SpeedKi => set_velocity_ki,
+                Iq => set_current_filter,
+                AngleKp => set_angle_kp,
+                Spring => set_spring,
+                Damping => set_damping,
+                VqRef => set_target_voltage,
+            );
         }
-        Command::SetParameter(ParameterValue::CurrentKi(ki)) => {
-            foc_isr::with_foc(|foc| foc.set_current_ki(*ki));
-        }
+    }
 
-        Command::SetParameter(ParameterValue::SpeedKp(kp)) => {
-            foc_isr::with_foc(|foc| foc.set_velocity_kp(*kp));
-        }
-        Command::SetParameter(ParameterValue::SpeedKi(ki)) => {
-            foc_isr::with_foc(|foc| foc.set_velocity_ki(*ki));
-        }
-        Command::SetParameter(ParameterValue::Iq(f)) => {
-            foc_isr::with_foc(|foc| foc.set_current_filter(*f));
-        }
-        Command::SetParameter(ParameterValue::AngleKp(kp)) => {
-            foc_isr::with_foc(|foc| foc.set_angle_kp(*kp));
-        }
-
-        Command::SetParameter(ParameterValue::Spring(k)) => {
-            foc_isr::with_foc(|foc| foc.set_spring(*k));
-        }
-        Command::SetParameter(ParameterValue::Damping(b)) => {
-            foc_isr::with_foc(|foc| foc.set_damping(*b));
-        }
-        Command::SetParameter(ParameterValue::VqRef(v)) => {
-            info!("received target Vq {}", v);
-            foc_isr::with_foc(|foc| foc.set_target_voltage(*v));
-        }
-
-        Command::GetParameter(p) => {
-            info!("parameter requested {}", *p as u16);
-            let pv = foc_isr::with_foc(|foc| match p {
-                ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
-                ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
-                ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
-                ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
-                ParameterIndex::Speed => ParameterValue::Speed(foc.state.velocity),
-                ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
-                ParameterIndex::SpeedLimit => {
-                    ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
-                }
-                ParameterIndex::TorqueLimit => {
-                    ParameterValue::TorqueLimit(foc.torque_limit.unwrap_or(0.0))
-                }
-                ParameterIndex::Iq => ParameterValue::Iq(foc.state.i_q),
-
-                ParameterIndex::AngleKp => ParameterValue::AngleKp(foc.angle_pid.gains.p),
-                ParameterIndex::SpeedKp => ParameterValue::SpeedKp(foc.velocity_pid.gains.p),
-                ParameterIndex::SpeedKi => ParameterValue::SpeedKi(foc.velocity_pid.gains.i),
-
-                ParameterIndex::CurrentKp => ParameterValue::CurrentKp(foc.current_q_pid.gains.p),
-                ParameterIndex::CurrentKi => ParameterValue::CurrentKi(foc.current_q_pid.gains.i),
-                ParameterIndex::CurrentFilter => {
-                    ParameterValue::CurrentFilter(foc.current_q_filter.time_constant)
-                }
-                ParameterIndex::CurrentLimit => {
-                    ParameterValue::CurrentLimit(foc.current_limit.unwrap_or(0.0))
-                }
-                ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
-                ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
-                ParameterIndex::VqRef => ParameterValue::Damping(foc.target.voltage),
-            });
-            if let Some(pv) = pv {
-                let body = ResponseBody::ParameterValue(pv);
-                response_sender.send(body).await;
+    if let Command::GetParameter(p) = command {
+        info!("parameter requested {}", *p as u16);
+        let pv = foc_isr::with_foc(|foc| match p {
+            ParameterIndex::RunMode => ParameterValue::RunMode(encode_run_mode(&foc.mode)),
+            ParameterIndex::IqRef => ParameterValue::IqRef(foc.state.i_ref),
+            ParameterIndex::Angle => ParameterValue::Angle(foc.state.angle),
+            ParameterIndex::AngleRef => ParameterValue::AngleRef(foc.target.angle),
+            ParameterIndex::Speed => ParameterValue::Speed(foc.state.velocity),
+            ParameterIndex::SpeedRef => ParameterValue::SpeedRef(foc.target.velocity),
+            ParameterIndex::SpeedLimit => {
+                ParameterValue::SpeedLimit(foc.velocity_limit.unwrap_or(0.0))
             }
+            ParameterIndex::TorqueLimit => {
+                ParameterValue::TorqueLimit(foc.torque_limit.unwrap_or(0.0))
+            }
+            ParameterIndex::Iq => ParameterValue::Iq(foc.state.i_q),
+
+            ParameterIndex::AngleKp => ParameterValue::AngleKp(foc.angle_pid.gains.p),
+            ParameterIndex::SpeedKp => ParameterValue::SpeedKp(foc.velocity_pid.gains.p),
+            ParameterIndex::SpeedKi => ParameterValue::SpeedKi(foc.velocity_pid.gains.i),
+
+            ParameterIndex::CurrentKp => ParameterValue::CurrentKp(foc.current_q_pid.gains.p),
+            ParameterIndex::CurrentKi => ParameterValue::CurrentKi(foc.current_q_pid.gains.i),
+            ParameterIndex::CurrentFilter => {
+                ParameterValue::CurrentFilter(foc.current_q_filter.time_constant)
+            }
+            ParameterIndex::CurrentLimit => {
+                ParameterValue::CurrentLimit(foc.current_limit.unwrap_or(0.0))
+            }
+            ParameterIndex::Spring => ParameterValue::Spring(foc.target.spring),
+            ParameterIndex::Damping => ParameterValue::Damping(foc.target.damping),
+            ParameterIndex::VqRef => ParameterValue::Damping(foc.target.voltage),
+        });
+        if let Some(pv) = pv {
+            let body = ResponseBody::ParameterValue(pv);
+            response_sender.send(body).await;
         }
-        _ => (),
     }
 }
 
