@@ -14,6 +14,8 @@ use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::Instant;
 
 const IMPEDANCE_SAMPLE_COUNT: usize = 2048;
+const TEST_VOLTAGE: f32 = 0.5;
+const TEST_FREQUENCY_HZ: f32 = 256.0;
 
 #[allow(dead_code)]
 pub struct MotorImpedance {
@@ -36,8 +38,6 @@ where
     T: stm32_adc::Instance + AdcSelector,
 {
     let n_sample = IMPEDANCE_SAMPLE_COUNT;
-    let test_voltage = 0.5;
-    let test_frequency = 256.0;
     let _t0 = Instant::now().as_micros();
 
     let mut t_buffer = [0f32; IMPEDANCE_SAMPLE_COUNT];
@@ -48,8 +48,8 @@ where
     for i in 0..(n_sample * 2) {
         let now = Instant::now().as_micros();
         let t = ((now - _t0) as f32) / 1e6;
-        let (sin_val, _) = cordic::sincos(2.0 * core::f32::consts::PI * test_frequency * t);
-        let v_d = test_voltage * sin_val;
+        let (sin_val, _) = cordic::sincos(2.0 * core::f32::consts::PI * TEST_FREQUENCY_HZ * t);
+        let v_d = TEST_VOLTAGE * sin_val;
         let reading = read_sensor();
         let angle = reading.angle;
         let electrical_angle = foc.to_electrical_angle(angle);
@@ -66,14 +66,14 @@ where
         }
     }
 
-    let l_d = calculate_inductance(&v_buffer, &i_buffer, &t_buffer, test_frequency);
+    let l_d = calculate_inductance(&v_buffer, &i_buffer, &t_buffer, TEST_FREQUENCY_HZ);
 
     // 2. use v_q = sin(2 * pi * f * t, v_d = 0.0) to measure L_q
     for i in 0..(n_sample * 2) {
         let now = Instant::now().as_micros();
         let t = ((now - _t0) as f32) / 1e6;
-        let (sin_val, _) = cordic::sincos(2.0 * core::f32::consts::PI * test_frequency * t);
-        let v_q = test_voltage * sin_val;
+        let (sin_val, _) = cordic::sincos(2.0 * core::f32::consts::PI * TEST_FREQUENCY_HZ * t);
+        let v_q = TEST_VOLTAGE * sin_val;
         let reading = read_sensor();
         let angle = reading.angle;
         let electrical_angle = foc.to_electrical_angle(angle);
@@ -89,7 +89,7 @@ where
             }
         }
     }
-    let l_q = calculate_inductance(&v_buffer, &i_buffer, &t_buffer, test_frequency);
+    let l_q = calculate_inductance(&v_buffer, &i_buffer, &t_buffer, TEST_FREQUENCY_HZ);
 
     // 3. use v_q = 0.0, v_d = 1.0 V to measure R_s
     let mut i_avg = 0.0;
