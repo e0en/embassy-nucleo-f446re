@@ -4,10 +4,12 @@ use embassy_stm32::pac::cordic::vals;
 use embassy_stm32::pac::{CORDIC, RCC};
 
 const Q31_SCALE: f32 = 2_147_483_648.0;
+/// Maximum Q31 representable value (slightly less than 1.0)
+const Q31_MAX_INPUT: f32 = 0.99999994;
 
 #[inline]
 fn q31_from_f32(x: f32) -> u32 {
-    let y = x.clamp(-1.0, 0.99999994);
+    let y = x.clamp(-1.0, Q31_MAX_INPUT);
     (y * Q31_SCALE) as i32 as u32
 }
 
@@ -84,7 +86,7 @@ pub fn sqrt(x: f32) -> f32 {
 
     clean_rrdy_flag();
 
-    let arg_q31 = q31_from_f32(scaled_input.clamp(0.0, 0.99999994));
+    let arg_q31 = q31_from_f32(scaled_input.clamp(0.0, Q31_MAX_INPUT));
     CORDIC.wdata().write_value(arg_q31);
 
     let res_q31 = CORDIC.rdata().read();
