@@ -392,6 +392,7 @@ pub enum Command {
     SaveConfig,
 }
 
+#[derive(Debug)]
 pub enum CommandError {
     IdFormat,
     WrongCommand,
@@ -510,5 +511,154 @@ impl TryFrom<CommandMessage> for CanMessage {
             data,
             length: 8,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
+        (a - b).abs() < epsilon
+    }
+
+    #[test]
+    fn motor_status_roundtrip() {
+        let status = MotorStatus {
+            angle: 1.5,
+            velocity: 10.0,
+            torque: -5.0,
+            temperature: 25.0,
+        };
+
+        let bytes: [u8; 8] = status.into();
+        let decoded = MotorStatus::from(bytes);
+
+        assert!(approx_eq(decoded.angle, status.angle, 0.1));
+        assert!(approx_eq(decoded.velocity, status.velocity, 0.1));
+        assert!(approx_eq(decoded.torque, status.torque, 0.1));
+        assert!(approx_eq(decoded.temperature, status.temperature, 0.1));
+    }
+
+    #[test]
+    fn motor_current_roundtrip() {
+        let current = MotorCurrent {
+            i_q: 1.5,
+            i_d: -0.3,
+        };
+
+        let bytes: [u8; 8] = current.into();
+        let decoded = MotorCurrent::from(bytes);
+
+        assert!(approx_eq(decoded.i_q, current.i_q, 0.0001));
+        assert!(approx_eq(decoded.i_d, current.i_d, 0.0001));
+    }
+
+    #[test]
+    fn parameter_value_f32_roundtrip() {
+        let pv = ParameterValue::IqRef(3.14159);
+
+        let bytes: [u8; 8] = pv.into();
+        let decoded = ParameterValue::try_from(bytes).unwrap();
+
+        if let ParameterValue::IqRef(v) = decoded {
+            assert!(approx_eq(v, 3.14159, 0.0001));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn parameter_value_run_mode_roundtrip() {
+        let pv = ParameterValue::RunMode(RunMode::Velocity);
+
+        let bytes: [u8; 8] = pv.into();
+        let decoded = ParameterValue::try_from(bytes).unwrap();
+
+        if let ParameterValue::RunMode(m) = decoded {
+            assert_eq!(m, RunMode::Velocity);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn response_message_status_roundtrip() {
+        let msg = ResponseMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x01,
+            body: ResponseBody::MotorStatus(MotorStatus {
+                angle: 0.0,
+                velocity: 0.0,
+                torque: 0.0,
+                temperature: 0.0,
+            }),
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        let decoded = ResponseMessage::try_from(can_msg).unwrap();
+
+        assert_eq!(decoded.motor_can_id, 0x0F);
+        assert_eq!(decoded.host_can_id, 0x01);
+        assert!(matches!(decoded.body, ResponseBody::MotorStatus(_)));
+    }
+
+    #[test]
+    fn command_message_enable_roundtrip() {
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x00,
+            command: Command::Enable,
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+
+        assert_eq!(decoded.motor_can_id, 0x0F);
+        assert!(matches!(decoded.command, Command::Enable));
+    }
+
+    #[test]
+    fn command_message_set_parameter_roundtrip() {
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x00,
+            command: Command::SetParameter(ParameterValue::SpeedKp(2.5)),
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+
+        if let Command::SetParameter(ParameterValue::SpeedKp(v)) = decoded.command {
+            assert!(approx_eq(v, 2.5, 0.0001));
+        } else {
+            panic!("Wrong command variant");
+        }
+    }
+
+    #[test]
+    fn run_mode_try_from_valid() {
+        assert_eq!(RunMode::try_from(0x00), Ok(RunMode::Impedance));
+        assert_eq!(RunMode::try_from(0x01), Ok(RunMode::Angle));
+        assert_eq!(RunMode::try_from(0x02), Ok(RunMode::Velocity));
+        assert_eq!(RunMode::try_from(0x03), Ok(RunMode::Torque));
+        assert_eq!(RunMode::try_from(0x04), Ok(RunMode::Voltage));
+    }
+
+    #[test]
+    fn run_mode_try_from_invalid() {
+        assert!(RunMode::try_from(0x05).is_err());
+        assert!(RunMode::try_from(0xFF).is_err());
+    }
+
+    #[test]
+    fn f32_u16_conversion_preserves_range() {
+        let min_val = u16_to_f32(0, -10.0, 10.0);
+        let max_val = u16_to_f32(u16::MAX, -10.0, 10.0);
+        let mid_val = u16_to_f32(u16::MAX / 2, -10.0, 10.0);
+
+        assert!(approx_eq(min_val, -10.0, 0.001));
+        assert!(approx_eq(max_val, 10.0, 0.001));
+        assert!(approx_eq(mid_val, 0.0, 0.01));
     }
 }
