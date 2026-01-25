@@ -67,3 +67,120 @@ impl PIDController {
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
+        (a - b).abs() < epsilon
+    }
+
+    #[test]
+    fn proportional_gain_scales_error() {
+        let pid = PID {
+            p: 2.0,
+            i: 0.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, None);
+
+        let output = controller.update(5.0, 0.01);
+
+        assert!(approx_eq(output, 10.0, 0.001));
+    }
+
+    #[test]
+    fn integral_accumulates_over_time() {
+        let pid = PID {
+            p: 0.0,
+            i: 1.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, None);
+
+        controller.update(1.0, 0.1);
+        let output = controller.update(1.0, 0.1);
+
+        // Trapezoidal integration: 0.5 * 1.0 * (1.0 + 0.0) * 0.1 + 0.5 * 1.0 * (1.0 + 1.0) * 0.1
+        assert!(approx_eq(output, 0.15, 0.001));
+    }
+
+    #[test]
+    fn derivative_responds_to_error_change() {
+        let pid = PID {
+            p: 0.0,
+            i: 0.0,
+            d: 1.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, None);
+
+        controller.update(0.0, 0.1);
+        let output = controller.update(1.0, 0.1);
+
+        // d_term = 1.0 * (1.0 - 0.0) / 0.1 = 10.0
+        assert!(approx_eq(output, 10.0, 0.001));
+    }
+
+    #[test]
+    fn output_clamped_to_max() {
+        let pid = PID {
+            p: 100.0,
+            i: 0.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 5.0, None);
+
+        let output = controller.update(1.0, 0.01);
+
+        assert!(approx_eq(output, 5.0, 0.001));
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let pid = PID {
+            p: 1.0,
+            i: 1.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, None);
+
+        controller.update(5.0, 0.1);
+        controller.reset();
+
+        assert!(approx_eq(controller.integral, 0.0, 0.001));
+        assert!(approx_eq(controller.last_error, 0.0, 0.001));
+        assert!(approx_eq(controller.last_output, 0.0, 0.001));
+    }
+
+    #[test]
+    fn rate_limiting_constrains_output_change() {
+        let pid = PID {
+            p: 100.0,
+            i: 0.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, Some(10.0));
+
+        let output = controller.update(1.0, 0.1);
+
+        // max_rate = 10.0, dt = 0.1, so max change = 1.0 from 0.0
+        assert!(approx_eq(output, 1.0, 0.001));
+    }
+
+    #[test]
+    fn set_max_output_clamps_existing_values() {
+        let pid = PID {
+            p: 1.0,
+            i: 1.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, None);
+
+        controller.update(50.0, 0.1);
+        controller.set_max_output(10.0);
+
+        assert!(controller.last_output <= 10.0);
+        assert!(controller.integral <= 10.0);
+    }
+}
