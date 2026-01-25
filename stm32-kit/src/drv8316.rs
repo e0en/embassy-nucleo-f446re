@@ -3,6 +3,11 @@ use embassy_stm32::{gpio, spi};
 use embassy_time::Timer;
 use foc::current::PhaseCurrent;
 
+// ADC and voltage reference constants
+const ADC_REFERENCE_VOLTAGE: f32 = 3.3;
+const ADC_RESOLUTION: f32 = 4096.0;
+const ADC_MIDPOINT_VOLTAGE: f32 = ADC_REFERENCE_VOLTAGE / 2.0;
+
 const IC_STATUS_REGISTER: u8 = 0x00u8;
 const STATUS_REGISTER_2: u8 = 0x02u8;
 const CONTROL_REGISTER_1: u8 = 0x03u8;
@@ -296,9 +301,9 @@ type SpiMutex = embassy_sync::mutex::Mutex<
 >;
 
 pub fn convert_csa_readings(ia_raw: u16, ib_raw: u16, ic_raw: u16, gain: CsaGain) -> PhaseCurrent {
-    let mut ia = (ia_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
-    let mut ib = (ib_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
-    let mut ic = (ic_raw as f32) * 3.3 / 4096.0 - 3.3 / 2.0;
+    let mut ia = (ia_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
+    let mut ib = (ib_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
+    let mut ic = (ic_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
 
     ia = 0.995832 * ia - 0.028119 * ib - 0.014988 * ic;
     ib = 0.037737 * ia + 1.007723 * ib - 0.033757 * ic;
