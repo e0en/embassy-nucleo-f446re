@@ -14,6 +14,10 @@ use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
 use socketcan::{CanFrame, EmbeddedFrame, ExtendedId};
 
+const WINDOW_WIDTH: f32 = 1024.0;
+const WINDOW_HEIGHT: f32 = 768.0;
+const MAX_PLOT_POINTS: usize = 100_000;
+
 fn main() -> eframe::Result {
     env_logger::init();
 
@@ -31,7 +35,7 @@ fn main() -> eframe::Result {
     });
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 768.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT]),
         ..Default::default()
     };
     eframe::run_native(
@@ -131,8 +135,8 @@ struct MyApp {
     last_nonzero_at: Instant,
 
     plot_type: PlotType,
-    plot_points_1: [egui_plot::PlotPoint; 100_000],
-    plot_points_2: [egui_plot::PlotPoint; 100_000],
+    plot_points_1: [egui_plot::PlotPoint; MAX_PLOT_POINTS],
+    plot_points_2: [egui_plot::PlotPoint; MAX_PLOT_POINTS],
     n_plot_points: usize,
     is_plotting: bool,
 
@@ -216,8 +220,8 @@ impl MyApp {
 
             plot_type: PlotType::Angle,
             run_mode: RunMode::Impedance,
-            plot_points_1: [egui_plot::PlotPoint::new(0.0, 0.0); 100_000],
-            plot_points_2: [egui_plot::PlotPoint::new(0.0, 0.0); 100_000],
+            plot_points_1: [egui_plot::PlotPoint::new(0.0, 0.0); MAX_PLOT_POINTS],
+            plot_points_2: [egui_plot::PlotPoint::new(0.0, 0.0); MAX_PLOT_POINTS],
             n_plot_points: 0,
             is_plotting: false,
 
@@ -250,7 +254,7 @@ impl eframe::App for MyApp {
                             let new_point = egui_plot::PlotPoint::new(x, y as f64);
                             self.plot_points_1[self.n_plot_points] = new_point;
                             self.n_plot_points += 1;
-                            if self.n_plot_points == 100_000 {
+                            if self.n_plot_points == MAX_PLOT_POINTS {
                                 self.n_plot_points = 0;
                             }
                         }
@@ -276,7 +280,7 @@ impl eframe::App for MyApp {
                             self.plot_points_1[self.n_plot_points] = p1;
                             self.plot_points_2[self.n_plot_points] = p2;
                             self.n_plot_points += 1;
-                            if self.n_plot_points == 100_000 {
+                            if self.n_plot_points == MAX_PLOT_POINTS {
                                 self.n_plot_points = 0;
                             }
                         }
