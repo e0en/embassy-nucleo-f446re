@@ -14,6 +14,13 @@ use crate::{
     read_sensor,
 };
 
+// Calibration parameters
+const RAMP_STEPS: usize = 100;
+const SETTLE_TIME_MS: u64 = 100;
+const ALIGN_DUTY_CYCLE: f32 = 0.1;
+const ALIGN_MAX_ATTEMPTS: usize = 100;
+const ALIGN_SAMPLE_COUNT: usize = 100;
+
 pub async fn get_average_adc<T>(
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: CsaGain,
@@ -66,12 +73,12 @@ where
     TIM: AdvancedInstance4Channel,
 {
     let mut phase = DutyCycle3Phase::zero();
-    for i in 0..100 {
-        phase_setter(&mut phase, align_ratio * (i as f32) / 100.0);
+    for i in 0..RAMP_STEPS {
+        phase_setter(&mut phase, align_ratio * (i as f32) / (RAMP_STEPS as f32));
         driver.run(phase);
         Timer::after_millis(1).await;
     }
-    Timer::after_millis(100).await;
+    Timer::after_millis(SETTLE_TIME_MS).await;
     let c = get_average_adc(p_adc, csa_gain, 20).await - offset;
     max_index(c.a, c.b, c.c)
 }
@@ -135,18 +142,13 @@ where
     Fsincos: Fn(f32) -> (f32, f32),
 {
     // assumption: mechanical angle and voltage (electrical) angle are aligned
-    let a_duty = 0.1;
-
     let mut duty = DutyCycle3Phase::zero();
-    duty.t1 = a_duty;
+    duty.t1 = ALIGN_DUTY_CYCLE;
     driver.run(duty);
-    Timer::after_millis(100).await;
-
-    let n_max_try = 100;
-    let n_measure = 100;
+    Timer::after_millis(SETTLE_TIME_MS).await;
     let mut n_success = 0;
     let mut avg_angle = 0.0;
-    for _ in 0..n_max_try {
+    for _ in 0..ALIGN_MAX_ATTEMPTS {
         let (ia_raw, ib_raw, ic_raw) = p_adc.read();
         let measured = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
         let mapped = foc.normalize_current(measured);
@@ -160,7 +162,7 @@ where
         avg_angle += i_angle - e_angle;
         n_success += 1;
 
-        if n_success >= n_measure {
+        if n_success >= ALIGN_SAMPLE_COUNT {
             break;
         }
         Timer::after_millis(1).await;
