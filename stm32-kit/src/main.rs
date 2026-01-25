@@ -32,6 +32,17 @@ use crate::{
 
 use crate::gm3506 as motor;
 
+const PSU_VOLTAGE: f32 = 16.0;
+const VOLTAGE_RAMP_RATE: f32 = 1000.0;
+const CURRENT_SAFETY_MARGIN: f32 = 0.8;
+const PHASE_MAPPING_TOLERANCE: f32 = 0.05;
+const CURRENT_PI_FREQUENCY: f32 = 300.0;
+const ALIGN_VOLTAGE: f32 = 2.0;
+const INIT_DELAY_CYCLES: u32 = 160_000;
+const CAN_BITRATE: u32 = 1_000_000;
+const VELOCITY_FILTER_CONSTANT: f32 = 0.005;
+const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
+
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
 };
@@ -117,12 +128,12 @@ fn create_foc_controller(psu_voltage: f32, use_current_sensing: bool) -> FocCont
         motor::ANGLE_PID,
         motor::VELOCITY_PID,
         OutputLimit {
-            max_value: 16.0,
-            ramp: 1000.0,
+            max_value: PSU_VOLTAGE,
+            ramp: VOLTAGE_RAMP_RATE,
         },
         sincos as fn(f32) -> (f32, f32),
     );
-    foc.set_current_limit(drv8316::MAX_CURRENT * 0.8); // 20% margin
+    foc.set_current_limit(drv8316::MAX_CURRENT * CURRENT_SAFETY_MARGIN);
 
     if use_current_sensing {
         foc.enable_current_sensing();
@@ -144,8 +155,14 @@ async fn run_motor_calibration(
 ) -> Result<(), &'static str> {
     if use_current_sensing {
         let current_offset = calibration::get_current_offset(p_adc, driver, csa_gain).await;
-        if let Some(m) =
-            calibration::get_phase_mapping(p_adc, driver, csa_gain, current_offset, 0.05).await
+        if let Some(m) = calibration::get_phase_mapping(
+            p_adc,
+            driver,
+            csa_gain,
+            current_offset,
+            PHASE_MAPPING_TOLERANCE,
+        )
+        .await
         {
             info!("phase mapping = {} {} {}", m.0, m.1, m.2);
             foc.current_mapping = m;
@@ -178,7 +195,7 @@ async fn run_motor_calibration(
             "R_s = {}, L_q = {}, L_d = {}",
             impedance.r_s, impedance.l_q, impedance.l_d
         );
-        let current_gain = calculate_current_pi(impedance, 300.0);
+        let current_gain = calculate_current_pi(impedance, CURRENT_PI_FREQUENCY);
         info!("current kp={}, ki={}", current_gain.p, current_gain.i);
     }
 
@@ -206,8 +223,8 @@ async fn init_foc(
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
     let slew_rate = drv8316::SlewRate::Rate200V;
-    let psu_voltage = 16.0;
-    let align_voltage: f32 = 2.0;
+    let psu_voltage = PSU_VOLTAGE;
+    let align_voltage = ALIGN_VOLTAGE;
 
     // Try to load stored configuration
     let stored_config = flash_config::read_config(&mut p_flash);
@@ -590,8 +607,8 @@ bind_interrupts!(
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Delay for probe-rs to attach during firmware flashing
-    cortex_m::asm::delay(160_000); // ~10ms at 16MHz HSI
+    // Delay for probe-rs to attach during firmware flashing (~10ms at 16MHz HSI)
+    cortex_m::asm::delay(INIT_DELAY_CYCLES);
 
     let mut config = Config::default();
     clock::set_clock(&mut config);
@@ -602,8 +619,8 @@ async fn main(spawner: Spawner) {
 
     embassy_stm32::interrupt::TIM1_UP_TIM16.set_priority(interrupt::Priority::P0);
     embassy_stm32::interrupt::ADC1_2.set_priority(interrupt::Priority::P1);
-    embassy_stm32::interrupt::FDCAN1_IT0.set_priority(interrupt::Priority::P7);
-    embassy_stm32::interrupt::FDCAN1_IT1.set_priority(interrupt::Priority::P7);
+    embassy_stm32::interrupt::FDCAN1_IT0.set_priority(CAN_INTERRUPT_PRIORITY);
+    embassy_stm32::interrupt::FDCAN1_IT1.set_priority(CAN_INTERRUPT_PRIORITY);
 
     let mut spi_config = stm32_spi::Config::default();
     spi_config.miso_pull = gpio::Pull::Up;
@@ -621,7 +638,7 @@ async fn main(spawner: Spawner) {
     }
 
     let mut can_conf = stm32_can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
-    can_conf.set_bitrate(1_000_000);
+    can_conf.set_bitrate(CAN_BITRATE);
     can_conf.properties().set_extended_filter(
         stm32_can::filter::ExtendedFilterSlot::_0,
         stm32_can::filter::ExtendedFilter::accept_all_into_fifo1(),
@@ -640,8 +657,7 @@ async fn main(spawner: Spawner) {
     timer.initialize(foc_isr::MAX_COMPARE_VALUE as u16);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    let velocity_filter: f32 = 0.005;
-    let mut sensor = As5047P::new(&SPI, cs_out, velocity_filter);
+    let mut sensor = As5047P::new(&SPI, cs_out, VELOCITY_FILTER_CONSTANT);
     if let Err(e) = sensor.initialize().await {
         error!("Sensor initialization failed, {:?}", e);
         return;
