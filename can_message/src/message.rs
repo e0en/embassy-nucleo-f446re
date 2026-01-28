@@ -556,13 +556,13 @@ mod tests {
 
     #[test]
     fn parameter_value_f32_roundtrip() {
-        let pv = ParameterValue::IqRef(3.14159);
+        let pv = ParameterValue::IqRef(core::f32::consts::PI);
 
         let bytes: [u8; 8] = pv.into();
         let decoded = ParameterValue::try_from(bytes).unwrap();
 
         if let ParameterValue::IqRef(v) = decoded {
-            assert!(approx_eq(v, 3.14159, 0.0001));
+            assert!(approx_eq(v, core::f32::consts::PI, 0.0001));
         } else {
             panic!("Wrong variant");
         }

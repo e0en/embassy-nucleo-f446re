@@ -164,10 +164,7 @@ fn param_row(
     let name_label = ui.label(label);
     ui.text_edit_singleline(text).labelled_by(name_label.id);
     let is_valid = text.parse::<f32>().map(|n| *value = n).is_ok();
-    if ui
-        .add_enabled(is_valid, egui::Button::new("Set"))
-        .clicked()
-    {
+    if ui.add_enabled(is_valid, egui::Button::new("Set")).clicked() {
         let _ = command_send.send(Command::SetParameter(make_param(*value)));
     }
     ui.end_row();
@@ -377,28 +374,94 @@ impl eframe::App for MyApp {
                 .num_columns(3)
                 .spacing([40.0, 4.0])
                 .show(ui, |ui| {
-                    param_row(ui, "Angle Ref", &mut self.angle, &mut self.angle_string,
-                        &self.command_send, ParameterValue::AngleRef);
-                    param_row(ui, "Velocity Ref", &mut self.velocity, &mut self.velocity_string,
-                        &self.command_send, ParameterValue::SpeedRef);
-                    param_row(ui, "I_q Ref", &mut self.iq, &mut self.iq_string,
-                        &self.command_send, ParameterValue::IqRef);
-                    param_row(ui, "V_q Ref", &mut self.vq, &mut self.vq_string,
-                        &self.command_send, ParameterValue::VqRef);
-                    param_row(ui, "Angle K_p", &mut self.angle_kp, &mut self.angle_kp_string,
-                        &self.command_send, ParameterValue::AngleKp);
-                    param_row(ui, "Speed K_p", &mut self.speed_kp, &mut self.speed_kp_string,
-                        &self.command_send, ParameterValue::SpeedKp);
-                    param_row(ui, "Speed K_i", &mut self.speed_ki, &mut self.speed_ki_string,
-                        &self.command_send, ParameterValue::SpeedKi);
-                    param_row(ui, "Current K_p", &mut self.iq_kp, &mut self.iq_kp_string,
-                        &self.command_send, ParameterValue::CurrentKp);
-                    param_row(ui, "Current K_i", &mut self.iq_ki, &mut self.iq_ki_string,
-                        &self.command_send, ParameterValue::CurrentKi);
-                    param_row(ui, "Spring", &mut self.spring, &mut self.spring_string,
-                        &self.command_send, ParameterValue::Spring);
-                    param_row(ui, "Damping", &mut self.damping, &mut self.damping_string,
-                        &self.command_send, ParameterValue::Damping);
+                    param_row(
+                        ui,
+                        "Angle Ref",
+                        &mut self.angle,
+                        &mut self.angle_string,
+                        &self.command_send,
+                        ParameterValue::AngleRef,
+                    );
+                    param_row(
+                        ui,
+                        "Velocity Ref",
+                        &mut self.velocity,
+                        &mut self.velocity_string,
+                        &self.command_send,
+                        ParameterValue::SpeedRef,
+                    );
+                    param_row(
+                        ui,
+                        "I_q Ref",
+                        &mut self.iq,
+                        &mut self.iq_string,
+                        &self.command_send,
+                        ParameterValue::IqRef,
+                    );
+                    param_row(
+                        ui,
+                        "V_q Ref",
+                        &mut self.vq,
+                        &mut self.vq_string,
+                        &self.command_send,
+                        ParameterValue::VqRef,
+                    );
+                    param_row(
+                        ui,
+                        "Angle K_p",
+                        &mut self.angle_kp,
+                        &mut self.angle_kp_string,
+                        &self.command_send,
+                        ParameterValue::AngleKp,
+                    );
+                    param_row(
+                        ui,
+                        "Speed K_p",
+                        &mut self.speed_kp,
+                        &mut self.speed_kp_string,
+                        &self.command_send,
+                        ParameterValue::SpeedKp,
+                    );
+                    param_row(
+                        ui,
+                        "Speed K_i",
+                        &mut self.speed_ki,
+                        &mut self.speed_ki_string,
+                        &self.command_send,
+                        ParameterValue::SpeedKi,
+                    );
+                    param_row(
+                        ui,
+                        "Current K_p",
+                        &mut self.iq_kp,
+                        &mut self.iq_kp_string,
+                        &self.command_send,
+                        ParameterValue::CurrentKp,
+                    );
+                    param_row(
+                        ui,
+                        "Current K_i",
+                        &mut self.iq_ki,
+                        &mut self.iq_ki_string,
+                        &self.command_send,
+                        ParameterValue::CurrentKi,
+                    );
+                    param_row(
+                        ui,
+                        "Spring",
+                        &mut self.spring,
+                        &mut self.spring_string,
+                        &self.command_send,
+                        ParameterValue::Spring,
+                    );
+                    param_row(
+                        ui,
+                        "Damping",
+                        &mut self.damping,
+                        &mut self.damping_string,
+                        &self.command_send,
+                        ParameterValue::Damping,
+                    );
                 });
 
             let name_label = ui.label("On-off frequency");

@@ -12,6 +12,8 @@ pub enum FocError {
 }
 
 const HALF_SQRT3: f32 = 0.866_025_4;
+/// Voltage scaling factor for inverse Clarke transform (3/2)
+const INVERSE_CLARKE_SCALE: f32 = 1.5;
 
 pub fn svpwm<Fsincos>(
     v_q: f32,
@@ -30,8 +32,8 @@ where
     let v_q = v_q.min(theoretical_max).max(-theoretical_max);
     let v_d = v_d.min(theoretical_max).max(-theoretical_max);
 
-    let v_d = v_d / v_max / 1.5;
-    let v_q = v_q / v_max / 1.5;
+    let v_d = v_d / v_max / INVERSE_CLARKE_SCALE;
+    let v_q = v_q / v_max / INVERSE_CLARKE_SCALE;
 
     let (sa, ca) = sincos(electrical_angle);
 

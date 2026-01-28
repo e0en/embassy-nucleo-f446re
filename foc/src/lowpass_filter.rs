@@ -1,3 +1,6 @@
+/// Maximum dt before filter resets to raw value (seconds)
+const MAX_DT_SECONDS: f32 = 0.1;
+
 pub struct LowPassFilter {
     pub time_constant: f32,
     last_value: Option<f32>,
@@ -12,7 +15,7 @@ impl LowPassFilter {
     }
 
     pub fn apply(&mut self, value: f32, dt_seconds: f32) -> f32 {
-        if dt_seconds > 0.1 {
+        if dt_seconds > MAX_DT_SECONDS {
             self.last_value = Some(value);
             value
         } else {

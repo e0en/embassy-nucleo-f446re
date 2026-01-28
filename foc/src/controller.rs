@@ -2,6 +2,11 @@ use crate::current::PhaseCurrent;
 
 const INV_SQRT3: f32 = 0.577_350_26;
 
+/// Default velocity output limit (volts per second)
+const DEFAULT_VELOCITY_OUTPUT_LIMIT: f32 = 1000.0;
+/// Default current filter time constant (seconds)
+const DEFAULT_CURRENT_FILTER_TIME_CONSTANT: f32 = 0.001;
+
 /// Compute floating-point remainder (equivalent to libm::fmodf)
 /// Returns x - n*y where n = trunc(x/y)
 #[inline]
@@ -196,9 +201,9 @@ where
                 max_current,
                 Some(max_current_ramp),
             ),
-            _velocity_output_limit: 1000.0,
-            current_q_filter: LowPassFilter::new(0.001),
-            current_d_filter: LowPassFilter::new(0.001),
+            _velocity_output_limit: DEFAULT_VELOCITY_OUTPUT_LIMIT,
+            current_q_filter: LowPassFilter::new(DEFAULT_CURRENT_FILTER_TIME_CONSTANT),
+            current_d_filter: LowPassFilter::new(DEFAULT_CURRENT_FILTER_TIME_CONSTANT),
 
             current_offset: PhaseCurrent::new(0.0, 0.0, 0.0),
 
