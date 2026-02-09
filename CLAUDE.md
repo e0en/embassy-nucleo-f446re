@@ -54,6 +54,7 @@ Target: `thumbv7em-none-eabihf` (Cortex-M4F). Requires nightly Rust.
 - `defmt::Format` derive on error/status types for RTT logging
 - `#[inline(always)]` on ISR functions (`foc_isr.rs`)
 - PAC register access in ISR (bypass Embassy for speed)
+- PAC register field arrays are 0-indexed (SQ1=0, JSQ1=0, JDR1=0). Always use named constants from `adc.rs` (e.g., `SQ1`, `JSQ2`, `JDR3`) instead of raw numeric indices.
 - `AtomicU32` + `to_le_bytes`/`from_le_bytes` for ISR↔task f32 sharing
 - `CriticalSectionRawMutex` for channels accessed from ISR
 - `ThreadModeRawMutex` for task-only channels

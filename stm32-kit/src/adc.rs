@@ -19,6 +19,16 @@ const ADC_MAX_VALUE: f32 = 4096.0;
 
 const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
 
+// PAC uses 0-based indices for register field arrays.
+// Map RM0440 field names to PAC indices to prevent off-by-one errors.
+const SQ1: usize = 0;
+const JSQ1: usize = 0;
+const JSQ2: usize = 1;
+const JSQ3: usize = 2;
+const JDR1: usize = 0;
+const JDR2: usize = 1;
+const JDR3: usize = 2;
+
 const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES12_5;
 
 pub static IA_RAW: AtomicU16 = AtomicU16::new(0);
@@ -104,9 +114,9 @@ fn ADC1_2() {
     let adc1 = pac::ADC1;
     let isr = adc1.isr().read();
     if isr.jeos() {
-        let ia = adc1.jdr(1).read().0 as u16;
-        let ib = adc1.jdr(2).read().0 as u16;
-        let ic = adc1.jdr(3).read().0 as u16;
+        let ia = adc1.jdr(JDR1).read().0 as u16;
+        let ib = adc1.jdr(JDR2).read().0 as u16;
+        let ic = adc1.jdr(JDR3).read().0 as u16;
 
         IA_RAW.store(ia, Ordering::Relaxed);
         IB_RAW.store(ib, Ordering::Relaxed);
@@ -165,7 +175,7 @@ pub fn measure_vm_sense() -> f32 {
     // Configure regular sequence for single channel conversion
     adc1.sqr1().modify(|w| {
         w.set_l(0); // 1 conversion (L = 0 means 1 conversion)
-        w.set_sq(0, VM_SENSE_CHANNEL);
+        w.set_sq(SQ1, VM_SENSE_CHANNEL);
     });
 
     // Set sample time for the VM_SENSE channel
@@ -209,10 +219,10 @@ pub fn initialize(adc1: pac::adc::Adc, ch1: u8, ch2: u8, ch3: u8) {
     });
 
     adc1.jsqr().modify(|w| {
-        w.set_jl(3);
-        w.set_jsq(1, ch1);
-        w.set_jsq(2, ch2);
-        w.set_jsq(3, ch3);
+        w.set_jl(2);
+        w.set_jsq(JSQ1, ch1);
+        w.set_jsq(JSQ2, ch2);
+        w.set_jsq(JSQ3, ch3);
         w.set_jexten(stm32_adc::vals::Exten::RISING_EDGE);
         w.set_jextsel(JEXT_TIM1_TRGO);
     });
