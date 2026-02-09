@@ -28,7 +28,6 @@ use crate::{
     can::{convert_response_message, parse_command_frame},
     cordic::{initialize_cordic, run_and_log_validation_tests, sincos},
     current_tuning::calculate_current_pi,
-    drv8316::Drv8316,
 };
 
 use crate::gm3506 as motor;
@@ -204,9 +203,7 @@ async fn run_motor_calibration(
 
 #[inline]
 async fn init_foc(
-    p_spi: &'static SpiMutex,
-    cs_drv: gpio::Output<'static>,
-    mut drvoff_pin: gpio::Output<'static>,
+    drvoff_pin: gpio::Output<'static>,
     timer: pwm::Pwm6Timer<
         'static,
         peripherals::TIM1,
@@ -219,10 +216,9 @@ async fn init_foc(
     >,
     mut p_adc: adc::DummyAdc<peripherals::ADC1>,
     mut p_flash: Flash<'_, embassy_stm32::flash::Blocking>,
-) -> Option<(Drv8316<'static>, u8)> {
+) -> Option<u8> {
     let use_current_sensing = true;
-    let csa_gain = drv8316::CsaGain::Gain0_3V;
-    let slew_rate = drv8316::SlewRate::Rate200V;
+    let csa_gain = drv8316::CsaGain::Gain0_15V;
     let align_voltage = ALIGN_VOLTAGE;
 
     // Try to load stored configuration
@@ -237,10 +233,9 @@ async fn init_foc(
     }
 
     // Initialize hardware
-    drvoff_pin.set_high();
     let mut driver = PwmDriver::new(timer.timer);
-    let mut gate_driver = Drv8316::new(p_spi, cs_drv, drvoff_pin);
-    gate_driver.initialize(csa_gain, slew_rate).await;
+    let mut gate_driver = drv8316::Drv8316::new(drvoff_pin);
+    Timer::after_millis(1).await; // ready time of gate driver
 
     let mut foc = create_foc_controller(use_current_sensing);
     gate_driver.turn_on();
@@ -300,12 +295,14 @@ async fn init_foc(
     // The ISR accesses TIM1 directly via PAC, but Embassy's Timer wrapper
     // may stop the hardware timer on drop.
     core::mem::forget(driver);
+    // Keep DRVOFF pin low (gate driver enabled)
+    core::mem::forget(gate_driver);
 
-    Some((gate_driver, can_id))
+    Some(can_id)
 }
 
 #[embassy_executor::task]
-async fn monitor_task(mut gate_driver: Drv8316<'static>) {
+async fn monitor_task() {
     let mut last_logged_at = Instant::now();
     let mut psu_voltage_tick: u8 = 0;
     loop {
@@ -326,15 +323,6 @@ async fn monitor_task(mut gate_driver: Drv8316<'static>) {
                 }
                 last_logged_at = now;
             }
-        }
-
-        if let Ok(x) = gate_driver.read_ic_status().await
-            && x.device_fault
-        {
-            let _ = gate_driver.unlock_registers().await;
-            let _ = gate_driver.clear_fault().await;
-            let _ = gate_driver.lock_registers().await;
-            warn!("DRV8316 status = {}", x);
         }
     }
 }
@@ -655,7 +643,6 @@ async fn main(spawner: Spawner) {
     let (can_tx, can_rx, _properties) = p_can.split();
 
     let drvoff_pin = gpio::Output::new(p.PB12, gpio::Level::High, gpio::Speed::Medium);
-    let cs_drv = gpio::Output::new(p.PB5, gpio::Level::High, gpio::Speed::VeryHigh);
 
     let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PA2);
     p_adc.calibrate();
@@ -677,9 +664,7 @@ async fn main(spawner: Spawner) {
     // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor)));
 
-    let Some((gate_driver, can_id)) =
-        init_foc(&SPI, cs_drv, drvoff_pin, timer, p_adc, p_flash).await
-    else {
+    let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, p_flash).await else {
         return;
     };
 
@@ -693,7 +678,7 @@ async fn main(spawner: Spawner) {
         *(FLASH.lock().await) = Some(flash);
     }
 
-    unwrap!(spawner.spawn(monitor_task(gate_driver)));
+    unwrap!(spawner.spawn(monitor_task()));
     unwrap!(spawner.spawn(command_task()));
     unwrap!(spawner.spawn(can_rx_task(can_rx, can_id)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));
