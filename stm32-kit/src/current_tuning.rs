@@ -205,7 +205,7 @@ pub fn calculate_inductance(
     let mut ic = 0.0;
     let mut is = 0.0;
     for i in 0..n_sample {
-        let angle = test_frequency * t_buffer[i];
+        let angle = core::f32::consts::TAU * test_frequency * t_buffer[i];
         let v = v_buffer[i] - v_mean;
         let i = i_buffer[i] - i_mean;
 
@@ -227,5 +227,6 @@ pub fn calculate_inductance(
     let z_mag = v_mag / i_mag;
 
     let (sin_phi, _) = cordic::sincos(phi);
-    (z_mag * sin_phi / test_frequency).abs()
+    let omega = core::f32::consts::TAU * test_frequency;
+    (z_mag * sin_phi / omega).abs()
 }
