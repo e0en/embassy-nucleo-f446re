@@ -19,7 +19,7 @@ mod gm3506;
 mod motor_tuning;
 mod pwm;
 
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU8, AtomicU32};
 
 use foc::angle_input::AngleReading;
 
@@ -45,6 +45,7 @@ const INIT_DELAY_CYCLES: u32 = 160_000;
 const CAN_BITRATE: u32 = 1_000_000;
 const VELOCITY_FILTER_CONSTANT: f32 = 0.005;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
+const HOST_CAN_ID: u8 = 0;
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
@@ -102,6 +103,7 @@ use foc::{
 static ANGLE: AtomicU32 = AtomicU32::new(0);
 static VELOCITY: AtomicU32 = AtomicU32::new(0);
 static DT: AtomicU32 = AtomicU32::new(0);
+static CAN_ID: AtomicU8 = AtomicU8::new(0);
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 32> = Channel::new();
 /// Response channel uses CriticalSectionRawMutex because it's accessed from ADC interrupt
@@ -515,35 +517,32 @@ fn read_sensor() -> AngleReading {
 
 #[embassy_executor::task]
 async fn can_tx_task(mut can_tx: CanTx<'static>) {
-    let can_id: u8 = 0x0F;
     let response_receiver = RESPONSE_CHANNEL.receiver();
-    let host_id: Option<u8> = Some(0);
 
     loop {
         let r = response_receiver.receive().await;
-        if let Some(h) = host_id {
-            let message = ResponseMessage::new(can_id, h, r);
-            if let Ok(frame) = convert_response_message(message) {
-                can_tx.write(&frame).await;
-            }
+        let can_id = CAN_ID.load(core::sync::atomic::Ordering::Relaxed);
+        let message = ResponseMessage::new(can_id, HOST_CAN_ID, r);
+        if let Ok(frame) = convert_response_message(message) {
+            can_tx.write(&frame).await;
         }
     }
 }
 
 #[embassy_executor::task]
-async fn can_rx_task(mut can_rx: CanRx<'static>, initial_can_id: u8) {
-    let mut can_id: u8 = initial_can_id;
+async fn can_rx_task(mut can_rx: CanRx<'static>) {
     let command_sender = COMMAND_CHANNEL.sender();
 
     loop {
         if let Ok(m) = can_rx.read().await {
             if let Ok(message) = parse_command_frame(m.frame) {
+                let can_id = CAN_ID.load(core::sync::atomic::Ordering::Relaxed);
                 if message.motor_can_id != can_id {
                     continue;
                 }
                 match message.command {
                     Command::SetCanId(new_can_id) => {
-                        can_id = new_can_id;
+                        CAN_ID.store(new_can_id, core::sync::atomic::Ordering::Relaxed);
                         info!("CAN ID changed to {}", new_can_id);
                         save_can_id_to_flash(new_can_id).await;
                     }
@@ -672,6 +671,7 @@ async fn main(spawner: Spawner) {
     let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, p_flash).await else {
         return;
     };
+    CAN_ID.store(can_id, core::sync::atomic::Ordering::Relaxed);
 
     // Store flash in static for use by command handlers
     {
@@ -685,6 +685,6 @@ async fn main(spawner: Spawner) {
 
     unwrap!(spawner.spawn(monitor_task()));
     unwrap!(spawner.spawn(command_task()));
-    unwrap!(spawner.spawn(can_rx_task(can_rx, can_id)));
+    unwrap!(spawner.spawn(can_rx_task(can_rx)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));
 }
