@@ -503,7 +503,7 @@ impl TryFrom<CommandMessage> for CanMessage {
 
         let id = (command_id as u32) << 24
             | ((command_content as u32) << 16)
-            | (val.host_can_id as u32)
+            | ((val.host_can_id as u32) << 8)
             | (val.motor_can_id as u32);
 
         Ok(CanMessage {
@@ -607,7 +607,7 @@ mod tests {
     fn command_message_enable_roundtrip() {
         let msg = CommandMessage {
             motor_can_id: 0x0F,
-            host_can_id: 0x00,
+            host_can_id: 0x02,
             command: Command::Enable,
         };
 
@@ -615,6 +615,7 @@ mod tests {
         let decoded = CommandMessage::try_from(can_msg).unwrap();
 
         assert_eq!(decoded.motor_can_id, 0x0F);
+        assert_eq!(decoded.host_can_id, 0x02);
         assert!(matches!(decoded.command, Command::Enable));
     }
 
@@ -622,13 +623,15 @@ mod tests {
     fn command_message_set_parameter_roundtrip() {
         let msg = CommandMessage {
             motor_can_id: 0x0F,
-            host_can_id: 0x00,
+            host_can_id: 0x03,
             command: Command::SetParameter(ParameterValue::SpeedKp(2.5)),
         };
 
         let can_msg = CanMessage::try_from(msg).unwrap();
         let decoded = CommandMessage::try_from(can_msg).unwrap();
 
+        assert_eq!(decoded.motor_can_id, 0x0F);
+        assert_eq!(decoded.host_can_id, 0x03);
         if let Command::SetParameter(ParameterValue::SpeedKp(v)) = decoded.command {
             assert!(approx_eq(v, 2.5, 0.0001));
         } else {
