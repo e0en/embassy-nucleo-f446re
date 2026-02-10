@@ -9,6 +9,8 @@ mod clock;
 mod cordic;
 mod current_tuning;
 mod drv8316;
+mod drv8316c;
+mod drv8316t;
 mod flash_config;
 mod flycat5010;
 mod foc_isr;
@@ -234,7 +236,7 @@ async fn init_foc(
 
     // Initialize hardware
     let mut driver = PwmDriver::new(timer.timer);
-    let mut gate_driver = drv8316::Drv8316::new(drvoff_pin);
+    let mut gate_driver = drv8316t::Drv8316T::new(drvoff_pin);
     Timer::after_millis(1).await; // ready time of gate driver
 
     let mut foc = create_foc_controller(use_current_sensing);

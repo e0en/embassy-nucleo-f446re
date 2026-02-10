@@ -1,4 +1,3 @@
-use embassy_stm32::gpio;
 use foc::current::PhaseCurrent;
 
 // ADC and voltage reference constants
@@ -25,10 +24,6 @@ const CROSSTALK_CC: f32 = 1.003268;
 
 pub const MAX_CURRENT: f32 = 8.0;
 
-pub struct Drv8316<'d> {
-    drvoff_pin: gpio::Output<'d>,
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum CsaGain {
@@ -36,20 +31,6 @@ pub enum CsaGain {
     Gain0_3V = 0b01,  // 0.3 V/A
     Gain0_6V = 0b10,  // 0.6 V/A
     Gain1_2V = 0b11,  // 1.2 V/A
-}
-
-impl<'d> Drv8316<'d> {
-    pub fn new(drvoff_pin: gpio::Output<'d>) -> Self {
-        Drv8316 { drvoff_pin }
-    }
-
-    pub fn turn_on(&mut self) {
-        self.drvoff_pin.set_low();
-    }
-
-    pub fn turn_off(&mut self) {
-        self.drvoff_pin.set_high();
-    }
 }
 
 pub fn convert_csa_readings(ia_raw: u16, ib_raw: u16, ic_raw: u16, gain: CsaGain) -> PhaseCurrent {
