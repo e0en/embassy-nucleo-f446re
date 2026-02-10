@@ -312,6 +312,7 @@ async fn init_foc(
 async fn monitor_task() {
     let mut last_logged_at = Instant::now();
     let mut psu_voltage_tick: u8 = 0;
+    let mut can_diag_tick: u8 = 0;
     loop {
         Timer::after_millis(100).await;
 
@@ -319,6 +320,12 @@ async fn monitor_task() {
         if psu_voltage_tick >= 10 {
             foc_isr::with_foc(|foc| foc.set_psu_voltage(adc::measure_vm_sense()));
             psu_voltage_tick = 0;
+        }
+
+        can_diag_tick += 1;
+        if can_diag_tick >= 10 {
+            can_diag_tick = 0;
+            log_fdcan_status();
         }
 
         let loop_count = foc_isr::get_loop_counter();
@@ -331,6 +338,67 @@ async fn monitor_task() {
                 last_logged_at = now;
             }
         }
+    }
+}
+
+#[derive(defmt::Format)]
+enum BusState {
+    Ok,
+    ErrorWarning,
+    ErrorPassive,
+    BusOff,
+}
+
+impl BusState {
+    fn is_ok(&self) -> bool {
+        matches!(self, BusState::Ok)
+    }
+}
+
+fn log_fdcan_status() {
+    use embassy_stm32::pac;
+
+    let fdcan = pac::FDCAN1;
+    let psr = fdcan.psr().read();
+    let ecr = fdcan.ecr().read();
+
+    let bus_state = if psr.bo() {
+        BusState::BusOff
+    } else if psr.ep() {
+        BusState::ErrorPassive
+    } else if psr.ew() {
+        BusState::ErrorWarning
+    } else {
+        BusState::Ok
+    };
+
+    let last_err = match psr.lec().to_bits() {
+        0 => "none",
+        1 => "stuff",
+        2 => "form",
+        3 => "ack",
+        4 => "bit1(recessive)",
+        5 => "bit0(dominant)",
+        6 => "crc",
+        _ => "no-change",
+    };
+
+    if bus_state.is_ok() {
+        info!(
+            "CAN: {} TEC={} REC={} last_err={}",
+            bus_state,
+            ecr.tec(),
+            ecr.rec(),
+            last_err,
+        );
+    } else {
+        warn!(
+            "CAN: {} TEC={} REC={} last_err={}",
+            bus_state,
+            ecr.tec(),
+            ecr.rec(),
+            last_err,
+        );
     }
 }
 
