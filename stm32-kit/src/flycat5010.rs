@@ -2,6 +2,7 @@
 pub const SETUP: foc::controller::MotorSetup = foc::controller::MotorSetup {
     pole_pair_count: 7,
     phase_resistance: 0.5,
+    kv_rating: 0.0,
     max_velocity: 400.0,
 };
 

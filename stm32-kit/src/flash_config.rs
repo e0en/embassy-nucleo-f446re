@@ -10,7 +10,7 @@ use foc::current::PhaseCurrent;
 /// Magic number to identify valid config: "MOTC" in ASCII
 const CONFIG_MAGIC: u32 = 0x4D4F5443;
 /// Current config version for future migrations
-const CONFIG_VERSION: u8 = 2;
+const CONFIG_VERSION: u8 = 3;
 /// Flash offset for config page (last 2KB of 128KB)
 const CONFIG_OFFSET: u32 = 0x1F800;
 /// Size of config page
@@ -82,6 +82,11 @@ pub struct ConfigData {
     /// Detected pole pair count (0 = not detected, use compile-time default)
     pub pole_pair_count: u8,
 
+    /// Measured phase resistance in ohms (0.0 = not measured)
+    pub phase_resistance: f32,
+    /// Measured Kv rating in rad/s per volt (0.0 = not measured)
+    pub kv_rating: f32,
+
     /// CRC32 checksum (must be last field)
     pub crc: u32,
 }
@@ -108,6 +113,8 @@ impl ConfigData {
             angle_kp: 0.0,
             can_id: 0x0F,
             pole_pair_count: 0,
+            phase_resistance: 0.0,
+            kv_rating: 0.0,
             crc: 0,
         }
     }
@@ -249,6 +256,12 @@ where
     if config.pole_pair_count > 0 {
         foc.motor.pole_pair_count = config.pole_pair_count;
     }
+    if config.phase_resistance > 0.0 {
+        foc.motor.phase_resistance = config.phase_resistance;
+    }
+    if config.kv_rating > 0.0 {
+        foc.motor.kv_rating = config.kv_rating;
+    }
 }
 
 /// Create ConfigData from current FOC state
@@ -273,5 +286,7 @@ where
 
     config.can_id = can_id;
     config.pole_pair_count = foc.motor.pole_pair_count;
+    config.phase_resistance = foc.motor.phase_resistance;
+    config.kv_rating = foc.motor.kv_rating;
     config
 }

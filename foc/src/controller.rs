@@ -75,6 +75,7 @@ pub struct ImpedanceParameter {
 pub struct MotorSetup {
     pub pole_pair_count: u8,
     pub phase_resistance: f32,
+    pub kv_rating: f32,
     pub max_velocity: f32,
 }
 

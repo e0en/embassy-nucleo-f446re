@@ -208,6 +208,7 @@ async fn run_motor_calibration(
 
         let impedance =
             current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor).await;
+        foc.motor.phase_resistance = impedance.r_s;
         info!(
             "R_s = {}, L_q = {}, L_d = {}",
             impedance.r_s, impedance.l_q, impedance.l_d
@@ -287,6 +288,14 @@ async fn init_foc(
             return None;
         }
 
+        foc.enable();
+
+        let kv =
+            motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
+                .await;
+        foc.motor.kv_rating = kv;
+        info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
+
         let mut config = flash_config::from_foc(&foc, can_id);
         if let Err(e) = flash_config::write_config(&mut p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
@@ -298,13 +307,6 @@ async fn init_foc(
     foc.set_run_mode(RunMode::Torque);
     foc.set_target_torque(0.0);
     foc.enable();
-
-    if !has_stored_config {
-        let kv =
-            motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
-                .await;
-        info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
-    }
 
     // Initialize FOC context for interrupt-driven control
     // From this point on, FOC runs in the ADC interrupt
