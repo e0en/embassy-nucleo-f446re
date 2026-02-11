@@ -176,6 +176,19 @@ async fn run_motor_calibration(
         foc.set_current_offset(current_offset);
     }
 
+    let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
+
+    match foc
+        .detect_pole_pairs(align_voltage, read_sensor, |d| driver.run(d), wait_seconds)
+        .await
+    {
+        Ok(pp) => info!("Detected {} pole pairs", pp),
+        Err(_) => warn!(
+            "Pole pair detection failed, using default: {}",
+            foc.motor.pole_pair_count
+        ),
+    }
+
     let set_motor = |d: DutyCycle3Phase| driver.run(d);
     let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
 

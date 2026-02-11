@@ -317,6 +317,76 @@ where
         Ok(())
     }
 
+    /// Detect motor pole pair count by driving SVPWM through known electrical cycles
+    /// and measuring the resulting mechanical rotation.
+    /// Must run before align_sensor since it bypasses to_electrical_angle.
+    pub async fn detect_pole_pairs<'a, FSensor, FMotor, FWait, FutUnit>(
+        &mut self,
+        align_voltage: f32,
+        read_sensor: FSensor,
+        mut set_motor: FMotor,
+        wait_function: FWait,
+    ) -> Result<u8, FocError>
+    where
+        FSensor: Fn() -> AngleReading,
+        FMotor: FnMut(DutyCycle3Phase),
+        FWait: Fn(f32) -> FutUnit + 'a,
+        FutUnit: Future<Output = ()> + Send + 'a,
+    {
+        let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
+
+        const NUM_CYCLES: f32 = 7.0;
+        const STEP_RAD: f32 = 0.05;
+        const STEP_TIME: f32 = 0.005;
+        const TWO_PI: f32 = 2.0 * core::f32::consts::PI;
+        const LOCK_ANGLE: f32 = 3.0 * core::f32::consts::FRAC_PI_2;
+
+        // Lock rotor at 3pi/2 and wait for convergence
+        let lock_signal = svpwm(align_voltage, 0.0, LOCK_ANGLE, psu_voltage, &self.f_sincos)?;
+        set_motor(lock_signal);
+        for _ in 0..100 {
+            wait_function(0.01).await;
+        }
+
+        let start_angle = read_sensor().angle;
+
+        // Sweep through NUM_CYCLES electrical cycles
+        let total_electrical = NUM_CYCLES * TWO_PI;
+        let num_steps = (total_electrical / STEP_RAD) as u32;
+        let mut electrical_angle = LOCK_ANGLE;
+        for _ in 0..num_steps {
+            electrical_angle += STEP_RAD;
+            let signal = svpwm(
+                align_voltage,
+                0.0,
+                electrical_angle,
+                psu_voltage,
+                &self.f_sincos,
+            )?;
+            set_motor(signal);
+            wait_function(STEP_TIME).await;
+        }
+
+        let end_angle = read_sensor().angle;
+        let delta_mechanical = (end_angle - start_angle).abs();
+
+        // Validate minimum mechanical movement
+        if delta_mechanical < 0.1 {
+            return Err(FocError::DetectionFailed);
+        }
+
+        let raw = total_electrical / delta_mechanical;
+        let rounded = (raw + 0.5) as u8;
+        let fractional_error = (raw - rounded as f32).abs();
+
+        if !(1..=50).contains(&rounded) || fractional_error > 0.3 {
+            return Err(FocError::DetectionFailed);
+        }
+
+        self.motor.pole_pair_count = rounded;
+        Ok(rounded)
+    }
+
     pub fn to_electrical_angle(&self, mechanical_angle: f32) -> f32 {
         let mut full_angle =
             (mechanical_angle - self.bias_angle) * (self.motor.pole_pair_count as f32);

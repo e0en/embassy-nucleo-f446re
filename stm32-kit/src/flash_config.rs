@@ -10,7 +10,7 @@ use foc::current::PhaseCurrent;
 /// Magic number to identify valid config: "MOTC" in ASCII
 const CONFIG_MAGIC: u32 = 0x4D4F5443;
 /// Current config version for future migrations
-const CONFIG_VERSION: u8 = 1;
+const CONFIG_VERSION: u8 = 2;
 /// Flash offset for config page (last 2KB of 128KB)
 const CONFIG_OFFSET: u32 = 0x1F800;
 /// Size of config page
@@ -79,6 +79,9 @@ pub struct ConfigData {
     // System config
     pub can_id: u8,
 
+    /// Detected pole pair count (0 = not detected, use compile-time default)
+    pub pole_pair_count: u8,
+
     /// CRC32 checksum (must be last field)
     pub crc: u32,
 }
@@ -104,6 +107,7 @@ impl ConfigData {
             velocity_ki: 0.0,
             angle_kp: 0.0,
             can_id: 0x0F,
+            pole_pair_count: 0,
             crc: 0,
         }
     }
@@ -241,6 +245,10 @@ where
     foc.set_velocity_kp(config.velocity_kp);
     foc.set_velocity_ki(config.velocity_ki);
     foc.set_angle_kp(config.angle_kp);
+
+    if config.pole_pair_count > 0 {
+        foc.motor.pole_pair_count = config.pole_pair_count;
+    }
 }
 
 /// Create ConfigData from current FOC state
@@ -264,5 +272,6 @@ where
     config.angle_kp = foc.angle_pid.gains.p;
 
     config.can_id = can_id;
+    config.pole_pair_count = foc.motor.pole_pair_count;
     config
 }

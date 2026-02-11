@@ -9,6 +9,7 @@ pub enum FocError {
     InvalidParameters,
     CalculationError,
     AlignError,
+    DetectionFailed,
     PsuVoltageNotSet,
 }
 
