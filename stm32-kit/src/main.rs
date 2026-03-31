@@ -18,6 +18,7 @@ mod gm2804;
 mod gm3506;
 mod motor_tuning;
 mod pwm;
+mod velocity_tuning;
 
 use core::sync::atomic::{AtomicU8, AtomicU32};
 
@@ -40,6 +41,7 @@ const CURRENT_SAFETY_MARGIN: f32 = 0.8;
 const PHASE_MAPPING_TOLERANCE: f32 = 0.05;
 /// Must stay below current filter cutoff (1/(2π×0.001) ≈ 159 Hz)
 const CURRENT_PI_FREQUENCY: f32 = 100.0;
+const VELOCITY_PI_FREQUENCY: f32 = 10.0;
 const ALIGN_VOLTAGE: f32 = 2.0;
 const INIT_DELAY_CYCLES: u32 = 160_000;
 const CAN_BITRATE: u32 = 1_000_000;
@@ -289,6 +291,23 @@ async fn init_foc(
         }
 
         foc.enable();
+
+        if let Some(velocity_gain) = velocity_tuning::tune_velocity_pi(
+            &mut foc,
+            &mut driver,
+            &mut p_adc,
+            csa_gain,
+            read_sensor,
+            VELOCITY_PI_FREQUENCY,
+        )
+        .await
+        {
+            foc.set_velocity_kp(velocity_gain.p);
+            foc.set_velocity_ki(velocity_gain.i);
+            info!("velocity kp={}, ki={}", velocity_gain.p, velocity_gain.i);
+        } else {
+            warn!("Velocity PI tuning failed, using defaults");
+        }
 
         let kv =
             motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
