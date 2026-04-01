@@ -241,7 +241,7 @@ async fn init_foc(
     mut p_flash: Flash<'_, embassy_stm32::flash::Blocking>,
 ) -> Option<u8> {
     let use_current_sensing = true;
-    let csa_gain = drv8316::CsaGain::Gain0_15V;
+    let csa_gain = drv8316::CsaGain::Gain0_3V;
     let align_voltage = ALIGN_VOLTAGE;
 
     // Try to load stored configuration
