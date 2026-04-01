@@ -9,9 +9,9 @@ use embassy_stm32::pac;
 
 use crate::foc_isr;
 
-// VM_SENSE voltage divider: 110kΩ (top) + 10kΩ (bottom)
-// V_adc = V_motor * 10k / (110k + 10k) = V_motor / 12
-const VM_SENSE_DIVIDER_RATIO: f32 = 12.0;
+// VM_SENSE voltage divider: 100kΩ (top) + 10kΩ (bottom)
+// V_adc = V_motor * 10k / (100k + 10k) = V_motor / 11
+const VM_SENSE_DIVIDER_RATIO: f32 = 11.0;
 // ADC reference voltage from AP2112K-3.3 LDO
 const ADC_VREF: f32 = 3.3;
 // 12-bit ADC resolution
