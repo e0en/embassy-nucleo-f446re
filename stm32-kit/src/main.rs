@@ -730,7 +730,7 @@ async fn main(spawner: Spawner) {
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
     spi_config.frequency = mhz(10);
     spi_config.gpio_speed = gpio::Speed::VeryHigh;
-    let cs_out = gpio::Output::new(p.PB6, gpio::Level::High, gpio::Speed::VeryHigh);
+    let cs_out = gpio::Output::new(p.PB0, gpio::Level::High, gpio::Speed::VeryHigh);
 
     {
         let p_spi = stm32_spi::Spi::new(
