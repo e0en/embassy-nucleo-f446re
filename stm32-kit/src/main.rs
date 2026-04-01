@@ -48,6 +48,7 @@ const CAN_BITRATE: u32 = 1_000_000;
 const VELOCITY_FILTER_CONSTANT: f32 = 0.005;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 const HOST_CAN_ID: u8 = 0;
+const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
@@ -372,6 +373,38 @@ async fn monitor_task() {
                 last_logged_at = now;
             }
         }
+    }
+}
+
+fn set_fault_led(led: &mut gpio::Output<'static>, fault_active: bool) {
+    if fault_active {
+        led.set_high();
+    } else {
+        led.set_low();
+    }
+}
+
+#[embassy_executor::task]
+async fn drv_fault_monitor_task(
+    fault_pin: gpio::Input<'static>,
+    mut led_fault: gpio::Output<'static>,
+) {
+    let mut last_fault_active = false;
+    set_fault_led(&mut led_fault, false);
+
+    loop {
+        let fault_active = fault_pin.is_low();
+        if fault_active != last_fault_active {
+            if fault_active {
+                warn!("DRV8316 fault asserted");
+            } else {
+                info!("DRV8316 fault cleared");
+            }
+            set_fault_led(&mut led_fault, fault_active);
+            last_fault_active = fault_active;
+        }
+
+        Timer::after_millis(DRV_FAULT_POLL_INTERVAL_MS).await;
     }
 }
 
@@ -749,6 +782,8 @@ async fn main(spawner: Spawner) {
     let (can_tx, can_rx, _properties) = p_can.split();
 
     let drvoff_pin = gpio::Output::new(p.PB12, gpio::Level::High, gpio::Speed::Medium);
+    let drv_fault_pin = gpio::Input::new(p.PB11, gpio::Pull::Up);
+    let led_fault = gpio::Output::new(p.PA4, gpio::Level::High, gpio::Speed::Low);
 
     let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PA2);
     p_adc.calibrate();
@@ -786,6 +821,7 @@ async fn main(spawner: Spawner) {
     }
 
     unwrap!(spawner.spawn(monitor_task()));
+    unwrap!(spawner.spawn(drv_fault_monitor_task(drv_fault_pin, led_fault)));
     unwrap!(spawner.spawn(command_task()));
     unwrap!(spawner.spawn(can_rx_task(can_rx)));
     unwrap!(spawner.spawn(can_tx_task(can_tx)));
