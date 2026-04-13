@@ -553,7 +553,7 @@ async fn handle_command_isr(
                 CurrentKi => set_current_ki,
                 SpeedKp => set_velocity_kp,
                 SpeedKi => set_velocity_ki,
-                Iq => set_current_filter,
+                Iq => set_target_torque,
                 AngleKp => set_angle_kp,
                 Spring => set_spring,
                 Damping => set_damping,
