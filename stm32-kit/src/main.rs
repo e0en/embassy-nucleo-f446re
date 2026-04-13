@@ -41,7 +41,7 @@ const CURRENT_SAFETY_MARGIN: f32 = 0.8;
 const PHASE_MAPPING_TOLERANCE: f32 = 0.05;
 /// Must stay below current filter cutoff (1/(2π×0.001) ≈ 159 Hz)
 const CURRENT_PI_FREQUENCY: f32 = 100.0;
-const VELOCITY_PI_FREQUENCY: f32 = 10.0;
+const VELOCITY_PI_FREQUENCY: f32 = 3.0;
 const ALIGN_VOLTAGE: f32 = 2.0;
 const INIT_DELAY_CYCLES: u32 = 160_000;
 const CAN_BITRATE: u32 = 1_000_000;
