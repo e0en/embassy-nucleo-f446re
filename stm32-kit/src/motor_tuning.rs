@@ -64,13 +64,14 @@ where
         defmt::info!("{}: {}", voltage, v_avg);
     }
 
-    let x_mean = 1.0 + (5 - 1) as f32 * voltage_step * 0.5;
+    let x_mean = 1.0 + (v_sample.len() - 1) as f32 * voltage_step * 0.5;
     let mut x_sum = 0.0;
     let mut y_sum = 0.0;
     for (i_voltage, v) in v_sample.iter().enumerate() {
         let voltage = 1.0 + i_voltage as f32 * voltage_step;
-        x_sum += voltage * (voltage - x_mean);
-        y_sum += v * (voltage - x_mean);
+        let x = voltage - x_mean;
+        x_sum += x * x;
+        y_sum += v * x;
     }
     let kv = (y_sum / x_sum).abs();
 
