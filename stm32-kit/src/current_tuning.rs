@@ -320,23 +320,45 @@ where
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
-    let mut i_avg = 0.0;
     let mut sample_seq = adc::SAMPLE_SEQ.load(Ordering::Relaxed);
+    let mut i_pos_avg = 0.0;
+    let mut i_neg_avg = 0.0;
+
     for i in 0..(n_sample * 2) {
-        let angle = read_sensor().angle;
-        if let Ok(duty) = foc.get_vd_duty_cycle(RESISTANCE_TEST_VOLTAGE, angle) {
-            driver.run(duty);
-            let (phase_current, next_sample_seq) =
-                read_synced_phase_current(p_adc, csa_gain, sample_seq);
+        if let Some((i_d, next_sample_seq)) = measure_d_axis_current(
+            foc,
+            driver,
+            p_adc,
+            csa_gain,
+            read_sensor,
+            RESISTANCE_TEST_VOLTAGE,
+            sample_seq,
+        ) {
             sample_seq = next_sample_seq;
-            let electrical_angle = foc.to_electrical_angle(angle);
-            let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
             if i >= n_sample {
-                i_avg += i_d / (n_sample as f32);
+                i_pos_avg += i_d / (n_sample as f32);
             }
         }
     }
-    RESISTANCE_TEST_VOLTAGE / i_avg
+
+    for i in 0..(n_sample * 2) {
+        if let Some((i_d, next_sample_seq)) = measure_d_axis_current(
+            foc,
+            driver,
+            p_adc,
+            csa_gain,
+            read_sensor,
+            -RESISTANCE_TEST_VOLTAGE,
+            sample_seq,
+        ) {
+            sample_seq = next_sample_seq;
+            if i >= n_sample {
+                i_neg_avg += i_d / (n_sample as f32);
+            }
+        }
+    }
+
+    (2.0 * RESISTANCE_TEST_VOLTAGE) / (i_pos_avg - i_neg_avg)
 }
 
 pub async fn find_motor_impedance<'a, Fsincos, Fsensor, TIM, T>(
