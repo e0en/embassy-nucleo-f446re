@@ -10,7 +10,7 @@ use foc::current::PhaseCurrent;
 /// Magic number to identify valid config: "MOTC" in ASCII
 const CONFIG_MAGIC: u32 = 0x4D4F5443;
 /// Current config version for future migrations
-const CONFIG_VERSION: u8 = 3;
+const CONFIG_VERSION: u8 = 4;
 /// Flash offset for config page (last 2KB of 128KB)
 const CONFIG_OFFSET: u32 = 0x1F800;
 /// Size of config page
@@ -70,8 +70,10 @@ pub struct ConfigData {
     pub current_offset_c: f32,
 
     // PID gains
-    pub current_kp: f32,
-    pub current_ki: f32,
+    pub current_d_kp: f32,
+    pub current_d_ki: f32,
+    pub current_q_kp: f32,
+    pub current_q_ki: f32,
     pub velocity_kp: f32,
     pub velocity_ki: f32,
     pub angle_kp: f32,
@@ -106,8 +108,10 @@ impl ConfigData {
             current_offset_a: 0.0,
             current_offset_b: 0.0,
             current_offset_c: 0.0,
-            current_kp: 0.0,
-            current_ki: 0.0,
+            current_d_kp: 0.0,
+            current_d_ki: 0.0,
+            current_q_kp: 0.0,
+            current_q_ki: 0.0,
             velocity_kp: 0.0,
             velocity_ki: 0.0,
             angle_kp: 0.0,
@@ -247,8 +251,10 @@ where
     foc.set_current_phase_bias(config.current_phase_bias);
     foc.set_current_offset(config.get_current_offset());
 
-    foc.set_current_kp(config.current_kp);
-    foc.set_current_ki(config.current_ki);
+    foc.set_current_d_kp(config.current_d_kp);
+    foc.set_current_d_ki(config.current_d_ki);
+    foc.set_current_q_kp(config.current_q_kp);
+    foc.set_current_q_ki(config.current_q_ki);
     foc.set_velocity_kp(config.velocity_kp);
     foc.set_velocity_ki(config.velocity_ki);
     foc.set_angle_kp(config.angle_kp);
@@ -278,8 +284,10 @@ where
     config.current_phase_bias = foc.current_phase_bias;
     config.set_current_offset(current_offset);
 
-    config.current_kp = foc.current_q_pid.gains.p;
-    config.current_ki = foc.current_q_pid.gains.i;
+    config.current_d_kp = foc.current_d_pid.gains.p;
+    config.current_d_ki = foc.current_d_pid.gains.i;
+    config.current_q_kp = foc.current_q_pid.gains.p;
+    config.current_q_ki = foc.current_q_pid.gains.i;
     config.velocity_kp = foc.velocity_pid.gains.p;
     config.velocity_ki = foc.velocity_pid.gains.i;
     config.angle_kp = foc.angle_pid.gains.p;
