@@ -464,18 +464,34 @@ where
         self.current_d_pid.set_max_output(voltage);
     }
 
-    pub fn set_current_kp(&mut self, kp: f32) {
+    pub fn set_current_q_kp(&mut self, kp: f32) {
         self.current_q_pid.gains.p = kp;
-        self.current_d_pid.gains.p = kp;
         self.current_q_pid.reset();
+    }
+
+    pub fn set_current_d_kp(&mut self, kp: f32) {
+        self.current_d_pid.gains.p = kp;
+        self.current_d_pid.reset();
+    }
+
+    pub fn set_current_kp(&mut self, kp: f32) {
+        self.set_current_q_kp(kp);
+        self.set_current_d_kp(kp);
+    }
+
+    pub fn set_current_q_ki(&mut self, ki: f32) {
+        self.current_q_pid.gains.i = ki;
+        self.current_q_pid.reset();
+    }
+
+    pub fn set_current_d_ki(&mut self, ki: f32) {
+        self.current_d_pid.gains.i = ki;
         self.current_d_pid.reset();
     }
 
     pub fn set_current_ki(&mut self, ki: f32) {
-        self.current_q_pid.gains.i = ki;
-        self.current_d_pid.gains.i = ki;
-        self.current_q_pid.reset();
-        self.current_d_pid.reset();
+        self.set_current_q_ki(ki);
+        self.set_current_d_ki(ki);
     }
 
     pub fn set_velocity_kp(&mut self, kp: f32) {

@@ -29,6 +29,14 @@ pub struct MotorImpedance {
     pub l_q: f32,
 }
 
+#[allow(dead_code)]
+pub struct CurrentPidGains {
+    pub p: f32,
+    pub i: f32,
+    pub d: PID,
+    pub q: PID,
+}
+
 #[inline]
 fn wait_for_next_adc_sample(previous_sample_seq: u32) -> u32 {
     let mut sample_seq = previous_sample_seq;
@@ -208,14 +216,24 @@ where
     MotorImpedance { l_d, l_q, r_s }
 }
 
-pub fn calculate_current_pi(impedance: MotorImpedance, bandwidth: f32) -> PID {
+pub fn calculate_current_pi(impedance: MotorImpedance, bandwidth: f32) -> CurrentPidGains {
     let omega = core::f32::consts::TAU * bandwidth;
-    let kp = impedance.l_q * omega;
     let ki = impedance.r_s * omega;
-    PID {
-        p: kp,
+    let q = PID {
+        p: impedance.l_q * omega,
         i: ki,
         d: 0.0,
+    };
+    let d = PID {
+        p: impedance.l_d * omega,
+        i: ki,
+        d: 0.0,
+    };
+    CurrentPidGains {
+        p: q.p,
+        i: q.i,
+        d,
+        q,
     }
 }
 
