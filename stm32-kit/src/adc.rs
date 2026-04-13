@@ -34,6 +34,7 @@ const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES12_5
 pub static IA_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IB_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IC_RAW: AtomicU16 = AtomicU16::new(0);
+pub static SAMPLE_SEQ: AtomicU32 = AtomicU32::new(0);
 pub static CNT: AtomicU32 = AtomicU32::new(0);
 
 pub struct DummyAdc<Tadc: stm32_adc::Instance> {
@@ -122,6 +123,7 @@ fn ADC1_2() {
         IB_RAW.store(ib, Ordering::Relaxed);
         IC_RAW.store(ic, Ordering::Relaxed);
         CNT.store(t, Ordering::Relaxed);
+        SAMPLE_SEQ.fetch_add(1, Ordering::Relaxed);
 
         if foc_isr::is_initialized() {
             foc_isr::run_foc_iteration(ia, ib, ic);
