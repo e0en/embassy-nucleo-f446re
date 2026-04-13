@@ -19,6 +19,8 @@ const IMPEDANCE_SAMPLE_COUNT: usize = 2048;
 const INDUCTANCE_STEP_VOLTAGE: f32 = 2.0;
 const INDUCTANCE_SETTLE_SAMPLES: usize = 256;
 const INDUCTANCE_STEP_SAMPLES: usize = 64;
+const INDUCTANCE_MEASUREMENT_REPEATS: usize = 16;
+const INDUCTANCE_TRIM_COUNT: usize = 2;
 const RESISTANCE_TEST_VOLTAGE: f32 = 1.0;
 const ADC_SAMPLE_WAIT_SPINS: usize = 100_000;
 
@@ -117,7 +119,28 @@ where
     Some((i_q, sample_seq))
 }
 
-fn measure_d_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
+fn trimmed_mean(values: &mut [f32]) -> f32 {
+    for idx in 1..values.len() {
+        let value = values[idx];
+        let mut insert_idx = idx;
+        while insert_idx > 0 && values[insert_idx - 1] > value {
+            values[insert_idx] = values[insert_idx - 1];
+            insert_idx -= 1;
+        }
+        values[insert_idx] = value;
+    }
+    let trim = INDUCTANCE_TRIM_COUNT.min(values.len() / 2);
+    let start = trim;
+    let end = values.len() - trim;
+
+    let mut sum = 0.0;
+    for value in &values[start..end] {
+        sum += *value;
+    }
+    sum / ((end - start) as f32)
+}
+
+fn measure_d_axis_inductance_once<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
     p_adc: &mut adc::DummyAdc<T>,
@@ -180,7 +203,27 @@ where
     (INDUCTANCE_STEP_VOLTAGE / slope.abs()).abs()
 }
 
-fn measure_q_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
+fn measure_d_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
+    foc: &mut FocController<Fsincos>,
+    driver: &mut PwmDriver<'a, TIM>,
+    p_adc: &mut adc::DummyAdc<T>,
+    csa_gain: drv8316::CsaGain,
+    read_sensor: &Fsensor,
+) -> f32
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+    Fsensor: Fn() -> AngleReading,
+    TIM: AdvancedInstance4Channel,
+    T: stm32_adc::Instance + AdcSelector,
+{
+    let mut measurements = [0.0; INDUCTANCE_MEASUREMENT_REPEATS];
+    for measurement in &mut measurements {
+        *measurement = measure_d_axis_inductance_once(foc, driver, p_adc, csa_gain, read_sensor);
+    }
+    trimmed_mean(&mut measurements)
+}
+
+fn measure_q_axis_inductance_once<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
     p_adc: &mut adc::DummyAdc<T>,
@@ -241,6 +284,26 @@ where
 
     let slope = cov_ti / var_t.max(f32::EPSILON);
     (INDUCTANCE_STEP_VOLTAGE / slope.abs()).abs()
+}
+
+fn measure_q_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
+    foc: &mut FocController<Fsincos>,
+    driver: &mut PwmDriver<'a, TIM>,
+    p_adc: &mut adc::DummyAdc<T>,
+    csa_gain: drv8316::CsaGain,
+    read_sensor: &Fsensor,
+) -> f32
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+    Fsensor: Fn() -> AngleReading,
+    TIM: AdvancedInstance4Channel,
+    T: stm32_adc::Instance + AdcSelector,
+{
+    let mut measurements = [0.0; INDUCTANCE_MEASUREMENT_REPEATS];
+    for measurement in &mut measurements {
+        *measurement = measure_q_axis_inductance_once(foc, driver, p_adc, csa_gain, read_sensor);
+    }
+    trimmed_mean(&mut measurements)
 }
 
 fn measure_resistance<'a, Fsincos, Fsensor, TIM, T>(
