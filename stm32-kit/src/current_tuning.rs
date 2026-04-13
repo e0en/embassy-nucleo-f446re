@@ -89,7 +89,7 @@ where
     driver.run(duty);
     let (phase_current, sample_seq) =
         read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
-    let electrical_angle = foc.to_electrical_angle(read_sensor().angle);
+    let electrical_angle = foc.to_electrical_angle(angle);
     let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
     Some((i_d, sample_seq))
 }
@@ -114,7 +114,7 @@ where
     driver.run(duty);
     let (phase_current, sample_seq) =
         read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
-    let electrical_angle = foc.to_electrical_angle(read_sensor().angle);
+    let electrical_angle = foc.to_electrical_angle(angle);
     let (i_q, _) = foc.calculate_pq_currents(phase_current, electrical_angle);
     Some((i_q, sample_seq))
 }
@@ -323,14 +323,13 @@ where
     let mut i_avg = 0.0;
     let mut sample_seq = adc::SAMPLE_SEQ.load(Ordering::Relaxed);
     for i in 0..(n_sample * 2) {
-        let reading = read_sensor();
-        let angle = reading.angle;
+        let angle = read_sensor().angle;
         if let Ok(duty) = foc.get_vd_duty_cycle(RESISTANCE_TEST_VOLTAGE, angle) {
             driver.run(duty);
             let (phase_current, next_sample_seq) =
                 read_synced_phase_current(p_adc, csa_gain, sample_seq);
             sample_seq = next_sample_seq;
-            let electrical_angle = foc.to_electrical_angle(read_sensor().angle);
+            let electrical_angle = foc.to_electrical_angle(angle);
             let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
             if i >= n_sample {
                 i_avg += i_d / (n_sample as f32);
