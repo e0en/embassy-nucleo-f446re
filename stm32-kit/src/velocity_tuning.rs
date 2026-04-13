@@ -27,6 +27,20 @@ fn estimate_plant_gain(acceleration: f32, average_iq: f32) -> f32 {
     (acceleration / current_for_estimation).abs()
 }
 
+fn estimate_velocity_from_angle(
+    previous_elapsed: f32,
+    previous_angle: f32,
+    elapsed: f32,
+    angle: f32,
+) -> f32 {
+    let dt = elapsed - previous_elapsed;
+    if dt <= 0.0 {
+        0.0
+    } else {
+        (angle - previous_angle) / dt
+    }
+}
+
 /// Apply a torque step, measure acceleration via linear regression, compute velocity PI gains.
 /// Returns None if the motor appears stalled (K_plant too low).
 pub async fn tune_velocity_pi<'a, Fsincos, Fsensor, TIM, T>(
@@ -77,6 +91,9 @@ where
         let mut v_buf = [0.0f32; N_SAMPLES];
         let mut iq_sum = 0.0f32;
         let t0 = embassy_time::Instant::now();
+        let mut previous_elapsed = 0.0f32;
+        let mut previous_angle = 0.0f32;
+        let mut velocity_samples = 0usize;
 
         for i in 0..N_SAMPLES {
             let reading = read_sensor();
@@ -89,15 +106,30 @@ where
                 .checked_duration_since(t0)
                 .map(|d| d.as_micros() as f32 / 1e6)
                 .unwrap_or(0.0);
-            t_buf[i] = elapsed;
-            v_buf[i] = reading.velocity;
+            if i > 0 {
+                t_buf[velocity_samples] = elapsed;
+                v_buf[velocity_samples] = estimate_velocity_from_angle(
+                    previous_elapsed,
+                    previous_angle,
+                    elapsed,
+                    reading.angle,
+                );
+                velocity_samples += 1;
+            }
             iq_sum += foc.state.i_q;
+            previous_elapsed = elapsed;
+            previous_angle = reading.angle;
             Timer::after_millis(1).await;
         }
 
         foc.set_target_torque(0.0);
 
-        let acceleration = linear_regression_slope(&t_buf, &v_buf);
+        if velocity_samples < 2 {
+            return None;
+        }
+
+        let acceleration =
+            linear_regression_slope(&t_buf[..velocity_samples], &v_buf[..velocity_samples]);
         let average_iq = iq_sum / N_SAMPLES as f32;
         let k_plant = estimate_plant_gain(acceleration, average_iq);
 
