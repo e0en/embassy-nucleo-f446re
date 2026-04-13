@@ -217,9 +217,14 @@ async fn run_motor_calibration(
             impedance.r_s, impedance.l_q, impedance.l_d
         );
         let current_gain = calculate_current_pi(impedance, CURRENT_PI_FREQUENCY);
-        foc.set_current_kp(current_gain.p);
-        foc.set_current_ki(current_gain.i);
-        info!("current kp={}, ki={}", current_gain.p, current_gain.i);
+        foc.set_current_d_kp(current_gain.d.p);
+        foc.set_current_d_ki(current_gain.d.i);
+        foc.set_current_q_kp(current_gain.q.p);
+        foc.set_current_q_ki(current_gain.q.i);
+        info!(
+            "current d: kp={}, ki={} / q: kp={}, ki={}",
+            current_gain.d.p, current_gain.d.i, current_gain.q.p, current_gain.q.i
+        );
     }
 
     Ok(())

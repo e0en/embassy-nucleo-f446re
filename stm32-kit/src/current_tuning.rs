@@ -92,6 +92,31 @@ where
     Some((i_d, sample_seq))
 }
 
+fn measure_q_axis_current<'a, Fsincos, Fsensor, TIM, T>(
+    foc: &mut FocController<Fsincos>,
+    driver: &mut PwmDriver<'a, TIM>,
+    p_adc: &mut adc::DummyAdc<T>,
+    csa_gain: drv8316::CsaGain,
+    read_sensor: &Fsensor,
+    v_q: f32,
+    previous_sample_seq: u32,
+) -> Option<(f32, u32)>
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+    Fsensor: Fn() -> AngleReading,
+    TIM: AdvancedInstance4Channel,
+    T: stm32_adc::Instance + AdcSelector,
+{
+    let angle = read_sensor().angle;
+    let duty = foc.get_vq_duty_cycle(v_q, angle).ok()?;
+    driver.run(duty);
+    let (phase_current, sample_seq) =
+        read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
+    let electrical_angle = foc.to_electrical_angle(read_sensor().angle);
+    let (i_q, _) = foc.calculate_pq_currents(phase_current, electrical_angle);
+    Some((i_q, sample_seq))
+}
+
 fn measure_d_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
@@ -133,6 +158,69 @@ where
             sample_seq = next_sample_seq;
             t_samples[idx] = ((Instant::now().as_micros() - t0) as f32) / 1e6;
             i_samples[idx] = i_d - baseline;
+        }
+    }
+
+    let mut t_mean = 0.0;
+    let mut i_mean = 0.0;
+    for idx in 0..INDUCTANCE_STEP_SAMPLES {
+        t_mean += t_samples[idx] / (INDUCTANCE_STEP_SAMPLES as f32);
+        i_mean += i_samples[idx] / (INDUCTANCE_STEP_SAMPLES as f32);
+    }
+
+    let mut cov_ti = 0.0;
+    let mut var_t = 0.0;
+    for idx in 0..INDUCTANCE_STEP_SAMPLES {
+        let dt = t_samples[idx] - t_mean;
+        cov_ti += dt * (i_samples[idx] - i_mean);
+        var_t += dt * dt;
+    }
+
+    let slope = cov_ti / var_t.max(f32::EPSILON);
+    (INDUCTANCE_STEP_VOLTAGE / slope.abs()).abs()
+}
+
+fn measure_q_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
+    foc: &mut FocController<Fsincos>,
+    driver: &mut PwmDriver<'a, TIM>,
+    p_adc: &mut adc::DummyAdc<T>,
+    csa_gain: drv8316::CsaGain,
+    read_sensor: &Fsensor,
+) -> f32
+where
+    Fsincos: Fn(f32) -> (f32, f32),
+    Fsensor: Fn() -> AngleReading,
+    TIM: AdvancedInstance4Channel,
+    T: stm32_adc::Instance + AdcSelector,
+{
+    let mut baseline = 0.0;
+    let mut sample_seq = adc::SAMPLE_SEQ.load(Ordering::Relaxed);
+    for _ in 0..INDUCTANCE_SETTLE_SAMPLES {
+        if let Some((i_q, next_sample_seq)) =
+            measure_q_axis_current(foc, driver, p_adc, csa_gain, read_sensor, 0.0, sample_seq)
+        {
+            sample_seq = next_sample_seq;
+            baseline += i_q / (INDUCTANCE_SETTLE_SAMPLES as f32);
+        }
+    }
+
+    let mut t_samples = [0.0f32; INDUCTANCE_STEP_SAMPLES];
+    let mut i_samples = [0.0f32; INDUCTANCE_STEP_SAMPLES];
+    let t0 = Instant::now().as_micros();
+
+    for idx in 0..INDUCTANCE_STEP_SAMPLES {
+        if let Some((i_q, next_sample_seq)) = measure_q_axis_current(
+            foc,
+            driver,
+            p_adc,
+            csa_gain,
+            read_sensor,
+            INDUCTANCE_STEP_VOLTAGE,
+            sample_seq,
+        ) {
+            sample_seq = next_sample_seq;
+            t_samples[idx] = ((Instant::now().as_micros() - t0) as f32) / 1e6;
+            i_samples[idx] = i_q - baseline;
         }
     }
 
@@ -203,7 +291,7 @@ where
     T: stm32_adc::Instance + AdcSelector,
 {
     let l_d = measure_d_axis_inductance(foc, driver, p_adc, csa_gain, &read_sensor);
-    let l_q = l_d;
+    let l_q = measure_q_axis_inductance(foc, driver, p_adc, csa_gain, &read_sensor);
 
     let r_s = measure_resistance(
         foc,
