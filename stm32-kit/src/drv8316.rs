@@ -34,13 +34,13 @@ pub enum CsaGain {
 }
 
 pub fn convert_csa_readings(ia_raw: u16, ib_raw: u16, ic_raw: u16, gain: CsaGain) -> PhaseCurrent {
-    let mut ia = (ia_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
-    let mut ib = (ib_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
-    let mut ic = (ic_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
+    let ia_raw_v = (ia_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
+    let ib_raw_v = (ib_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
+    let ic_raw_v = (ic_raw as f32) * ADC_REFERENCE_VOLTAGE / ADC_RESOLUTION - ADC_MIDPOINT_VOLTAGE;
 
-    ia = CROSSTALK_AA * ia + CROSSTALK_AB * ib + CROSSTALK_AC * ic;
-    ib = CROSSTALK_BA * ia + CROSSTALK_BB * ib + CROSSTALK_BC * ic;
-    ic = CROSSTALK_CA * ia + CROSSTALK_CB * ib + CROSSTALK_CC * ic;
+    let mut ia = CROSSTALK_AA * ia_raw_v + CROSSTALK_AB * ib_raw_v + CROSSTALK_AC * ic_raw_v;
+    let mut ib = CROSSTALK_BA * ia_raw_v + CROSSTALK_BB * ib_raw_v + CROSSTALK_BC * ic_raw_v;
+    let mut ic = CROSSTALK_CA * ia_raw_v + CROSSTALK_CB * ib_raw_v + CROSSTALK_CC * ic_raw_v;
     let gain_value = match gain {
         CsaGain::Gain0_15V => CSA_GAIN_0_15,
         CsaGain::Gain0_3V => CSA_GAIN_0_3,

@@ -158,8 +158,7 @@ where
 
         let (i_alpha, i_beta) = clarke_transform(mapped.a, mapped.b, mapped.c);
         let (i_q, i_d) = park_transform(i_alpha, i_beta, e_angle, sincos);
-        let i_angle = atan2(i_q, i_d);
-        avg_angle += i_angle - e_angle;
+        avg_angle += atan2(i_q, i_d);
         n_success += 1;
 
         if n_success >= ALIGN_SAMPLE_COUNT {
