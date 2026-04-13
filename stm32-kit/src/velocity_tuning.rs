@@ -12,9 +12,10 @@ use foc::pid::PID;
 use foc::pwm_output::PwmOutput;
 use foc::velocity_tuning::{calculate_velocity_pi, linear_regression_slope};
 
-const N_SAMPLES: usize = 64;
+const N_SAMPLES: usize = 32;
 const TEST_CURRENT: f32 = 0.5;
 const PRE_STEP_SETTLE_MS: u64 = 200;
+const POST_STEP_SETTLE_MS: u64 = 8;
 const MIN_K_PLANT: f32 = 0.1;
 const MIN_EFFECTIVE_TEST_CURRENT: f32 = 0.05;
 
@@ -86,7 +87,18 @@ where
 
         foc.set_target_torque(test_current);
 
-        // Collect the initial velocity ramp immediately after the torque step.
+        // Let the current loop settle before estimating the velocity plant.
+        for _ in 0..POST_STEP_SETTLE_MS {
+            let reading = read_sensor();
+            let (ia_raw, ib_raw, ic_raw) = p_adc.read();
+            let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
+            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+                driver.run(duty);
+            }
+            Timer::after_millis(1).await;
+        }
+
+        // Collect a short velocity ramp after the current transient.
         let mut t_buf = [0.0f32; N_SAMPLES];
         let mut v_buf = [0.0f32; N_SAMPLES];
         let mut iq_sum = 0.0f32;
