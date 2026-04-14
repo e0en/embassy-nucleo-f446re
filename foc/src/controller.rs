@@ -115,6 +115,9 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     current_offset: PhaseCurrent,
 
     psu_voltage: Option<f32>,
+    configured_voltage_limit: f32,
+    driver_current_limit: Option<f32>,
+    requested_current_limit: Option<f32>,
     pub torque_limit: Option<f32>,
     pub current_limit: Option<f32>,
     pub velocity_limit: Option<f32>,
@@ -150,7 +153,6 @@ where
         f_sincos: Fsincos,
     ) -> Self {
         let max_velocity = motor.max_velocity;
-        let max_current = output_limit.max_value; // / motor.phase_resistance;
         let max_current_ramp = output_limit.ramp;
         let state = FocState {
             angle_error: 0.0,
@@ -182,6 +184,9 @@ where
             current_mapping: (0, 1, 2),
             state,
             psu_voltage: None,
+            configured_voltage_limit: output_limit.max_value,
+            driver_current_limit: None,
+            requested_current_limit: None,
             torque_limit: None,
             current_limit: None,
             velocity_limit: Some(motor.max_velocity),
@@ -198,7 +203,7 @@ where
             angle_pid: PIDController::new(angle_pid_gains, max_velocity, None),
             velocity_pid: PIDController::new(
                 velocity_pid_gains,
-                max_current,
+                output_limit.max_value,
                 Some(max_current_ramp),
             ),
             _velocity_output_limit: DEFAULT_VELOCITY_OUTPUT_LIMIT,
@@ -443,6 +448,12 @@ where
 
     pub fn set_psu_voltage(&mut self, voltage: f32) {
         self.psu_voltage = Some(voltage);
+        self.refresh_output_limits();
+    }
+
+    pub fn set_driver_current_limit(&mut self, current: f32) {
+        self.driver_current_limit = Some(current.abs());
+        self.refresh_output_limits();
     }
 
     pub fn set_velocity_limit(&mut self, velocity: f32) {
@@ -454,14 +465,41 @@ where
     }
 
     pub fn set_current_limit(&mut self, current: f32) {
-        self.current_limit = Some(current);
-        let voltage_limit = current * self.motor.phase_resistance;
-        self.set_voltage_limit(voltage_limit);
+        self.requested_current_limit = Some(current.abs());
+        self.refresh_output_limits();
     }
 
     fn set_voltage_limit(&mut self, voltage: f32) {
         self.current_q_pid.set_max_output(voltage);
         self.current_d_pid.set_max_output(voltage);
+    }
+
+    fn effective_voltage_limit(&self) -> f32 {
+        self.psu_voltage.unwrap_or(self.configured_voltage_limit)
+    }
+
+    fn effective_current_limit(&self) -> Option<f32> {
+        match (self.driver_current_limit, self.requested_current_limit) {
+            (Some(driver), Some(requested)) => Some(driver.min(requested)),
+            (Some(driver), None) => Some(driver),
+            (None, Some(requested)) => Some(requested),
+            (None, None) => None,
+        }
+    }
+
+    fn refresh_output_limits(&mut self) {
+        let voltage_limit = self.effective_voltage_limit();
+        let current_limit = self.effective_current_limit();
+
+        self.current_limit = current_limit;
+        self.velocity_pid
+            .set_max_output(current_limit.unwrap_or(voltage_limit));
+
+        let current_pid_voltage_limit = current_limit
+            .map(|current| current * self.motor.phase_resistance)
+            .map_or(voltage_limit, |limit| limit.min(voltage_limit));
+
+        self.set_voltage_limit(current_pid_voltage_limit);
     }
 
     pub fn set_current_q_kp(&mut self, kp: f32) {
@@ -690,7 +728,42 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::fmodf;
+    use super::{FocController, MotorSetup, OutputLimit, PID, fmodf};
+
+    fn test_sincos(_: f32) -> (f32, f32) {
+        (0.0, 1.0)
+    }
+
+    fn test_motor() -> MotorSetup {
+        MotorSetup {
+            pole_pair_count: 7,
+            phase_resistance: 5.0,
+            kv_rating: 0.0,
+            max_velocity: 100.0,
+        }
+    }
+
+    fn test_pid() -> PID {
+        PID {
+            p: 1.0,
+            i: 1.0,
+            d: 0.0,
+        }
+    }
+
+    fn build_controller() -> FocController<fn(f32) -> (f32, f32)> {
+        FocController::new(
+            test_motor(),
+            test_pid(),
+            test_pid(),
+            test_pid(),
+            OutputLimit {
+                max_value: 16.0,
+                ramp: 1000.0,
+            },
+            test_sincos,
+        )
+    }
 
     #[test]
     fn test_fmodf_positive_values() {
@@ -784,5 +857,40 @@ mod tests {
                 libm_result
             );
         }
+    }
+
+    #[test]
+    fn current_pid_output_limit_respects_driver_command_and_psu_limits() {
+        let mut controller = build_controller();
+
+        controller.set_driver_current_limit(6.4);
+        assert_eq!(controller.current_limit, Some(6.4));
+        assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
+        assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 6.4).abs() < 1e-6);
+
+        controller.set_current_limit(4.0);
+        assert_eq!(controller.current_limit, Some(4.0));
+        assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
+        assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 4.0).abs() < 1e-6);
+
+        controller.set_psu_voltage(10.0);
+        assert!((controller.current_q_pid.max_output - 10.0).abs() < 1e-6);
+        assert!((controller.current_d_pid.max_output - 10.0).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn requested_current_limit_cannot_exceed_driver_limit() {
+        let mut controller = build_controller();
+
+        controller.set_driver_current_limit(6.4);
+        controller.set_current_limit(10.0);
+
+        assert_eq!(controller.current_limit, Some(6.4));
+        assert!((controller.velocity_pid.max_output - 6.4).abs() < 1e-6);
+        assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
+        assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
     }
 }

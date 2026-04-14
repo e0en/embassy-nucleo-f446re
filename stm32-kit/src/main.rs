@@ -140,7 +140,7 @@ fn create_foc_controller(use_current_sensing: bool) -> FocControllerType {
         },
         sincos as fn(f32) -> (f32, f32),
     );
-    foc.set_current_limit(drv8316::MAX_CURRENT * CURRENT_SAFETY_MARGIN);
+    foc.set_driver_current_limit(drv8316::MAX_CURRENT * CURRENT_SAFETY_MARGIN);
 
     if use_current_sensing {
         foc.enable_current_sensing();
