@@ -53,7 +53,9 @@ impl PIDController {
         let mut output = self.gains.p * error + self.integral + d_term;
         output = output.min(self.max_output).max(-self.max_output);
 
-        if let Some(max_rate) = self.max_rate {
+        if let Some(max_rate) = self.max_rate
+            && dt_seconds > 0.0
+        {
             let output_rate = (output - self.last_output) / dt_seconds;
             if output_rate > max_rate {
                 output = self.last_output + max_rate * dt_seconds;
@@ -182,5 +184,20 @@ mod tests {
 
         assert!(controller.last_output <= 10.0);
         assert!(controller.integral <= 10.0);
+    }
+
+    #[test]
+    fn zero_dt_skips_rate_limiting_safely() {
+        let pid = PID {
+            p: 100.0,
+            i: 0.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 100.0, Some(10.0));
+
+        let output = controller.update(1.0, 0.0);
+
+        assert!(approx_eq(output, 100.0, 0.001));
+        assert!(approx_eq(controller.last_output, 100.0, 0.001));
     }
 }
