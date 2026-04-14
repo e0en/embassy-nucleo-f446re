@@ -45,7 +45,7 @@ const VELOCITY_PI_FREQUENCY: f32 = 3.0;
 const ALIGN_VOLTAGE: f32 = 2.0;
 const INIT_DELAY_CYCLES: u32 = 160_000;
 const CAN_BITRATE: u32 = 1_000_000;
-const VELOCITY_FILTER_CONSTANT: f32 = 0.005;
+const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 const HOST_CAN_ID: u8 = 0;
 const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
@@ -798,7 +798,7 @@ async fn main(spawner: Spawner) {
     timer.initialize(foc_isr::MAX_COMPARE_VALUE as u16);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    let mut sensor = As5047P::new(&SPI, cs_out, VELOCITY_FILTER_CONSTANT);
+    let mut sensor = As5047P::new(&SPI, cs_out, VELOCITY_OBSERVER_BANDWIDTH);
     if let Err(e) = sensor.initialize().await {
         error!("Sensor initialization failed, {:?}", e);
         return;

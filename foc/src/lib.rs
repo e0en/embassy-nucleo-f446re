@@ -7,4 +7,5 @@ pub mod angle_input;
 pub mod controller;
 pub mod current;
 pub mod pwm_output;
+pub mod tracking_observer;
 pub mod velocity_tuning;

@@ -29,6 +29,7 @@ Target: `thumbv7em-none-eabihf` (Cortex-M4F). Requires nightly Rust.
 - `stm32-kit/src/drv8316.rs` - Motor driver (DRV8316) control
 - `stm32-kit/src/gm3506.rs` - Motor profile (pole pairs, PID gains)
 - `foc/src/controller.rs` - Clarke/Park transforms, control modes
+- `foc/src/tracking_observer.rs` - PLL-based velocity estimation
 
 ## Hardware
 
@@ -43,6 +44,7 @@ Target: `thumbv7em-none-eabihf` (Cortex-M4F). Requires nightly Rust.
 - Hardware CORDIC instead of libm for trig
 - Embassy framework for async tasks
 - defmt + RTT for debug logging
+- Tracking observer (PLL) for velocity estimation instead of differentiation + low-pass filter
 
 ## Code Style
 
