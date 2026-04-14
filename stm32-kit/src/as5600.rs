@@ -163,7 +163,11 @@ impl AngleInput for As5600 {
                     angle.0 += 2.0 * core::f32::consts::PI;
                     self.full_rotations -= 1;
                 }
-                let velocity = angular_change / dt;
+                let velocity = if dt.0 > 0.0 {
+                    angular_change / dt
+                } else {
+                    RadianPerSecond(0.0)
+                };
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;

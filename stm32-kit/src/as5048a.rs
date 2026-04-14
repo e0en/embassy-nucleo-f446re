@@ -212,7 +212,11 @@ impl<'d> AngleInput for As5048A<'d> {
                     angle.0 += TWO_PI;
                     self.full_rotations -= 1;
                 }
-                let velocity = angular_change / dt;
+                let velocity = if dt.0 > 0.0 {
+                    angular_change / dt
+                } else {
+                    RadianPerSecond(0.0)
+                };
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
