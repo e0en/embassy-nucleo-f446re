@@ -10,6 +10,7 @@ use critical_section::Mutex;
 use embassy_stm32::pac;
 
 use can_message::message::{FeedbackType, MotorCurrent, MotorStatus, ResponseBody};
+use foc::angle_input::AngleReading;
 use foc::controller::{FocController, FocState, RunMode};
 use foc::current::PhaseCurrent;
 use foc::pwm_output::DutyCycle3Phase;
@@ -20,6 +21,9 @@ use crate::{RESPONSE_CHANNEL, read_sensor};
 /// Maximum PWM compare value (11-bit: 2047)
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
 const MAX_DUTY: u32 = MAX_COMPARE_VALUE + 1;
+// TIM1 runs from the 170 MHz APB2 clock. With center-aligned PWM and REP=1,
+// the ADC-triggered FOC loop executes once every 4 * ARR counts.
+const CONTROL_LOOP_DT_SECONDS: f32 = (4.0 * MAX_DUTY as f32) / 170_000_000.0;
 
 static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new(None));
 
@@ -110,7 +114,12 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
     critical_section::with(|cs| {
         if let Some(ref mut ctx) = *FOC_CONTEXT.borrow(cs).borrow_mut() {
             // Read sensor data from atomics (updated by encoder_task)
-            let reading = read_sensor();
+            let sensor_reading = read_sensor();
+            let reading = AngleReading {
+                angle: sensor_reading.angle,
+                velocity: sensor_reading.velocity,
+                dt: CONTROL_LOOP_DT_SECONDS,
+            };
 
             let phase_current = if ctx.use_current_sensing {
                 drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, ctx.csa_gain)
