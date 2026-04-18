@@ -17,6 +17,7 @@ use socketcan::{CanFrame, EmbeddedFrame, ExtendedId};
 const WINDOW_WIDTH: f32 = 1024.0;
 const WINDOW_HEIGHT: f32 = 768.0;
 const MAX_PLOT_POINTS: usize = 100_000;
+const UI_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -609,8 +610,8 @@ impl eframe::App for MyApp {
                     plot_ui.line(line_2);
                 }
             });
-            ctx.request_repaint();
         });
+        ctx.request_repaint_after(UI_REPAINT_INTERVAL);
     }
 }
 
