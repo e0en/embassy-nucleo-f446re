@@ -349,7 +349,6 @@ impl eframe::App for MyApp {
                 },
             }
         }
-        ctx.set_pixels_per_point(1.5);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("BLDC Monitor");
 
