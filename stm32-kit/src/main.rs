@@ -394,26 +394,52 @@ async fn drv_fault_monitor_task(
     fault_pin: gpio::Input<'static>,
     mut led_fault: gpio::Output<'static>,
 ) {
-    let mut last_fault_active = false;
-    set_fault_led(&mut led_fault, false);
+    let mut last_drv_fault_active = false;
+    let mut last_can_fault_active = false;
+    let mut last_led_active = false;
+    set_fault_led(&mut led_fault, last_led_active);
 
     loop {
-        let fault_active = fault_pin.is_low();
-        if fault_active != last_fault_active {
-            if fault_active {
+        let drv_fault_active = fault_pin.is_low();
+        if drv_fault_active != last_drv_fault_active {
+            if drv_fault_active {
                 warn!("DRV8316 fault asserted");
             } else {
                 info!("DRV8316 fault cleared");
             }
-            set_fault_led(&mut led_fault, fault_active);
-            last_fault_active = fault_active;
+            last_drv_fault_active = drv_fault_active;
+        }
+
+        let can_status = read_fdcan_status();
+        let can_fault_active = can_status.has_fault();
+        if can_fault_active != last_can_fault_active {
+            if can_fault_active {
+                warn!(
+                    "CAN fault detected: {} TEC={} REC={} last_err={}",
+                    can_status.bus_state,
+                    can_status.tx_error_count,
+                    can_status.rx_error_count,
+                    can_status.last_error,
+                );
+                log_fdcan_registers("fault");
+            } else {
+                info!("CAN fault cleared");
+                log_fdcan_registers("cleared");
+            }
+            last_can_fault_active = can_fault_active;
+        }
+
+        let led_active = drv_fault_active || can_fault_active;
+        if led_active != last_led_active {
+            set_fault_led(&mut led_fault, led_active);
+            last_led_active = led_active;
         }
 
         Timer::after_millis(DRV_FAULT_POLL_INTERVAL_MS).await;
     }
 }
 
-#[derive(defmt::Format)]
+#[derive(defmt::Format, Clone, Copy)]
 enum BusState {
     Ok,
     ErrorWarning,
@@ -427,7 +453,72 @@ impl BusState {
     }
 }
 
-fn log_fdcan_status() {
+#[derive(defmt::Format, Clone, Copy, PartialEq, Eq)]
+enum CanLastError {
+    None,
+    Stuff,
+    Form,
+    Ack,
+    Bit1Recessive,
+    Bit0Dominant,
+    Crc,
+    NoChange,
+}
+
+impl CanLastError {
+    fn is_fault(&self) -> bool {
+        !matches!(self, CanLastError::None | CanLastError::NoChange)
+    }
+}
+
+#[derive(defmt::Format, Clone, Copy)]
+struct FdcanStatus {
+    bus_state: BusState,
+    tx_error_count: u8,
+    rx_error_count: u8,
+    last_error: CanLastError,
+}
+
+impl FdcanStatus {
+    fn has_fault(&self) -> bool {
+        !self.bus_state.is_ok()
+            || self.tx_error_count > 0
+            || self.rx_error_count > 0
+            || self.last_error.is_fault()
+    }
+}
+
+#[derive(defmt::Format, Clone, Copy)]
+struct FdcanRegisters {
+    cccr: u32,
+    nbtp: u32,
+    psr: u32,
+    ecr: u32,
+    ir: u32,
+}
+
+fn read_fdcan_registers() -> FdcanRegisters {
+    use embassy_stm32::pac;
+
+    let fdcan = pac::FDCAN1;
+    FdcanRegisters {
+        cccr: fdcan.cccr().read().0,
+        nbtp: fdcan.nbtp().read().0,
+        psr: fdcan.psr().read().0,
+        ecr: fdcan.ecr().read().0,
+        ir: fdcan.ir().read().0,
+    }
+}
+
+fn log_fdcan_registers(context: &'static str) {
+    let regs = read_fdcan_registers();
+    info!(
+        "CAN regs[{}]: CCCR={=u32:#010x} NBTP={=u32:#010x} PSR={=u32:#010x} ECR={=u32:#010x} IR={=u32:#010x}",
+        context, regs.cccr, regs.nbtp, regs.psr, regs.ecr, regs.ir,
+    );
+}
+
+fn read_fdcan_status() -> FdcanStatus {
     use embassy_stm32::pac;
 
     let fdcan = pac::FDCAN1;
@@ -444,32 +535,37 @@ fn log_fdcan_status() {
         BusState::Ok
     };
 
-    let last_err = match psr.lec().to_bits() {
-        0 => "none",
-        1 => "stuff",
-        2 => "form",
-        3 => "ack",
-        4 => "bit1(recessive)",
-        5 => "bit0(dominant)",
-        6 => "crc",
-        _ => "no-change",
+    let last_error = match psr.lec().to_bits() {
+        0 => CanLastError::None,
+        1 => CanLastError::Stuff,
+        2 => CanLastError::Form,
+        3 => CanLastError::Ack,
+        4 => CanLastError::Bit1Recessive,
+        5 => CanLastError::Bit0Dominant,
+        6 => CanLastError::Crc,
+        _ => CanLastError::NoChange,
     };
 
-    if bus_state.is_ok() {
+    FdcanStatus {
+        bus_state,
+        tx_error_count: ecr.tec(),
+        rx_error_count: ecr.rec(),
+        last_error,
+    }
+}
+
+fn log_fdcan_status() {
+    let status = read_fdcan_status();
+
+    if status.bus_state.is_ok() {
         info!(
             "CAN: {} TEC={} REC={} last_err={}",
-            bus_state,
-            ecr.tec(),
-            ecr.rec(),
-            last_err,
+            status.bus_state, status.tx_error_count, status.rx_error_count, status.last_error,
         );
     } else {
         warn!(
             "CAN: {} TEC={} REC={} last_err={}",
-            bus_state,
-            ecr.tec(),
-            ecr.rec(),
-            last_err,
+            status.bus_state, status.tx_error_count, status.rx_error_count, status.last_error,
         );
     }
 }
@@ -784,6 +880,7 @@ async fn main(spawner: Spawner) {
         stm32_can::filter::ExtendedFilter::accept_all_into_fifo1(),
     );
     let p_can = can_conf.into_normal_mode();
+    log_fdcan_registers("startup");
     let (can_tx, can_rx, _properties) = p_can.split();
 
     let drvoff_pin = gpio::Output::new(p.PB12, gpio::Level::High, gpio::Speed::Medium);
