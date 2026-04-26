@@ -43,6 +43,15 @@ const PHASE_MAPPING_TOLERANCE: f32 = 0.05;
 const CURRENT_PI_FREQUENCY: f32 = 100.0;
 const VELOCITY_PI_FREQUENCY: f32 = 3.0;
 const ALIGN_VOLTAGE: f32 = 2.0;
+const ALIGN_VOLTAGE_SEARCH_START: f32 = 0.1;
+const ALIGN_VOLTAGE_SEARCH_STEP: f32 = 0.1;
+const ALIGN_VOLTAGE_SEARCH_SETTLE_MS: u64 = 200;
+const ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD: f32 = 0.01;
+const ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS: usize = 40;
+const ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS: u64 = 10;
+const ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD: f32 = 0.0005;
+const ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS: usize = 16;
+const ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD: f32 = 0.005;
 const INIT_DELAY_CYCLES: u32 = 160_000;
 const CAN_BITRATE: u32 = 1_000_000;
 const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
@@ -101,6 +110,7 @@ use foc::{
     angle_input::AngleInput,
     controller::{FocController, FocState, OutputLimit, RunMode},
     pwm_output::{DutyCycle3Phase, PwmOutput},
+    svpwm,
 };
 
 static ANGLE: AtomicU32 = AtomicU32::new(0);
@@ -157,7 +167,6 @@ async fn run_motor_calibration(
     p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
     csa_gain: drv8316::CsaGain,
-    align_voltage: f32,
     use_current_sensing: bool,
 ) -> Result<(), &'static str> {
     if use_current_sensing {
@@ -179,6 +188,8 @@ async fn run_motor_calibration(
         foc.set_current_offset(current_offset);
     }
 
+    let align_voltage = find_minimum_align_voltage(driver, measure_vm_sense()).await?;
+    info!("Using align voltage {}", align_voltage);
     let wait_seconds = async |s: f32| Timer::after(Duration::from_millis((s * 1e3) as u64)).await;
 
     match foc
@@ -230,6 +241,118 @@ async fn run_motor_calibration(
     Ok(())
 }
 
+async fn find_minimum_align_voltage(
+    driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    psu_voltage: f32,
+) -> Result<f32, &'static str> {
+    const LOCK_ANGLE: f32 = 3.0 * core::f32::consts::FRAC_PI_2;
+
+    if psu_voltage <= 0.0 {
+        return Err("Invalid PSU voltage for align search");
+    }
+
+    let mut candidate_voltage = ALIGN_VOLTAGE_SEARCH_START;
+    while candidate_voltage <= ALIGN_VOLTAGE {
+        let lock_signal = svpwm(candidate_voltage, 0.0, LOCK_ANGLE, psu_voltage, sincos)
+            .map_err(|_| "Failed to generate align search lock signal")?;
+        driver.run(lock_signal);
+        Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SETTLE_MS).await;
+
+        let mut electrical_angle = LOCK_ANGLE;
+        let mut previous_angle = read_sensor().angle;
+        let mut forward_positive_steps = 0;
+        let mut forward_negative_steps = 0;
+        let mut forward_net_angle = 0.0;
+
+        for _ in 0..ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS {
+            electrical_angle += ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD;
+            let signal = svpwm(
+                candidate_voltage,
+                0.0,
+                electrical_angle,
+                psu_voltage,
+                sincos,
+            )
+            .map_err(|_| "Failed to generate align search sweep signal")?;
+            driver.run(signal);
+            Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
+            let angle = read_sensor().angle;
+            let delta = angle - previous_angle;
+            if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
+                forward_positive_steps += 1;
+            } else if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
+                forward_negative_steps += 1;
+            }
+            forward_net_angle += delta;
+            previous_angle = angle;
+        }
+
+        let mut backward_positive_steps = 0;
+        let mut backward_negative_steps = 0;
+        let mut backward_net_angle = 0.0;
+        for _ in 0..ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS {
+            electrical_angle -= ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD;
+            let signal = svpwm(
+                candidate_voltage,
+                0.0,
+                electrical_angle,
+                psu_voltage,
+                sincos,
+            )
+            .map_err(|_| "Failed to generate align search sweep signal")?;
+            driver.run(signal);
+            Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
+            let angle = read_sensor().angle;
+            let delta = angle - previous_angle;
+            if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
+                backward_negative_steps += 1;
+            } else if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
+                backward_positive_steps += 1;
+            }
+            backward_net_angle += delta;
+            previous_angle = angle;
+        }
+
+        driver.run(DutyCycle3Phase::zero());
+        let forward_dominant_positive = forward_positive_steps > forward_negative_steps;
+        let backward_dominant_positive = backward_positive_steps > backward_negative_steps;
+        let forward_dominant_steps = if forward_dominant_positive {
+            forward_positive_steps
+        } else {
+            forward_negative_steps
+        };
+        let backward_dominant_steps = if backward_dominant_positive {
+            backward_positive_steps
+        } else {
+            backward_negative_steps
+        };
+        info!(
+            "Align search {}V: fwd(+/-)={}/{} fwd_net={} bwd(+/-)={}/{} bwd_net={}",
+            candidate_voltage,
+            forward_positive_steps,
+            forward_negative_steps,
+            forward_net_angle,
+            backward_positive_steps,
+            backward_negative_steps,
+            backward_net_angle
+        );
+
+        if forward_dominant_steps >= ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS
+            && backward_dominant_steps >= ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS
+            && forward_net_angle.abs() >= ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD
+            && backward_net_angle.abs() >= ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD
+            && forward_net_angle * backward_net_angle < 0.0
+            && forward_dominant_positive != backward_dominant_positive
+        {
+            return Ok(candidate_voltage);
+        }
+
+        candidate_voltage += ALIGN_VOLTAGE_SEARCH_STEP;
+    }
+
+    Err("Failed to find align voltage with directional response")
+}
+
 #[inline]
 async fn init_foc(
     drvoff_pin: gpio::Output<'static>,
@@ -248,7 +371,6 @@ async fn init_foc(
 ) -> Option<u8> {
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
-    let align_voltage = ALIGN_VOLTAGE;
 
     // Try to load stored configuration
     let stored_config = flash_config::read_config(&mut p_flash);
@@ -286,7 +408,6 @@ async fn init_foc(
             &mut p_adc,
             &mut driver,
             csa_gain,
-            align_voltage,
             use_current_sensing,
         )
         .await
