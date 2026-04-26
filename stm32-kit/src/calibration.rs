@@ -17,7 +17,6 @@ use crate::{
 // Calibration parameters
 const RAMP_STEPS: usize = 100;
 const SETTLE_TIME_MS: u64 = 100;
-const ALIGN_DUTY_CYCLE: f32 = 0.1;
 const ALIGN_MAX_ATTEMPTS: usize = 100;
 const ALIGN_SAMPLE_COUNT: usize = 100;
 
@@ -134,7 +133,8 @@ pub async fn align_current<'a, T, TIM, Fsincos>(
     p_adc: &mut adc::DummyAdc<T>,
     driver: &mut PwmDriver<'a, TIM>,
     csa_gain: CsaGain,
-    foc: &FocController<Fsincos>,
+    foc: &mut FocController<Fsincos>,
+    align_voltage: f32,
 ) -> Option<f32>
 where
     T: stm32_adc::Instance + AdcSelector,
@@ -142,8 +142,9 @@ where
     Fsincos: Fn(f32) -> (f32, f32),
 {
     // assumption: mechanical angle and voltage (electrical) angle are aligned
-    let mut duty = DutyCycle3Phase::zero();
-    duty.t1 = ALIGN_DUTY_CYCLE;
+    let duty = foc
+        .get_vq_duty_cycle(align_voltage, read_sensor().angle)
+        .ok()?;
     driver.run(duty);
     Timer::after_millis(SETTLE_TIME_MS).await;
     let mut n_success = 0;

@@ -215,7 +215,8 @@ async fn run_motor_calibration(
     }
 
     if use_current_sensing
-        && let Some(offset) = calibration::align_current(p_adc, driver, csa_gain, foc).await
+        && let Some(offset) =
+            calibration::align_current(p_adc, driver, csa_gain, foc, align_voltage).await
     {
         foc.set_current_phase_bias(offset);
         info!("current phase bias = {}", offset);
