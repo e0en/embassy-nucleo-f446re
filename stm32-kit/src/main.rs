@@ -369,13 +369,13 @@ async fn init_foc(
         peripherals::PB15,
     >,
     mut p_adc: adc::DummyAdc<peripherals::ADC1>,
-    mut p_flash: Flash<'_, embassy_stm32::flash::Blocking>,
+    p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
 ) -> Option<u8> {
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
 
     // Try to load stored configuration
-    let stored_config = flash_config::read_config(&mut p_flash);
+    let stored_config = flash_config::read_config(p_flash);
     let has_stored_config = stored_config.is_some();
     let can_id = stored_config.as_ref().map(|c| c.can_id).unwrap_or(0x0F);
 
@@ -445,7 +445,7 @@ async fn init_foc(
         info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 
         let mut config = flash_config::from_foc(&foc, can_id);
-        if let Err(e) = flash_config::write_config(&mut p_flash, &mut config) {
+        if let Err(e) = flash_config::write_config(p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
         } else {
             info!("Calibration saved to flash");
@@ -1108,24 +1108,19 @@ async fn main(spawner: Spawner) {
     }
 
     // Create flash peripheral for config storage
-    let p_flash = Flash::new_blocking(p.FLASH);
+    let mut p_flash = Flash::new_blocking(p.FLASH);
 
     // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor)));
 
-    let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, p_flash).await else {
+    let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, &mut p_flash).await else {
         return;
     };
     CAN_ID.store(can_id, core::sync::atomic::Ordering::Relaxed);
 
     // Store flash in static for use by command handlers
     {
-        let flash = Flash::new_blocking(unsafe {
-            // SAFETY: We're taking ownership of FLASH again after init_foc is done
-            // This is safe because init_foc doesn't hold a reference to flash after returning
-            embassy_stm32::Peripherals::steal().FLASH
-        });
-        *(FLASH.lock().await) = Some(flash);
+        *(FLASH.lock().await) = Some(p_flash);
     }
 
     unwrap!(spawner.spawn(monitor_task()));
