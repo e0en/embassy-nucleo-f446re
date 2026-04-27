@@ -54,6 +54,7 @@ const ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS: usize = 16;
 const ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD: f32 = 0.005;
 const INIT_DELAY_CYCLES: u32 = 160_000;
 const CAN_BITRATE: u32 = 1_000_000;
+const CAN_RECOVERY_REINIT_INTERVAL_MS: u64 = 100;
 const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 const HOST_CAN_ID: u8 = 0;
@@ -519,6 +520,7 @@ async fn drv_fault_monitor_task(
     let mut last_drv_fault_active = false;
     let mut last_can_fault_active = false;
     let mut last_led_active = false;
+    let mut last_can_reinit_at: Option<Instant> = None;
     set_fault_led(&mut led_fault, last_led_active);
 
     loop {
@@ -549,6 +551,29 @@ async fn drv_fault_monitor_task(
                 log_fdcan_registers("cleared");
             }
             last_can_fault_active = can_fault_active;
+        }
+
+        if can_fault_active {
+            let now = Instant::now();
+            let should_reinitialize = last_can_reinit_at.is_none_or(|last_reinit_at| {
+                now.checked_duration_since(last_reinit_at)
+                    .is_some_and(|dt| dt >= Duration::from_millis(CAN_RECOVERY_REINIT_INTERVAL_MS))
+            });
+
+            if should_reinitialize {
+                warn!(
+                    "Reinitializing CAN after fault: {} TEC={} REC={} last_err={}",
+                    can_status.bus_state,
+                    can_status.tx_error_count,
+                    can_status.rx_error_count,
+                    can_status.last_error,
+                );
+                reinitialize_fdcan();
+                log_fdcan_registers("reinit");
+                last_can_reinit_at = Some(now);
+            }
+        } else {
+            last_can_reinit_at = None;
         }
 
         let led_active = drv_fault_active || can_fault_active;
@@ -638,6 +663,65 @@ fn log_fdcan_registers(context: &'static str) {
         "CAN regs[{}]: CCCR={=u32:#010x} NBTP={=u32:#010x} PSR={=u32:#010x} ECR={=u32:#010x} IR={=u32:#010x}",
         context, regs.cccr, regs.nbtp, regs.psr, regs.ecr, regs.ir,
     );
+}
+
+#[derive(Clone, Copy)]
+struct FdcanRecoveryConfig {
+    nbtp: u32,
+    tscc: u32,
+    txbtie: u32,
+    ie: u32,
+    ile: u32,
+    rxgfc: u32,
+}
+
+fn read_fdcan_recovery_config() -> FdcanRecoveryConfig {
+    use embassy_stm32::pac;
+
+    let fdcan = pac::FDCAN1;
+    FdcanRecoveryConfig {
+        nbtp: fdcan.nbtp().read().0,
+        tscc: fdcan.tscc().read().0,
+        txbtie: fdcan.txbtie().read().0,
+        ie: fdcan.ie().read().0,
+        ile: fdcan.ile().read().0,
+        rxgfc: fdcan.rxgfc().read().0,
+    }
+}
+
+fn reinitialize_fdcan() {
+    use embassy_stm32::pac;
+
+    let config = read_fdcan_recovery_config();
+
+    critical_section::with(|_| {
+        let rcc = pac::RCC;
+        let fdcan = pac::FDCAN1;
+
+        rcc.apb1enr1().modify(|w| w.set_fdcanen(true));
+        rcc.apb1rstr1().modify(|w| w.set_fdcanrst(true));
+        rcc.apb1rstr1().modify(|w| w.set_fdcanrst(false));
+
+        fdcan.cccr().modify(|w| w.set_init(true));
+        while !fdcan.cccr().read().init() {}
+
+        fdcan.cccr().modify(|w| w.set_cce(true));
+        fdcan.cccr().modify(|w| {
+            w.set_test(false);
+            w.set_mon(false);
+            w.set_asm(false);
+        });
+        fdcan.nbtp().write(|w| w.0 = config.nbtp);
+        fdcan.tscc().write(|w| w.0 = config.tscc);
+        fdcan.txbtie().write(|w| w.0 = config.txbtie);
+        fdcan.ie().write(|w| w.0 = config.ie);
+        fdcan.ile().write(|w| w.0 = config.ile);
+        fdcan.rxgfc().write(|w| w.0 = config.rxgfc);
+        fdcan.ir().write(|w| w.0 = u32::MAX);
+        fdcan.cccr().modify(|w| w.set_cce(false));
+        fdcan.cccr().modify(|w| w.set_init(false));
+        while fdcan.cccr().read().init() {}
+    });
 }
 
 fn read_fdcan_status() -> FdcanStatus {
