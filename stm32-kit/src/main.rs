@@ -1070,7 +1070,8 @@ async fn main(spawner: Spawner) {
     spi_config.bit_order = stm32_spi::BitOrder::MsbFirst;
     spi_config.frequency = mhz(10);
     spi_config.gpio_speed = gpio::Speed::VeryHigh;
-    let cs_out = gpio::Output::new(p.PB0, gpio::Level::High, gpio::Speed::VeryHigh);
+    let enc1_cs_out = gpio::Output::new(p.PB0, gpio::Level::High, gpio::Speed::VeryHigh);
+    let enc2_cs_out = gpio::Output::new(p.PB1, gpio::Level::High, gpio::Speed::VeryHigh);
 
     {
         let p_spi = stm32_spi::Spi::new(
@@ -1101,10 +1102,19 @@ async fn main(spawner: Spawner) {
     timer.initialize(foc_isr::MAX_COMPARE_VALUE as u16);
     info!("Timer frequency: {}", timer.get_frequency());
 
-    let mut sensor = As5047P::new(&SPI, cs_out, VELOCITY_OBSERVER_BANDWIDTH);
-    if let Err(e) = sensor.initialize().await {
-        error!("Sensor initialization failed, {:?}", e);
-        return;
+    let mut sensor = As5047P::new(&SPI, enc1_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
+    match sensor.initialize().await {
+        Ok(diagnostics) => info!("ENC1 diagnostics: {:?}", diagnostics),
+        Err(e) => {
+            error!("ENC1 initialization failed, {:?}", e);
+            return;
+        }
+    }
+
+    let mut secondary_sensor = As5047P::new(&SPI, enc2_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
+    match secondary_sensor.initialize().await {
+        Ok(diagnostics) => info!("ENC2 diagnostics: {:?}", diagnostics),
+        Err(e) => warn!("ENC2 initialization failed, continuing without it: {:?}", e),
     }
 
     // Create flash peripheral for config storage
