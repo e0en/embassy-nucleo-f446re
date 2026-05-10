@@ -59,6 +59,7 @@ const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 const HOST_CAN_ID: u8 = 0;
 const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
+const AS5047P_RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / ((1 << 14) as f32);
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
@@ -117,6 +118,7 @@ use foc::{
 static ANGLE: AtomicU32 = AtomicU32::new(0);
 static VELOCITY: AtomicU32 = AtomicU32::new(0);
 static DT: AtomicU32 = AtomicU32::new(0);
+static ANGLE_2: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 32> = Channel::new();
@@ -904,14 +906,19 @@ async fn handle_command_isr(
 fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
     let dt_seconds = (dt.as_micros() as f32) / 1e6;
     let freq = (check_count as f32) / dt_seconds;
+    let angle_2 = f32::from_le_bytes(
+        ANGLE_2
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .to_le_bytes(),
+    );
     info!(
-        "MEASURED: a={}, v={}, t={}, {} Hz",
-        state.angle, state.velocity, state.v_q, freq
+        "MEASURED: a={}, a2={}, v={}, t={}, {} Hz",
+        state.angle, angle_2, state.velocity, state.v_q, freq
     );
 }
 
 #[embassy_executor::task]
-async fn encoder_task(mut sensor: As5047P<'static>) {
+async fn encoder_task(mut sensor: As5047P<'static>, mut secondary_sensor: As5047P<'static>) {
     loop {
         match sensor.read_async().await {
             Ok(reading) => {
@@ -941,6 +948,28 @@ async fn encoder_task(mut sensor: As5047P<'static>) {
             }
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
+
+        match secondary_sensor.read_raw_angle().await {
+            Ok(raw_angle) => {
+                let angle_2 = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
+                ANGLE_2.store(
+                    u32::from_le_bytes(angle_2.to_le_bytes()),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            Err(as5047p::Error::CommandFrame) => {
+                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("ENC2 CommandFrame error correction failed");
+                }
+            }
+            Err(as5047p::Error::Parity) => {
+                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("ENC2 Parity error correction failed");
+                }
+            }
+            Err(e) => error!("Failed to read from ENC2: {:?}", e),
+        }
+
         Timer::after_micros(50).await;
     }
 }
@@ -1121,7 +1150,7 @@ async fn main(spawner: Spawner) {
     let mut p_flash = Flash::new_blocking(p.FLASH);
 
     // Start encoder task early so sensor readings are available during FOC init
-    unwrap!(spawner.spawn(encoder_task(sensor)));
+    unwrap!(spawner.spawn(encoder_task(sensor, secondary_sensor)));
 
     let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, &mut p_flash).await else {
         return;
