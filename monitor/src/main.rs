@@ -250,7 +250,7 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         for s in self.status_recv.try_iter() {
             match s.body {
                 ResponseBody::MotorStatus(x) => {
@@ -350,7 +350,11 @@ impl eframe::App for MyApp {
                 },
             }
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.request_repaint_after(UI_REPAINT_INTERVAL);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading("BLDC Monitor");
 
             let old_mode = self.run_mode;
@@ -579,7 +583,7 @@ impl eframe::App for MyApp {
                 self.file_dialog.save_file();
             }
 
-            if let Some(path) = self.file_dialog.update(ctx).picked()
+            if let Some(path) = self.file_dialog.update(ui.ctx()).picked()
                 && let Ok(mut file) = File::open(path)
             {
                 for i in 0..self.n_plot_points {
@@ -611,7 +615,6 @@ impl eframe::App for MyApp {
                 }
             });
         });
-        ctx.request_repaint_after(UI_REPAINT_INTERVAL);
     }
 }
 

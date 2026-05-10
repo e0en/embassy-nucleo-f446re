@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 can_message = { path = "../can_message", default-features = false }
 
-eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "glow", "x11"] }
-egui = "0.32.3"
-egui-file-dialog = "0.11.0"
-egui_plot = "0.33.0"
-env_logger = "0.11.8"
+eframe = { version = "0.34.2", default-features = false, features = ["default_fonts", "glow", "x11"] }
+egui = "0.34.2"
+egui-file-dialog = "0.13.0"
+egui_plot = "0.35.0"
+env_logger = "0.11.10"
 socketcan = "3.5.0"
