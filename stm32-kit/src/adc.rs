@@ -18,22 +18,25 @@ const ADC_VREF: f32 = 3.3;
 const ADC_MAX_VALUE: f32 = 4096.0;
 
 const JEXT_TIM1_TRGO: u8 = 0; // RM0440 JEXTSEL code for TIM1_TRGO (injected group)
+const VM_SENSE_CHANNEL: u8 = 4;
 
 // PAC uses 0-based indices for register field arrays.
 // Map RM0440 field names to PAC indices to prevent off-by-one errors.
-const SQ1: usize = 0;
 const JSQ1: usize = 0;
 const JSQ2: usize = 1;
 const JSQ3: usize = 2;
+const JSQ4: usize = 3;
 const JDR1: usize = 0;
 const JDR2: usize = 1;
 const JDR3: usize = 2;
+const JDR4: usize = 3;
 
 const SAMPLE_DURATION: stm32_adc::SampleTime = stm32_adc::SampleTime::CYCLES12_5;
 
 pub static IA_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IB_RAW: AtomicU16 = AtomicU16::new(0);
 pub static IC_RAW: AtomicU16 = AtomicU16::new(0);
+pub static VM_RAW: AtomicU16 = AtomicU16::new(0);
 pub static SAMPLE_SEQ: AtomicU32 = AtomicU32::new(0);
 pub static CNT: AtomicU32 = AtomicU32::new(0);
 
@@ -45,19 +48,22 @@ impl<Tadc> DummyAdc<Tadc>
 where
     Tadc: stm32_adc::Instance + AdcSelector,
 {
-    pub fn new<P1, P2, P3>(
+    pub fn new<P1, P2, P3, P4>(
         p_adc: Peri<'static, Tadc>,
         _ch1_pin: Peri<'static, P1>,
         _ch2_pin: Peri<'static, P2>,
         _ch3_pin: Peri<'static, P3>,
+        _vm_sense_pin: Peri<'static, P4>,
     ) -> Self
     where
         Peri<'static, P1>: AdcChannel<Tadc>,
         Peri<'static, P2>: AdcChannel<Tadc>,
         Peri<'static, P3>: AdcChannel<Tadc>,
+        Peri<'static, P4>: AdcChannel<Tadc>,
         P1: gpio::Pin,
         P2: gpio::Pin,
         P3: gpio::Pin,
+        P4: gpio::Pin,
     {
         Self { _inner: p_adc }
     }
@@ -118,10 +124,12 @@ fn ADC1_2() {
         let ia = adc1.jdr(JDR1).read().0 as u16;
         let ib = adc1.jdr(JDR2).read().0 as u16;
         let ic = adc1.jdr(JDR3).read().0 as u16;
+        let vm = adc1.jdr(JDR4).read().0 as u16;
 
         IA_RAW.store(ia, Ordering::Relaxed);
         IB_RAW.store(ib, Ordering::Relaxed);
         IC_RAW.store(ic, Ordering::Relaxed);
+        VM_RAW.store(vm, Ordering::Relaxed);
         CNT.store(t, Ordering::Relaxed);
         SAMPLE_SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -158,50 +166,10 @@ pub fn calibrate(adc1: pac::adc::Adc) {
 }
 
 /// Measure motor supply voltage from VM_SENSE pin (PA3 = ADC1_IN4).
-/// Performs a single software-triggered conversion on the regular group.
+/// Returns the latest injected conversion result captured alongside phase currents.
 /// Returns the measured voltage in volts.
 pub fn measure_vm_sense() -> f32 {
-    let adc1 = pac::ADC1;
-
-    // VM_SENSE is on PA3 = ADC1 channel 4
-    const VM_SENSE_CHANNEL: u8 = 4;
-
-    // Save current JSQR state (injected sequence used for current sensing)
-    let jsqr_backup = adc1.jsqr().read();
-
-    // Stop any ongoing injected conversion
-    adc1.cr()
-        .modify(|w| w.set_jadstp(pac::adc::vals::Adstp::STOP));
-    while adc1.cr().read().jadstart() {}
-
-    // Configure regular sequence for single channel conversion
-    adc1.sqr1().modify(|w| {
-        w.set_l(0); // 1 conversion (L = 0 means 1 conversion)
-        w.set_sq(SQ1, VM_SENSE_CHANNEL);
-    });
-
-    // Set sample time for the VM_SENSE channel
-    adc1.smpr().modify(|w| {
-        w.set_smp(VM_SENSE_CHANNEL as usize, SAMPLE_DURATION);
-    });
-
-    // Start regular conversion
-    adc1.cr().modify(|w| w.set_adstart(true));
-
-    // Wait for conversion to complete (EOC flag)
-    while !adc1.isr().read().eoc() {}
-
-    // Read the result
-    let raw_value = adc1.dr().read().0 as u16;
-
-    // Clear EOC flag
-    adc1.isr().write(|w| w.set_eoc(true));
-
-    // Restore injected sequence and restart
-    adc1.jsqr().write_value(jsqr_backup);
-    adc1.cr().modify(|w| w.set_jadstart(true));
-
-    // Convert raw ADC value to voltage
+    let raw_value = VM_RAW.load(Ordering::Relaxed);
     let adc_voltage = (raw_value as f32) * ADC_VREF / ADC_MAX_VALUE;
     adc_voltage * VM_SENSE_DIVIDER_RATIO
 }
@@ -218,13 +186,15 @@ pub fn initialize(adc1: pac::adc::Adc, ch1: u8, ch2: u8, ch3: u8) {
         w.set_smp(ch1 as usize, SAMPLE_DURATION);
         w.set_smp(ch2 as usize, SAMPLE_DURATION);
         w.set_smp(ch3 as usize, SAMPLE_DURATION);
+        w.set_smp(VM_SENSE_CHANNEL as usize, SAMPLE_DURATION);
     });
 
     adc1.jsqr().modify(|w| {
-        w.set_jl(2);
+        w.set_jl(3);
         w.set_jsq(JSQ1, ch1);
         w.set_jsq(JSQ2, ch2);
         w.set_jsq(JSQ3, ch3);
+        w.set_jsq(JSQ4, VM_SENSE_CHANNEL);
         w.set_jexten(stm32_adc::vals::Exten::RISING_EDGE);
         w.set_jextsel(JEXT_TIM1_TRGO);
     });

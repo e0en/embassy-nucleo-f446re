@@ -1123,7 +1123,7 @@ async fn main(spawner: Spawner) {
     let drv_fault_pin = gpio::Input::new(p.PB11, gpio::Pull::Up);
     let led_fault = gpio::Output::new(p.PA4, gpio::Level::High, gpio::Speed::Low);
 
-    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PA2);
+    let mut p_adc = adc::DummyAdc::new(p.ADC1, p.PA0, p.PA1, p.PA2, p.PA3);
     p_adc.calibrate();
     p_adc.initialize(1, 2, 3);
 
