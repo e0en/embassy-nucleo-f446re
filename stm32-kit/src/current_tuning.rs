@@ -24,7 +24,6 @@ const INDUCTANCE_STEP_VOLTAGE_MAX: f32 = 2.0;
 const RESISTANCE_TEST_VOLTAGE_MAX: f32 = 1.0;
 const INDUCTANCE_TARGET_DELTA_CURRENT: f32 = 0.2;
 const RESISTANCE_TARGET_CURRENT: f32 = 0.3;
-const IMPEDANCE_MAX_TEST_CURRENT: f32 = 0.8;
 const INDUCTANCE_SETTLE_SAMPLES: usize = 256;
 const INDUCTANCE_STEP_SAMPLES: usize = 64;
 const INDUCTANCE_MEASUREMENT_REPEATS: usize = 16;
@@ -100,17 +99,28 @@ fn max_abs_phase_current(current: PhaseCurrent) -> f32 {
 fn guard_impedance_current<TIM>(
     driver: &mut PwmDriver<'_, TIM>,
     phase_current: PhaseCurrent,
+    max_test_current: f32,
 ) -> Result<(), ImpedanceError>
 where
     TIM: AdvancedInstance4Channel,
 {
-    if max_abs_phase_current(phase_current) > IMPEDANCE_MAX_TEST_CURRENT {
+    let peak_current = max_abs_phase_current(phase_current);
+    if peak_current > max_test_current {
         stop_impedance_drive(driver);
+        defmt::warn!(
+            "Impedance current limit hit: peak={}A limit={}A phase=({},{},{})",
+            peak_current,
+            max_test_current,
+            phase_current.a,
+            phase_current.b,
+            phase_current.c
+        );
         return Err(ImpedanceError::Overcurrent);
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_d_axis_current<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
@@ -119,6 +129,7 @@ fn measure_d_axis_current<'a, Fsincos, Fsensor, TIM, T>(
     read_sensor: &Fsensor,
     v_d: f32,
     previous_sample_seq: u32,
+    max_test_current: f32,
 ) -> Result<(f32, u32), ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -133,12 +144,13 @@ where
     driver.run(duty);
     let (phase_current, sample_seq) =
         read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
-    guard_impedance_current(driver, phase_current)?;
+    guard_impedance_current(driver, phase_current, max_test_current)?;
     let electrical_angle = foc.to_electrical_angle(angle);
     let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
     Ok((i_d, sample_seq))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_q_axis_current<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
@@ -147,6 +159,7 @@ fn measure_q_axis_current<'a, Fsincos, Fsensor, TIM, T>(
     read_sensor: &Fsensor,
     v_q: f32,
     previous_sample_seq: u32,
+    max_test_current: f32,
 ) -> Result<(f32, u32), ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -161,7 +174,7 @@ where
     driver.run(duty);
     let (phase_current, sample_seq) =
         read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
-    guard_impedance_current(driver, phase_current)?;
+    guard_impedance_current(driver, phase_current, max_test_current)?;
     let electrical_angle = foc.to_electrical_angle(angle);
     let (i_q, _) = foc.calculate_pq_currents(phase_current, electrical_angle);
     Ok((i_q, sample_seq))
@@ -195,6 +208,7 @@ fn measure_d_axis_inductance_once<'a, Fsincos, Fsensor, TIM, T>(
     csa_gain: drv8316::CsaGain,
     read_sensor: &Fsensor,
     step_voltage: f32,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -205,8 +219,16 @@ where
     let mut baseline = 0.0;
     let mut sample_seq = adc::SAMPLE_SEQ.load(Ordering::Relaxed);
     for _ in 0..INDUCTANCE_SETTLE_SAMPLES {
-        let (i_d, next_sample_seq) =
-            measure_d_axis_current(foc, driver, p_adc, csa_gain, read_sensor, 0.0, sample_seq)?;
+        let (i_d, next_sample_seq) = measure_d_axis_current(
+            foc,
+            driver,
+            p_adc,
+            csa_gain,
+            read_sensor,
+            0.0,
+            sample_seq,
+            max_test_current,
+        )?;
         sample_seq = next_sample_seq;
         baseline += i_d / (INDUCTANCE_SETTLE_SAMPLES as f32);
     }
@@ -224,6 +246,7 @@ where
             read_sensor,
             step_voltage,
             sample_seq,
+            max_test_current,
         )?;
         sample_seq = next_sample_seq;
         t_samples[idx] = ((Instant::now().as_micros() - t0) as f32) / 1e6;
@@ -256,6 +279,7 @@ fn measure_d_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
     csa_gain: drv8316::CsaGain,
     read_sensor: &Fsensor,
     step_voltage: f32,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -272,6 +296,7 @@ where
             csa_gain,
             read_sensor,
             step_voltage,
+            max_test_current,
         )?;
     }
     Ok(trimmed_mean(&mut measurements))
@@ -284,6 +309,7 @@ fn measure_q_axis_inductance_once<'a, Fsincos, Fsensor, TIM, T>(
     csa_gain: drv8316::CsaGain,
     read_sensor: &Fsensor,
     step_voltage: f32,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -294,8 +320,16 @@ where
     let mut baseline = 0.0;
     let mut sample_seq = adc::SAMPLE_SEQ.load(Ordering::Relaxed);
     for _ in 0..INDUCTANCE_SETTLE_SAMPLES {
-        let (i_q, next_sample_seq) =
-            measure_q_axis_current(foc, driver, p_adc, csa_gain, read_sensor, 0.0, sample_seq)?;
+        let (i_q, next_sample_seq) = measure_q_axis_current(
+            foc,
+            driver,
+            p_adc,
+            csa_gain,
+            read_sensor,
+            0.0,
+            sample_seq,
+            max_test_current,
+        )?;
         sample_seq = next_sample_seq;
         baseline += i_q / (INDUCTANCE_SETTLE_SAMPLES as f32);
     }
@@ -313,6 +347,7 @@ where
             read_sensor,
             step_voltage,
             sample_seq,
+            max_test_current,
         )?;
         sample_seq = next_sample_seq;
         t_samples[idx] = ((Instant::now().as_micros() - t0) as f32) / 1e6;
@@ -345,6 +380,7 @@ fn measure_q_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
     csa_gain: drv8316::CsaGain,
     read_sensor: &Fsensor,
     step_voltage: f32,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -361,11 +397,13 @@ where
             csa_gain,
             read_sensor,
             step_voltage,
+            max_test_current,
         )?;
     }
     Ok(trimmed_mean(&mut measurements))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_resistance<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
@@ -374,6 +412,7 @@ fn measure_resistance<'a, Fsincos, Fsensor, TIM, T>(
     read_sensor: &Fsensor,
     n_sample: usize,
     test_voltage: f32,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -394,6 +433,7 @@ where
             read_sensor,
             test_voltage,
             sample_seq,
+            max_test_current,
         )?;
         sample_seq = next_sample_seq;
         if i >= n_sample {
@@ -410,6 +450,7 @@ where
             read_sensor,
             -test_voltage,
             sample_seq,
+            max_test_current,
         )?;
         sample_seq = next_sample_seq;
         if i >= n_sample {
@@ -426,6 +467,7 @@ fn find_inductance_step_voltage<'a, Fsincos, Fsensor, TIM, T>(
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: drv8316::CsaGain,
     read_sensor: &Fsensor,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -438,8 +480,16 @@ where
         let mut baseline = 0.0;
         let mut sample_seq = adc::SAMPLE_SEQ.load(Ordering::Relaxed);
         for _ in 0..INDUCTANCE_SETTLE_SAMPLES {
-            let (i_d, next_sample_seq) =
-                measure_d_axis_current(foc, driver, p_adc, csa_gain, read_sensor, 0.0, sample_seq)?;
+            let (i_d, next_sample_seq) = measure_d_axis_current(
+                foc,
+                driver,
+                p_adc,
+                csa_gain,
+                read_sensor,
+                0.0,
+                sample_seq,
+                max_test_current,
+            )?;
             sample_seq = next_sample_seq;
             baseline += i_d / (INDUCTANCE_SETTLE_SAMPLES as f32);
         }
@@ -455,6 +505,7 @@ where
                 read_sensor,
                 voltage,
                 sample_seq,
+                max_test_current,
             )?;
             sample_seq = next_sample_seq;
             let delta = (i_d - baseline).abs();
@@ -463,9 +514,7 @@ where
         }
         stop_impedance_drive(driver);
 
-        if peak_current <= IMPEDANCE_MAX_TEST_CURRENT
-            && peak_delta >= INDUCTANCE_TARGET_DELTA_CURRENT
-        {
+        if peak_current <= max_test_current && peak_delta >= INDUCTANCE_TARGET_DELTA_CURRENT {
             return Ok(voltage);
         }
 
@@ -481,6 +530,7 @@ fn find_resistance_test_voltage<'a, Fsincos, Fsensor, TIM, T>(
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: drv8316::CsaGain,
     read_sensor: &Fsensor,
+    max_test_current: f32,
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -503,6 +553,7 @@ where
                 read_sensor,
                 voltage,
                 sample_seq,
+                max_test_current,
             )?;
             sample_seq = next_sample_seq;
             if i >= TEST_VOLTAGE_SEARCH_SAMPLES {
@@ -512,7 +563,7 @@ where
         }
         stop_impedance_drive(driver);
 
-        if peak_current <= IMPEDANCE_MAX_TEST_CURRENT && avg_current >= RESISTANCE_TARGET_CURRENT {
+        if peak_current <= max_test_current && avg_current >= RESISTANCE_TARGET_CURRENT {
             return Ok(voltage);
         }
 
@@ -528,6 +579,7 @@ pub async fn find_motor_impedance<'a, Fsincos, Fsensor, TIM, T>(
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: drv8316::CsaGain,
     read_sensor: Fsensor,
+    max_test_current: f32,
     mut shutdown: impl FnMut(),
 ) -> Result<MotorImpedance, ImpedanceError>
 where
@@ -536,24 +588,36 @@ where
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
-    let inductance_step_voltage =
-        match find_inductance_step_voltage(foc, driver, p_adc, csa_gain, &read_sensor) {
-            Ok(voltage) => voltage,
-            Err(err) => {
-                stop_impedance_drive(driver);
-                shutdown();
-                return Err(err);
-            }
-        };
-    let resistance_test_voltage =
-        match find_resistance_test_voltage(foc, driver, p_adc, csa_gain, &read_sensor) {
-            Ok(voltage) => voltage,
-            Err(err) => {
-                stop_impedance_drive(driver);
-                shutdown();
-                return Err(err);
-            }
-        };
+    let inductance_step_voltage = match find_inductance_step_voltage(
+        foc,
+        driver,
+        p_adc,
+        csa_gain,
+        &read_sensor,
+        max_test_current,
+    ) {
+        Ok(voltage) => voltage,
+        Err(err) => {
+            stop_impedance_drive(driver);
+            shutdown();
+            return Err(err);
+        }
+    };
+    let resistance_test_voltage = match find_resistance_test_voltage(
+        foc,
+        driver,
+        p_adc,
+        csa_gain,
+        &read_sensor,
+        max_test_current,
+    ) {
+        Ok(voltage) => voltage,
+        Err(err) => {
+            stop_impedance_drive(driver);
+            shutdown();
+            return Err(err);
+        }
+    };
     defmt::info!(
         "Impedance test voltages: inductance={} resistance={}",
         inductance_step_voltage,
@@ -567,6 +631,7 @@ where
         csa_gain,
         &read_sensor,
         inductance_step_voltage,
+        max_test_current,
     ) {
         Ok(value) => value,
         Err(err) => {
@@ -582,6 +647,7 @@ where
         csa_gain,
         &read_sensor,
         inductance_step_voltage,
+        max_test_current,
     ) {
         Ok(value) => value,
         Err(err) => {
@@ -599,6 +665,7 @@ where
         &read_sensor,
         IMPEDANCE_SAMPLE_COUNT,
         resistance_test_voltage,
+        max_test_current,
     ) {
         Ok(value) => value,
         Err(err) => {

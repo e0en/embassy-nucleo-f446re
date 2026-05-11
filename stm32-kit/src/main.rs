@@ -62,6 +62,8 @@ const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 const HOST_CAN_ID: u8 = 0;
 const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 const AS5047P_RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / ((1 << 14) as f32);
+const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
+const USE_SECONDARY_ENCODER: bool = false;
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
@@ -226,19 +228,24 @@ async fn run_motor_calibration(
         foc.set_current_phase_bias(offset);
         info!("current phase bias = {}", offset);
 
-        let impedance =
-            current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor, || {
-                gate_driver.turn_off()
-            })
-            .await
-            .map_err(|err| match err {
-                current_tuning::ImpedanceError::Overcurrent => {
-                    "Motor impedance measurement overcurrent"
-                }
-                current_tuning::ImpedanceError::DutyGenerationFailed => {
-                    "Motor impedance measurement failed"
-                }
-            })?;
+        let impedance = current_tuning::find_motor_impedance(
+            foc,
+            driver,
+            p_adc,
+            csa_gain,
+            read_sensor,
+            IMPEDANCE_TUNING_MAX_CURRENT,
+            || gate_driver.turn_off(),
+        )
+        .await
+        .map_err(|err| match err {
+            current_tuning::ImpedanceError::Overcurrent => {
+                "Motor impedance measurement overcurrent"
+            }
+            current_tuning::ImpedanceError::DutyGenerationFailed => {
+                "Motor impedance measurement failed"
+            }
+        })?;
         foc.motor.phase_resistance = impedance.r_s;
         info!(
             "R_s = {}, L_q = {}, L_d = {}",
@@ -945,7 +952,10 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
 }
 
 #[embassy_executor::task]
-async fn encoder_task(mut sensor: As5047P<'static>, mut secondary_sensor: As5047P<'static>) {
+async fn encoder_task(
+    mut sensor: As5047P<'static>,
+    mut secondary_sensor: Option<As5047P<'static>>,
+) {
     let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
     let mut correction_version = 0;
     let mut correction = runtime_snapshot();
@@ -988,25 +998,27 @@ async fn encoder_task(mut sensor: As5047P<'static>, mut secondary_sensor: As5047
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
-        match secondary_sensor.read_raw_angle().await {
-            Ok(raw_angle) => {
-                let angle_2 = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
-                ANGLE_2.store(
-                    u32::from_le_bytes(angle_2.to_le_bytes()),
-                    core::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            Err(as5047p::Error::CommandFrame) => {
-                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                    error!("ENC2 CommandFrame error correction failed");
+        if let Some(secondary_sensor) = secondary_sensor.as_mut() {
+            match secondary_sensor.read_raw_angle().await {
+                Ok(raw_angle) => {
+                    let angle_2 = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
+                    ANGLE_2.store(
+                        u32::from_le_bytes(angle_2.to_le_bytes()),
+                        core::sync::atomic::Ordering::Relaxed,
+                    );
                 }
-            }
-            Err(as5047p::Error::Parity) => {
-                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                    error!("ENC2 Parity error correction failed");
+                Err(as5047p::Error::CommandFrame) => {
+                    if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                        error!("ENC2 CommandFrame error correction failed");
+                    }
                 }
+                Err(as5047p::Error::Parity) => {
+                    if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                        error!("ENC2 Parity error correction failed");
+                    }
+                }
+                Err(e) => error!("Failed to read from ENC2: {:?}", e),
             }
-            Err(e) => error!("Failed to read from ENC2: {:?}", e),
         }
 
         Timer::after_micros(50).await;
@@ -1179,11 +1191,22 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    let mut secondary_sensor = As5047P::new(&SPI, enc2_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
-    match secondary_sensor.initialize().await {
-        Ok(diagnostics) => info!("ENC2 diagnostics: {:?}", diagnostics),
-        Err(e) => warn!("ENC2 initialization failed, continuing without it: {:?}", e),
-    }
+    let secondary_sensor = if USE_SECONDARY_ENCODER {
+        let mut secondary_sensor = As5047P::new(&SPI, enc2_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
+        match secondary_sensor.initialize().await {
+            Ok(diagnostics) => {
+                info!("ENC2 diagnostics: {:?}", diagnostics);
+                Some(secondary_sensor)
+            }
+            Err(e) => {
+                warn!("ENC2 initialization failed, continuing without it: {:?}", e);
+                None
+            }
+        }
+    } else {
+        info!("ENC2 disabled by configuration");
+        None
+    };
 
     // Create flash peripheral for config storage
     let mut p_flash = Flash::new_blocking(p.FLASH);
