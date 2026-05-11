@@ -170,6 +170,7 @@ async fn run_motor_calibration(
     foc: &mut FocControllerType,
     p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    gate_driver: &mut drv8316t::Drv8316T<'static>,
     csa_gain: drv8316::CsaGain,
     use_current_sensing: bool,
 ) -> Result<f32, &'static str> {
@@ -226,9 +227,18 @@ async fn run_motor_calibration(
         info!("current phase bias = {}", offset);
 
         let impedance =
-            current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor)
-                .await
-                .map_err(|_| "Motor impedance measurement failed")?;
+            current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor, || {
+                gate_driver.turn_off()
+            })
+            .await
+            .map_err(|err| match err {
+                current_tuning::ImpedanceError::Overcurrent => {
+                    "Motor impedance measurement overcurrent"
+                }
+                current_tuning::ImpedanceError::DutyGenerationFailed => {
+                    "Motor impedance measurement failed"
+                }
+            })?;
         foc.motor.phase_resistance = impedance.r_s;
         info!(
             "R_s = {}, L_q = {}, L_d = {}",
@@ -415,6 +425,7 @@ async fn init_foc(
             &mut foc,
             &mut p_adc,
             &mut driver,
+            &mut gate_driver,
             csa_gain,
             use_current_sensing,
         )

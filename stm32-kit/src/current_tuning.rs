@@ -14,6 +14,8 @@ use foc::pwm_output::PwmOutput;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::Instant;
+use foc::current::PhaseCurrent;
+use foc::pwm_output::DutyCycle3Phase;
 
 const IMPEDANCE_SAMPLE_COUNT: usize = 2048;
 const IMPEDANCE_TEST_VOLTAGE_START: f32 = 0.1;
@@ -33,6 +35,7 @@ const ADC_SAMPLE_WAIT_SPINS: usize = 100_000;
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum ImpedanceError {
     DutyGenerationFailed,
+    Overcurrent,
 }
 
 #[allow(dead_code)]
@@ -80,6 +83,34 @@ where
     )
 }
 
+#[inline]
+fn stop_impedance_drive<TIM>(driver: &mut PwmDriver<'_, TIM>)
+where
+    TIM: AdvancedInstance4Channel,
+{
+    driver.run(DutyCycle3Phase::zero());
+}
+
+#[inline]
+fn max_abs_phase_current(current: PhaseCurrent) -> f32 {
+    current.a.abs().max(current.b.abs()).max(current.c.abs())
+}
+
+#[inline]
+fn guard_impedance_current<TIM>(
+    driver: &mut PwmDriver<'_, TIM>,
+    phase_current: PhaseCurrent,
+) -> Result<(), ImpedanceError>
+where
+    TIM: AdvancedInstance4Channel,
+{
+    if max_abs_phase_current(phase_current) > IMPEDANCE_MAX_TEST_CURRENT {
+        stop_impedance_drive(driver);
+        return Err(ImpedanceError::Overcurrent);
+    }
+    Ok(())
+}
+
 fn measure_d_axis_current<'a, Fsincos, Fsensor, TIM, T>(
     foc: &mut FocController<Fsincos>,
     driver: &mut PwmDriver<'a, TIM>,
@@ -102,6 +133,7 @@ where
     driver.run(duty);
     let (phase_current, sample_seq) =
         read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
+    guard_impedance_current(driver, phase_current)?;
     let electrical_angle = foc.to_electrical_angle(angle);
     let (_, i_d) = foc.calculate_pq_currents(phase_current, electrical_angle);
     Ok((i_d, sample_seq))
@@ -129,6 +161,7 @@ where
     driver.run(duty);
     let (phase_current, sample_seq) =
         read_synced_phase_current(p_adc, csa_gain, previous_sample_seq);
+    guard_impedance_current(driver, phase_current)?;
     let electrical_angle = foc.to_electrical_angle(angle);
     let (i_q, _) = foc.calculate_pq_currents(phase_current, electrical_angle);
     Ok((i_q, sample_seq))
@@ -428,7 +461,7 @@ where
             peak_delta = peak_delta.max(delta);
             peak_current = peak_current.max(i_d.abs());
         }
-        driver.run(foc::pwm_output::DutyCycle3Phase::zero());
+        stop_impedance_drive(driver);
 
         if peak_current <= IMPEDANCE_MAX_TEST_CURRENT
             && peak_delta >= INDUCTANCE_TARGET_DELTA_CURRENT
@@ -477,7 +510,7 @@ where
             }
             peak_current = peak_current.max(i_d.abs());
         }
-        driver.run(foc::pwm_output::DutyCycle3Phase::zero());
+        stop_impedance_drive(driver);
 
         if peak_current <= IMPEDANCE_MAX_TEST_CURRENT && avg_current >= RESISTANCE_TARGET_CURRENT {
             return Ok(voltage);
@@ -495,6 +528,7 @@ pub async fn find_motor_impedance<'a, Fsincos, Fsensor, TIM, T>(
     p_adc: &mut adc::DummyAdc<T>,
     csa_gain: drv8316::CsaGain,
     read_sensor: Fsensor,
+    mut shutdown: impl FnMut(),
 ) -> Result<MotorImpedance, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
@@ -503,33 +537,61 @@ where
     T: stm32_adc::Instance + AdcSelector,
 {
     let inductance_step_voltage =
-        find_inductance_step_voltage(foc, driver, p_adc, csa_gain, &read_sensor)?;
+        match find_inductance_step_voltage(foc, driver, p_adc, csa_gain, &read_sensor) {
+            Ok(voltage) => voltage,
+            Err(err) => {
+                stop_impedance_drive(driver);
+                shutdown();
+                return Err(err);
+            }
+        };
     let resistance_test_voltage =
-        find_resistance_test_voltage(foc, driver, p_adc, csa_gain, &read_sensor)?;
+        match find_resistance_test_voltage(foc, driver, p_adc, csa_gain, &read_sensor) {
+            Ok(voltage) => voltage,
+            Err(err) => {
+                stop_impedance_drive(driver);
+                shutdown();
+                return Err(err);
+            }
+        };
     defmt::info!(
         "Impedance test voltages: inductance={} resistance={}",
         inductance_step_voltage,
         resistance_test_voltage
     );
 
-    let l_d = measure_d_axis_inductance(
+    let l_d = match measure_d_axis_inductance(
         foc,
         driver,
         p_adc,
         csa_gain,
         &read_sensor,
         inductance_step_voltage,
-    )?;
-    let l_q = measure_q_axis_inductance(
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            stop_impedance_drive(driver);
+            shutdown();
+            return Err(err);
+        }
+    };
+    let l_q = match measure_q_axis_inductance(
         foc,
         driver,
         p_adc,
         csa_gain,
         &read_sensor,
         inductance_step_voltage,
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            stop_impedance_drive(driver);
+            shutdown();
+            return Err(err);
+        }
+    };
 
-    let r_s = measure_resistance(
+    let r_s = match measure_resistance(
         foc,
         driver,
         p_adc,
@@ -537,7 +599,15 @@ where
         &read_sensor,
         IMPEDANCE_SAMPLE_COUNT,
         resistance_test_voltage,
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            stop_impedance_drive(driver);
+            shutdown();
+            return Err(err);
+        }
+    };
+    stop_impedance_drive(driver);
     Ok(MotorImpedance { l_d, l_q, r_s })
 }
 
