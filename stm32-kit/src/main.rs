@@ -226,7 +226,9 @@ async fn run_motor_calibration(
         info!("current phase bias = {}", offset);
 
         let impedance =
-            current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor).await;
+            current_tuning::find_motor_impedance(foc, driver, p_adc, csa_gain, read_sensor)
+                .await
+                .map_err(|_| "Motor impedance measurement failed")?;
         foc.motor.phase_resistance = impedance.r_s;
         info!(
             "R_s = {}, L_q = {}, L_d = {}",
