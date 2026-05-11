@@ -689,6 +689,15 @@ where
         Ok(duty_cycle)
     }
 
+    pub fn get_direct_vq_duty_cycle(
+        &self,
+        v_q: f32,
+        electrical_angle: f32,
+    ) -> Result<DutyCycle3Phase, FocError> {
+        let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
+        svpwm(v_q, 0.0, electrical_angle, psu_voltage, &self.f_sincos)
+    }
+
     pub fn get_vd_duty_cycle(&mut self, v_d: f32, angle: f32) -> Result<DutyCycle3Phase, FocError> {
         let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
         let duty_cycle = svpwm(

@@ -7,10 +7,12 @@ use embassy_stm32::flash::{Blocking, Flash, WRITE_SIZE};
 use foc::controller::Direction;
 use foc::current::PhaseCurrent;
 
+use crate::encoder_correction::{EncoderCorrection, LUT_SIZE};
+
 /// Magic number to identify valid config: "MOTC" in ASCII
 const CONFIG_MAGIC: u32 = 0x4D4F5443;
 /// Current config version for future migrations
-const CONFIG_VERSION: u8 = 4;
+const CONFIG_VERSION: u8 = 5;
 /// Flash offset for config page (last 2KB of 128KB)
 const CONFIG_OFFSET: u32 = 0x1F800;
 /// Size of config page
@@ -89,6 +91,11 @@ pub struct ConfigData {
     /// Measured Kv rating in rad/s per volt (0.0 = not measured)
     pub kv_rating: f32,
 
+    /// Encoder LUT validity flag
+    pub encoder_lut_valid: u8,
+    /// Wrapped-angle correction LUT in radians
+    pub encoder_error_lut: [f32; LUT_SIZE],
+
     /// CRC32 checksum (must be last field)
     pub crc: u32,
 }
@@ -119,6 +126,8 @@ impl ConfigData {
             pole_pair_count: 0,
             phase_resistance: 0.0,
             kv_rating: 0.0,
+            encoder_lut_valid: 0,
+            encoder_error_lut: [0.0; LUT_SIZE],
             crc: 0,
         }
     }
@@ -178,6 +187,18 @@ impl ConfigData {
         self.current_offset_b = offset.b;
         self.current_offset_c = offset.c;
     }
+
+    pub fn get_encoder_correction(&self) -> EncoderCorrection {
+        EncoderCorrection {
+            valid: self.encoder_lut_valid != 0,
+            error_lut: self.encoder_error_lut,
+        }
+    }
+
+    pub fn set_encoder_correction(&mut self, correction: EncoderCorrection) {
+        self.encoder_lut_valid = if correction.valid { 1 } else { 0 };
+        self.encoder_error_lut = correction.error_lut;
+    }
 }
 
 #[derive(Debug, defmt::Format)]
@@ -217,7 +238,7 @@ pub fn write_config(
     // Pad to WRITE_SIZE alignment (typically 8 bytes for STM32G4)
     let write_size = WRITE_SIZE;
     let aligned_len = bytes.len().div_ceil(write_size) * write_size;
-    let mut aligned_buffer = [0xFFu8; 256]; // Max reasonable config size
+    let mut aligned_buffer = [0xFFu8; CONFIG_PAGE_SIZE as usize];
     aligned_buffer[..bytes.len()].copy_from_slice(&bytes);
 
     // Erase the config page

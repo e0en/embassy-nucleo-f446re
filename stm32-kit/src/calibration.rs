@@ -11,6 +11,10 @@ use crate::{
     bldc_driver::PwmDriver,
     cordic::{atan2, sincos},
     drv8316::{self, CsaGain},
+    encoder_correction::{
+        EncoderCorrection, LUT_SIZE, average_wrapped_samples, build_lut_from_samples,
+        circular_mean, wrap_0_tau,
+    },
     read_sensor,
 };
 
@@ -19,6 +23,10 @@ const RAMP_STEPS: usize = 100;
 const SETTLE_TIME_MS: u64 = 100;
 const ALIGN_MAX_ATTEMPTS: usize = 100;
 const ALIGN_SAMPLE_COUNT: usize = 100;
+const ENCODER_CAL_LOCK_ANGLE: f32 = 3.0 * core::f32::consts::FRAC_PI_2;
+const ENCODER_CAL_SETTLE_MS: u64 = 40;
+const ENCODER_CAL_SAMPLE_COUNT: usize = 16;
+const ENCODER_CAL_POINT_COUNT: usize = LUT_SIZE * 2;
 
 pub async fn get_average_adc<T>(
     p_adc: &mut adc::DummyAdc<T>,
@@ -172,4 +180,116 @@ where
         0 => None,
         _ => Some(avg_angle / (n_success as f32)),
     }
+}
+
+pub async fn calibrate_encoder_correction<TIM, Fsincos>(
+    driver: &mut PwmDriver<'_, TIM>,
+    foc: &FocController<Fsincos>,
+    align_voltage: f32,
+) -> Result<EncoderCorrection, &'static str>
+where
+    TIM: AdvancedInstance4Channel,
+    Fsincos: Fn(f32) -> (f32, f32),
+{
+    let start_duty = foc
+        .get_direct_vq_duty_cycle(align_voltage, ENCODER_CAL_LOCK_ANGLE)
+        .map_err(|_| "Encoder calibration lock failed")?;
+    driver.run(start_duty);
+    Timer::after_millis(SETTLE_TIME_MS).await;
+
+    let start_angle = average_sensor_angle(ENCODER_CAL_SAMPLE_COUNT)
+        .await
+        .ok_or("Encoder calibration start sample failed")?;
+
+    let mut forward_samples = [(0.0f32, 0.0f32); ENCODER_CAL_POINT_COUNT];
+    collect_encoder_samples(
+        driver,
+        foc,
+        align_voltage,
+        start_angle,
+        false,
+        &mut forward_samples,
+    )
+    .await?;
+
+    let mut reverse_samples = [(0.0f32, 0.0f32); ENCODER_CAL_POINT_COUNT];
+    collect_encoder_samples(
+        driver,
+        foc,
+        align_voltage,
+        start_angle,
+        true,
+        &mut reverse_samples,
+    )
+    .await?;
+
+    let mut merged_samples = [(0.0f32, 0.0f32); ENCODER_CAL_POINT_COUNT];
+    for i in 0..ENCODER_CAL_POINT_COUNT {
+        let reference = forward_samples[i].1;
+        merged_samples[i] = (
+            circular_mean(forward_samples[i].0, reverse_samples[i].0),
+            reference,
+        );
+    }
+
+    driver.run(DutyCycle3Phase::zero());
+    build_lut_from_samples(&merged_samples).ok_or("Encoder LUT build failed")
+}
+
+async fn collect_encoder_samples<TIM, Fsincos>(
+    driver: &mut PwmDriver<'_, TIM>,
+    foc: &FocController<Fsincos>,
+    align_voltage: f32,
+    start_angle: f32,
+    reverse: bool,
+    samples: &mut [(f32, f32); ENCODER_CAL_POINT_COUNT],
+) -> Result<(), &'static str>
+where
+    TIM: AdvancedInstance4Channel,
+    Fsincos: Fn(f32) -> (f32, f32),
+{
+    let sign = foc.sensor_direction.sign();
+    let pole_pairs = foc.motor.pole_pair_count as f32;
+    if pole_pairs <= 0.0 {
+        return Err("Encoder calibration requires pole pairs");
+    }
+
+    for step in 0..ENCODER_CAL_POINT_COUNT {
+        let sample_index = if reverse {
+            ENCODER_CAL_POINT_COUNT - 1 - step
+        } else {
+            step
+        };
+        let delta_mechanical =
+            (sample_index as f32) * core::f32::consts::TAU / (ENCODER_CAL_POINT_COUNT as f32);
+        let electrical_angle = ENCODER_CAL_LOCK_ANGLE + sign * delta_mechanical * pole_pairs;
+        let duty = foc
+            .get_direct_vq_duty_cycle(align_voltage, electrical_angle)
+            .map_err(|_| "Encoder calibration step failed")?;
+        driver.run(duty);
+        Timer::after_millis(ENCODER_CAL_SETTLE_MS).await;
+
+        let measured = average_sensor_angle(ENCODER_CAL_SAMPLE_COUNT)
+            .await
+            .ok_or("Encoder calibration sample failed")?;
+        let reference = wrap_0_tau(start_angle + delta_mechanical);
+        samples[sample_index] = (measured, reference);
+    }
+
+    Ok(())
+}
+
+async fn average_sensor_angle(sample_count: usize) -> Option<f32> {
+    let mut sum_sin = 0.0;
+    let mut sum_cos = 0.0;
+
+    for _ in 0..sample_count {
+        let angle = wrap_0_tau(read_sensor().angle);
+        let (s, c) = sincos(angle);
+        sum_sin += s;
+        sum_cos += c;
+        Timer::after_millis(1).await;
+    }
+
+    average_wrapped_samples(sum_sin, sum_cos)
 }

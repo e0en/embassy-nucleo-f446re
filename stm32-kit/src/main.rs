@@ -11,6 +11,7 @@ mod current_tuning;
 mod drv8316;
 mod drv8316c;
 mod drv8316t;
+mod encoder_correction;
 mod flash_config;
 mod flycat5010;
 mod foc_isr;
@@ -31,6 +32,7 @@ use crate::{
     can::{convert_response_message, parse_command_frame},
     cordic::{initialize_cordic, run_and_log_validation_tests, sincos},
     current_tuning::calculate_current_pi,
+    encoder_correction::{AngleTracker, runtime_snapshot, runtime_version, set_runtime_correction},
 };
 
 use crate::gm3506 as motor;
@@ -109,7 +111,6 @@ use embassy_time::{Duration, Instant, Timer};
 
 use embedded_can::Id;
 use foc::{
-    angle_input::AngleInput,
     controller::{FocController, FocState, OutputLimit, RunMode},
     pwm_output::{DutyCycle3Phase, PwmOutput},
     svpwm,
@@ -171,7 +172,7 @@ async fn run_motor_calibration(
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
     csa_gain: drv8316::CsaGain,
     use_current_sensing: bool,
-) -> Result<(), &'static str> {
+) -> Result<f32, &'static str> {
     if use_current_sensing {
         let current_offset = calibration::get_current_offset(p_adc, driver, csa_gain).await;
         if let Some(m) = calibration::get_phase_mapping(
@@ -242,7 +243,7 @@ async fn run_motor_calibration(
         );
     }
 
-    Ok(())
+    Ok(align_voltage)
 }
 
 async fn find_minimum_align_voltage(
@@ -399,6 +400,7 @@ async fn init_foc(
 
     if let Some(config) = &stored_config {
         flash_config::apply_to_foc(&mut foc, config);
+        set_runtime_correction(config.get_encoder_correction());
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
             config.current_mapping.0,
@@ -407,7 +409,7 @@ async fn init_foc(
             config.bias_angle
         );
     } else {
-        if let Err(e) = run_motor_calibration(
+        let align_voltage = match run_motor_calibration(
             &mut foc,
             &mut p_adc,
             &mut driver,
@@ -416,9 +418,20 @@ async fn init_foc(
         )
         .await
         {
-            error!("{}", e);
-            gate_driver.turn_off();
-            return None;
+            Ok(v) => v,
+            Err(e) => {
+                error!("{}", e);
+                gate_driver.turn_off();
+                return None;
+            }
+        };
+
+        match calibration::calibrate_encoder_correction(&mut driver, &foc, align_voltage).await {
+            Ok(correction) => {
+                set_runtime_correction(correction);
+                info!("Encoder LUT calibration complete");
+            }
+            Err(e) => warn!("{}", e),
         }
 
         foc.enable();
@@ -447,6 +460,7 @@ async fn init_foc(
         info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 
         let mut config = flash_config::from_foc(&foc, can_id);
+        config.set_encoder_correction(runtime_snapshot());
         if let Err(e) = flash_config::write_config(p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
         } else {
@@ -919,9 +933,22 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
 
 #[embassy_executor::task]
 async fn encoder_task(mut sensor: As5047P<'static>, mut secondary_sensor: As5047P<'static>) {
+    let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
+    let mut correction_version = 0;
+    let mut correction = runtime_snapshot();
+
     loop {
-        match sensor.read_async().await {
-            Ok(reading) => {
+        let latest_version = runtime_version();
+        if latest_version != correction_version {
+            correction = runtime_snapshot();
+            correction_version = latest_version;
+        }
+
+        match sensor.read_raw_angle().await {
+            Ok(raw_angle) => {
+                let wrapped_angle =
+                    correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
+                let reading = tracker.update(wrapped_angle, Instant::now());
                 ANGLE.store(
                     u32::from_le_bytes(reading.angle.to_le_bytes()),
                     core::sync::atomic::Ordering::Relaxed,
@@ -935,7 +962,6 @@ async fn encoder_task(mut sensor: As5047P<'static>, mut secondary_sensor: As5047
                     core::sync::atomic::Ordering::Relaxed,
                 );
             }
-
             Err(as5047p::Error::CommandFrame) => {
                 if sensor.read_and_reset_error_flag().await.is_err() {
                     error!("CommandFrame error correction failed");
