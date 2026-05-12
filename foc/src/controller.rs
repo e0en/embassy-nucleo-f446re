@@ -592,7 +592,6 @@ where
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
                 }
-                self.target.velocity = target_velocity;
                 let velocity_error = target_velocity - s.velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
@@ -738,6 +737,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{FocController, MotorSetup, OutputLimit, PID, fmodf};
+    use crate::angle_input::AngleReading;
+    use crate::controller::RunMode;
+    use crate::current::PhaseCurrent;
 
     fn test_sincos(_: f32) -> (f32, f32) {
         (0.0, 1.0)
@@ -901,5 +903,26 @@ mod tests {
         assert!((controller.velocity_pid.max_output - 6.4).abs() < 1e-6);
         assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
         assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn angle_mode_does_not_overwrite_velocity_target() {
+        let mut controller = build_controller();
+        controller.enable();
+        controller.set_run_mode(RunMode::Velocity);
+        controller.set_target_velocity(0.0);
+
+        controller.set_run_mode(RunMode::Angle);
+        controller.set_target_angle(1.0);
+        let reading = AngleReading {
+            angle: 0.0,
+            velocity: 0.0,
+            dt: 0.001,
+        };
+
+        let _ = controller.get_duty_cycle(&reading, PhaseCurrent::new(0.0, 0.0, 0.0));
+
+        assert_eq!(controller.target.velocity, 0.0);
+        assert!(controller.state.velocity_error > 0.0);
     }
 }
