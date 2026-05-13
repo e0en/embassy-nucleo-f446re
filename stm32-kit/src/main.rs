@@ -1180,7 +1180,10 @@ async fn main(spawner: Spawner) {
 
     let mut timer = pwm::Pwm6Timer::new(p.TIM1, p.PA8, p.PA9, p.PA10, p.PB13, p.PB14, p.PB15);
     timer.initialize(foc_isr::MAX_COMPARE_VALUE as u16);
-    info!("Timer frequency: {}", timer.get_frequency());
+    info!(
+        "Timer edge-aligned wrap frequency (before center-aligned/REP effects): {}",
+        timer.get_frequency()
+    );
 
     let mut sensor = As5047P::new(&SPI, enc1_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
     match sensor.initialize().await {

@@ -21,9 +21,10 @@ use crate::{RESPONSE_CHANNEL, read_sensor};
 /// Maximum PWM compare value (11-bit: 2047)
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
 const MAX_DUTY: u32 = MAX_COMPARE_VALUE + 1;
-// TIM1 runs from the 170 MHz APB2 clock. With center-aligned PWM and REP=1,
-// the ADC-triggered FOC loop executes once every 4 * ARR counts.
-const CONTROL_LOOP_DT_SECONDS: f32 = (4.0 * MAX_DUTY as f32) / 170_000_000.0;
+// TIM1 runs from the 170 MHz APB2 clock. In center-aligned mode the counter
+// traverses one full PWM cycle in 2 * ARR counts, and REP=1 reduces the two
+// update events (overflow + underflow) to one TRGO/ADC trigger per full cycle.
+const CONTROL_LOOP_DT_SECONDS: f32 = (2.0 * MAX_DUTY as f32) / 170_000_000.0;
 
 static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new(None));
 
