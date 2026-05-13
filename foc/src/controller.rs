@@ -492,8 +492,7 @@ where
         let current_limit = self.effective_current_limit();
 
         self.current_limit = current_limit;
-        self.velocity_pid
-            .set_max_output(current_limit.unwrap_or(voltage_limit));
+        self.velocity_pid.set_max_output(voltage_limit);
 
         let current_pid_voltage_limit = current_limit
             .map(|current| current * self.motor.phase_resistance)
@@ -878,18 +877,18 @@ mod tests {
         assert_eq!(controller.current_limit, Some(6.4));
         assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
         assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
-        assert!((controller.velocity_pid.max_output - 6.4).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 16.0).abs() < 1e-6);
 
         controller.set_current_limit(4.0);
         assert_eq!(controller.current_limit, Some(4.0));
         assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
         assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
-        assert!((controller.velocity_pid.max_output - 4.0).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 16.0).abs() < 1e-6);
 
         controller.set_psu_voltage(10.0);
         assert!((controller.current_q_pid.max_output - 10.0).abs() < 1e-6);
         assert!((controller.current_d_pid.max_output - 10.0).abs() < 1e-6);
-        assert!((controller.velocity_pid.max_output - 4.0).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 10.0).abs() < 1e-6);
     }
 
     #[test]
@@ -900,7 +899,7 @@ mod tests {
         controller.set_current_limit(10.0);
 
         assert_eq!(controller.current_limit, Some(6.4));
-        assert!((controller.velocity_pid.max_output - 6.4).abs() < 1e-6);
+        assert!((controller.velocity_pid.max_output - 16.0).abs() < 1e-6);
         assert!((controller.current_q_pid.max_output - 16.0).abs() < 1e-6);
         assert!((controller.current_d_pid.max_output - 16.0).abs() < 1e-6);
     }
