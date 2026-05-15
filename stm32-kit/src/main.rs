@@ -21,7 +21,7 @@ mod motor_tuning;
 mod pwm;
 mod velocity_tuning;
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use foc::angle_input::AngleReading;
 
@@ -138,6 +138,9 @@ impl SensorSnapshotBuffer {
 static SENSOR_SNAPSHOTS: [SensorSnapshotBuffer; 2] =
     [SensorSnapshotBuffer::new(), SensorSnapshotBuffer::new()];
 static ACTIVE_SENSOR_SNAPSHOT: AtomicU8 = AtomicU8::new(0);
+static DRV_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CAN_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MOTOR_DISARMED_BY_FAULT: AtomicBool = AtomicBool::new(false);
 static ANGLE_2: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
 
@@ -159,6 +162,13 @@ type FlashMutex = embassy_sync::mutex::Mutex<
 >;
 
 static FLASH: FlashMutex = FlashMutex::new(None);
+
+type GateDriverMutex = Mutex<
+    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+    Option<drv8316t::Drv8316T<'static>>,
+>;
+
+static GATE_DRIVER: GateDriverMutex = GateDriverMutex::new(None);
 
 type CanPropertiesMutex =
     Mutex<embassy_sync::blocking_mutex::raw::ThreadModeRawMutex, Option<stm32_can::Properties>>;
@@ -525,12 +535,12 @@ async fn init_foc(
     foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
     info!("FOC interrupt-driven control started");
 
+    *(GATE_DRIVER.lock().await) = Some(gate_driver);
+
     // Leak the driver to prevent TIM1 from being stopped when it goes out of scope.
     // The ISR accesses TIM1 directly via PAC, but Embassy's Timer wrapper
     // may stop the hardware timer on drop.
     core::mem::forget(driver);
-    // Keep DRVOFF pin low (gate driver enabled)
-    core::mem::forget(gate_driver);
 
     Some(can_id)
 }
@@ -589,9 +599,11 @@ async fn drv_fault_monitor_task(
 
     loop {
         let drv_fault_active = fault_pin.is_low();
+        DRV_FAULT_ACTIVE.store(drv_fault_active, Ordering::Relaxed);
         if drv_fault_active != last_drv_fault_active {
             if drv_fault_active {
                 warn!("DRV8316 fault asserted");
+                disarm_motor_due_to_fault().await;
             } else {
                 info!("DRV8316 fault cleared");
             }
@@ -600,6 +612,7 @@ async fn drv_fault_monitor_task(
 
         let can_status = read_fdcan_status();
         let can_fault_active = can_status.has_fault();
+        CAN_FAULT_ACTIVE.store(can_fault_active, Ordering::Relaxed);
         if can_fault_active != last_can_fault_active {
             if can_fault_active {
                 warn!(
@@ -610,6 +623,7 @@ async fn drv_fault_monitor_task(
                     can_status.last_error,
                 );
                 log_fdcan_registers("fault");
+                disarm_motor_due_to_fault().await;
             } else {
                 info!("CAN fault cleared");
                 log_fdcan_registers("cleared");
@@ -925,7 +939,14 @@ async fn handle_command_isr(
 ) {
     match command {
         Command::Enable => {
-            foc_isr::with_foc(|foc| foc.enable());
+            if has_active_fault() {
+                warn!("Enable rejected while fault is active");
+            } else {
+                if MOTOR_DISARMED_BY_FAULT.swap(false, Ordering::Relaxed) {
+                    set_gate_driver_enabled(true).await;
+                }
+                foc_isr::with_foc(|foc| foc.enable());
+            }
         }
         Command::Stop => {
             foc_isr::with_foc(|foc| foc.stop());
@@ -1009,6 +1030,27 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
         "MEASURED: a={}, a2={}, v={}, t={}, {} Hz",
         state.angle, angle_2, state.velocity, state.v_q, freq
     );
+}
+
+fn has_active_fault() -> bool {
+    DRV_FAULT_ACTIVE.load(Ordering::Relaxed) || CAN_FAULT_ACTIVE.load(Ordering::Relaxed)
+}
+
+async fn set_gate_driver_enabled(enabled: bool) {
+    let mut gate_driver = GATE_DRIVER.lock().await;
+    if let Some(gate_driver) = gate_driver.as_mut() {
+        if enabled {
+            gate_driver.turn_on();
+        } else {
+            gate_driver.turn_off();
+        }
+    }
+}
+
+async fn disarm_motor_due_to_fault() {
+    foc_isr::with_foc(|foc| foc.stop());
+    set_gate_driver_enabled(false).await;
+    MOTOR_DISARMED_BY_FAULT.store(true, Ordering::Relaxed);
 }
 
 fn write_sensor_snapshot(reading: AngleReading) {
