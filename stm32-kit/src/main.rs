@@ -63,7 +63,7 @@ const DEFAULT_HOST_CAN_ID: u8 = 0;
 const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 const AS5047P_RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / ((1 << 14) as f32);
 const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
-const USE_SECONDARY_ENCODER: bool = false;
+const USE_SECONDARY_ENCODER: bool = true;
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
