@@ -13,26 +13,33 @@ use can_message::message::{
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
 use socketcan::{CanFrame, EmbeddedFrame, ExtendedId};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 const WINDOW_WIDTH: f32 = 1024.0;
 const WINDOW_HEIGHT: f32 = 768.0;
 const MAX_PLOT_POINTS: usize = 100_000;
 const UI_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+const HOST_CAN_ID: u8 = 0x00;
+const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
 
 fn main() -> eframe::Result {
     env_logger::init();
 
-    let (command_sender, command_receiver) = channel::<Command>();
+    let (command_sender, command_receiver) = channel::<CommandMessage>();
     let (status_sender, status_receiver) = channel::<ResponseMessage>();
+    let target_motor_can_id = Arc::new(AtomicU8::new(DEFAULT_MOTOR_CAN_ID));
 
     let rx_socket = CanSocket::open("can0").unwrap();
     let tx_socket = CanSocket::open("can0").unwrap();
 
+    let rx_target_motor_can_id = Arc::clone(&target_motor_can_id);
     thread::spawn(move || {
-        forward_status(status_sender, rx_socket);
+        forward_status(status_sender, rx_socket, rx_target_motor_can_id);
     });
+    let tx_target_motor_can_id = Arc::clone(&target_motor_can_id);
     thread::spawn(move || {
-        forward_command(command_receiver, tx_socket);
+        forward_command(command_receiver, tx_socket, tx_target_motor_can_id);
     });
 
     let options = eframe::NativeOptions {
@@ -46,19 +53,21 @@ fn main() -> eframe::Result {
             Ok(Box::<MyApp>::new(MyApp::new(
                 command_sender,
                 status_receiver,
+                target_motor_can_id,
             )))
         }),
     )
 }
 
-fn forward_command(command_recv: Receiver<Command>, socket: CanSocket) {
+fn forward_command(
+    command_recv: Receiver<CommandMessage>,
+    socket: CanSocket,
+    target_motor_can_id: Arc<AtomicU8>,
+) {
     loop {
-        for command in command_recv.try_iter() {
-            let command_msg = CommandMessage {
-                host_can_id: 0x00,
-                motor_can_id: 0x0F,
-                command,
-            };
+        for mut command_msg in command_recv.try_iter() {
+            command_msg.host_can_id = HOST_CAN_ID;
+            command_msg.motor_can_id = target_motor_can_id.load(Ordering::Relaxed);
             if let Ok(can_msg) = CanMessage::try_from(command_msg) {
                 match can_message_to_can_frame(&can_msg) {
                     Ok(frame) => {
@@ -76,7 +85,11 @@ fn forward_command(command_recv: Receiver<Command>, socket: CanSocket) {
     }
 }
 
-fn forward_status(status_send: Sender<ResponseMessage>, socket: CanSocket) {
+fn forward_status(
+    status_send: Sender<ResponseMessage>,
+    socket: CanSocket,
+    target_motor_can_id: Arc<AtomicU8>,
+) {
     println!("CAN receiver started");
 
     loop {
@@ -84,7 +97,12 @@ fn forward_status(status_send: Sender<ResponseMessage>, socket: CanSocket) {
             Ok(frame) => {
                 let can_msg = can_frame_to_can_message(&frame);
                 if let Ok(status_msg) = ResponseMessage::try_from(can_msg) {
-                    let _ = status_send.send(status_msg);
+                    if response_matches_target(
+                        &status_msg,
+                        target_motor_can_id.load(Ordering::Relaxed),
+                    ) {
+                        let _ = status_send.send(status_msg);
+                    }
                 }
             }
             Err(e) => {
@@ -96,8 +114,10 @@ fn forward_status(status_send: Sender<ResponseMessage>, socket: CanSocket) {
 }
 
 struct MyApp {
-    command_send: Sender<Command>,
+    command_send: Sender<CommandMessage>,
     status_recv: Receiver<ResponseMessage>,
+    target_motor_can_id: Arc<AtomicU8>,
+    target_motor_can_id_string: String,
 
     angle_string: String,
     velocity_string: String,
@@ -159,20 +179,29 @@ fn param_row(
     label: &str,
     value: &mut f32,
     text: &mut String,
-    command_send: &Sender<Command>,
+    command_send: &Sender<CommandMessage>,
+    motor_can_id: u8,
     make_param: fn(f32) -> ParameterValue,
 ) {
     let name_label = ui.label(label);
     ui.text_edit_singleline(text).labelled_by(name_label.id);
     let is_valid = text.parse::<f32>().map(|n| *value = n).is_ok();
     if ui.add_enabled(is_valid, egui::Button::new("Set")).clicked() {
-        let _ = command_send.send(Command::SetParameter(make_param(*value)));
+        let _ = command_send.send(CommandMessage {
+            host_can_id: HOST_CAN_ID,
+            motor_can_id,
+            command: Command::SetParameter(make_param(*value)),
+        });
     }
     ui.end_row();
 }
 
 impl MyApp {
-    fn new(command_send: Sender<Command>, status_recv: Receiver<ResponseMessage>) -> Self {
+    fn new(
+        command_send: Sender<CommandMessage>,
+        status_recv: Receiver<ResponseMessage>,
+        target_motor_can_id: Arc<AtomicU8>,
+    ) -> Self {
         let angle = 0.0;
         let velocity = 0.0;
         let iq = 0.0;
@@ -187,20 +216,11 @@ impl MyApp {
         let spring = 0.0;
         let damping = 0.0;
 
-        let _ = command_send.send(Command::GetParameter(ParameterIndex::AngleKp));
-        sleep(Duration::from_millis(1));
-        let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKp));
-        sleep(Duration::from_millis(1));
-        let _ = command_send.send(Command::GetParameter(ParameterIndex::SpeedKi));
-        sleep(Duration::from_millis(1));
-        let _ = command_send.send(Command::GetParameter(ParameterIndex::CurrentKp));
-        sleep(Duration::from_millis(1));
-        let _ = command_send.send(Command::GetParameter(ParameterIndex::CurrentKi));
-        sleep(Duration::from_millis(1));
-
-        Self {
+        let app = Self {
             command_send,
             status_recv,
+            target_motor_can_id,
+            target_motor_can_id_string: format!("{DEFAULT_MOTOR_CAN_ID}"),
 
             angle_string: angle.to_string(),
             velocity_string: velocity.to_string(),
@@ -245,7 +265,34 @@ impl MyApp {
 
             file_dialog: egui_file_dialog::FileDialog::new(),
             t0: Instant::now(),
-        }
+        };
+        app.request_initial_parameters();
+        app
+    }
+
+    fn current_motor_can_id(&self) -> u8 {
+        self.target_motor_can_id.load(Ordering::Relaxed)
+    }
+
+    fn send_command(&self, command: Command) {
+        let _ = self.command_send.send(CommandMessage {
+            host_can_id: HOST_CAN_ID,
+            motor_can_id: self.current_motor_can_id(),
+            command,
+        });
+    }
+
+    fn request_initial_parameters(&self) {
+        self.send_command(Command::GetParameter(ParameterIndex::AngleKp));
+        sleep(Duration::from_millis(1));
+        self.send_command(Command::GetParameter(ParameterIndex::SpeedKp));
+        sleep(Duration::from_millis(1));
+        self.send_command(Command::GetParameter(ParameterIndex::SpeedKi));
+        sleep(Duration::from_millis(1));
+        self.send_command(Command::GetParameter(ParameterIndex::CurrentKp));
+        sleep(Duration::from_millis(1));
+        self.send_command(Command::GetParameter(ParameterIndex::CurrentKi));
+        sleep(Duration::from_millis(1));
     }
 }
 
@@ -357,6 +404,25 @@ impl eframe::App for MyApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading("BLDC Monitor");
 
+            ui.horizontal(|ui| {
+                let name_label = ui.label("Target CAN ID");
+                ui.text_edit_singleline(&mut self.target_motor_can_id_string)
+                    .labelled_by(name_label.id);
+
+                let parsed_id = self.target_motor_can_id_string.parse::<u8>().ok();
+                if ui
+                    .add_enabled(parsed_id.is_some(), egui::Button::new("Apply"))
+                    .clicked()
+                    && let Some(new_id) = parsed_id
+                {
+                    self.target_motor_can_id.store(new_id, Ordering::Relaxed);
+                    self.n_plot_points = 0;
+                    self.request_initial_parameters();
+                }
+
+                ui.label(format!("Current: {}", self.current_motor_can_id()));
+            });
+
             let old_mode = self.run_mode;
             ui.label("Run mode");
             ui.horizontal(|ui| {
@@ -367,13 +433,12 @@ impl eframe::App for MyApp {
                 ui.selectable_value(&mut self.run_mode, RunMode::Voltage, "Voltage");
             });
             if old_mode != self.run_mode {
-                let _ = self
-                    .command_send
-                    .send(Command::SetParameter(ParameterValue::RunMode(
-                        self.run_mode,
-                    )));
+                self.send_command(Command::SetParameter(ParameterValue::RunMode(
+                    self.run_mode,
+                )));
             }
 
+            let current_motor_can_id = self.current_motor_can_id();
             egui::Grid::new("params")
                 .num_columns(3)
                 .spacing([40.0, 4.0])
@@ -384,6 +449,7 @@ impl eframe::App for MyApp {
                         &mut self.angle,
                         &mut self.angle_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::AngleRef,
                     );
                     param_row(
@@ -392,6 +458,7 @@ impl eframe::App for MyApp {
                         &mut self.velocity,
                         &mut self.velocity_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::SpeedRef,
                     );
                     param_row(
@@ -400,6 +467,7 @@ impl eframe::App for MyApp {
                         &mut self.iq,
                         &mut self.iq_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::IqRef,
                     );
                     param_row(
@@ -408,6 +476,7 @@ impl eframe::App for MyApp {
                         &mut self.vq,
                         &mut self.vq_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::VqRef,
                     );
                     param_row(
@@ -416,6 +485,7 @@ impl eframe::App for MyApp {
                         &mut self.angle_kp,
                         &mut self.angle_kp_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::AngleKp,
                     );
                     param_row(
@@ -424,6 +494,7 @@ impl eframe::App for MyApp {
                         &mut self.speed_kp,
                         &mut self.speed_kp_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::SpeedKp,
                     );
                     param_row(
@@ -432,6 +503,7 @@ impl eframe::App for MyApp {
                         &mut self.speed_ki,
                         &mut self.speed_ki_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::SpeedKi,
                     );
                     param_row(
@@ -440,6 +512,7 @@ impl eframe::App for MyApp {
                         &mut self.iq_kp,
                         &mut self.iq_kp_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::CurrentKp,
                     );
                     param_row(
@@ -448,6 +521,7 @@ impl eframe::App for MyApp {
                         &mut self.iq_ki,
                         &mut self.iq_ki_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::CurrentKi,
                     );
                     param_row(
@@ -456,6 +530,7 @@ impl eframe::App for MyApp {
                         &mut self.spring,
                         &mut self.spring_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::Spring,
                     );
                     param_row(
@@ -464,6 +539,7 @@ impl eframe::App for MyApp {
                         &mut self.damping,
                         &mut self.damping_string,
                         &self.command_send,
+                        current_motor_can_id,
                         ParameterValue::Damping,
                     );
                 });
@@ -485,24 +561,24 @@ impl eframe::App for MyApp {
                     if !self.is_non_inverted {
                         match self.run_mode {
                             RunMode::Angle => {
-                                let _ = self.command_send.send(Command::SetParameter(
+                                self.send_command(Command::SetParameter(
                                     ParameterValue::AngleRef(-self.angle),
                                 ));
                             }
                             RunMode::Velocity => {
-                                let _ = self.command_send.send(Command::SetParameter(
+                                self.send_command(Command::SetParameter(
                                     ParameterValue::SpeedRef(-self.velocity),
                                 ));
                             }
                             RunMode::Torque => {
-                                let _ = self
-                                    .command_send
-                                    .send(Command::SetParameter(ParameterValue::IqRef(-self.iq)));
+                                self.send_command(Command::SetParameter(ParameterValue::IqRef(
+                                    -self.iq,
+                                )));
                             }
                             RunMode::Voltage => {
-                                let _ = self
-                                    .command_send
-                                    .send(Command::SetParameter(ParameterValue::VqRef(-self.vq)));
+                                self.send_command(Command::SetParameter(ParameterValue::VqRef(
+                                    -self.vq,
+                                )));
                             }
                             _ => (),
                         }
@@ -510,24 +586,24 @@ impl eframe::App for MyApp {
                     } else {
                         match self.run_mode {
                             RunMode::Angle => {
-                                let _ = self.command_send.send(Command::SetParameter(
+                                self.send_command(Command::SetParameter(
                                     ParameterValue::AngleRef(self.angle),
                                 ));
                             }
                             RunMode::Velocity => {
-                                let _ = self.command_send.send(Command::SetParameter(
+                                self.send_command(Command::SetParameter(
                                     ParameterValue::SpeedRef(self.velocity),
                                 ));
                             }
                             RunMode::Torque => {
-                                let _ = self
-                                    .command_send
-                                    .send(Command::SetParameter(ParameterValue::IqRef(self.iq)));
+                                self.send_command(Command::SetParameter(ParameterValue::IqRef(
+                                    self.iq,
+                                )));
                             }
                             RunMode::Voltage => {
-                                let _ = self
-                                    .command_send
-                                    .send(Command::SetParameter(ParameterValue::VqRef(self.vq)));
+                                self.send_command(Command::SetParameter(ParameterValue::VqRef(
+                                    self.vq,
+                                )));
                             }
                             _ => (),
                         }
@@ -539,10 +615,10 @@ impl eframe::App for MyApp {
             ui.end_row();
 
             if ui.button("disable").clicked() {
-                let _ = self.command_send.send(Command::Stop);
+                self.send_command(Command::Stop);
             }
             if ui.button("enable").clicked() {
-                let _ = self.command_send.send(Command::Enable);
+                self.send_command(Command::Enable);
             }
 
             let before = self.plot_type;
@@ -555,13 +631,9 @@ impl eframe::App for MyApp {
             });
             if before != self.plot_type {
                 if self.plot_type == PlotType::Current {
-                    let _ = self
-                        .command_send
-                        .send(Command::SetFeedbackType(FeedbackType::Current));
+                    self.send_command(Command::SetFeedbackType(FeedbackType::Current));
                 } else {
-                    let _ = self
-                        .command_send
-                        .send(Command::SetFeedbackType(FeedbackType::Status));
+                    self.send_command(Command::SetFeedbackType(FeedbackType::Status));
                 }
                 self.n_plot_points = 0;
             }
@@ -645,4 +717,54 @@ fn can_message_to_can_frame(msg: &CanMessage) -> Result<CanFrame, socketcan::Con
         &msg.data[..msg.length as usize],
     )
     .ok_or(socketcan::ConstructionError::TooMuchData)
+}
+
+fn response_matches_target(message: &ResponseMessage, target_motor_can_id: u8) -> bool {
+    message.host_can_id == HOST_CAN_ID && message.motor_can_id == target_motor_can_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_filter_accepts_matching_host_and_motor_ids() {
+        let message = ResponseMessage {
+            motor_can_id: DEFAULT_MOTOR_CAN_ID,
+            host_can_id: HOST_CAN_ID,
+            body: ResponseBody::MotorStatus(can_message::message::MotorStatus {
+                angle: 0.0,
+                velocity: 0.0,
+                torque: 0.0,
+                temperature: 0.0,
+            }),
+        };
+
+        assert!(response_matches_target(&message, DEFAULT_MOTOR_CAN_ID));
+    }
+
+    #[test]
+    fn response_filter_rejects_other_motor_id() {
+        let message = ResponseMessage {
+            motor_can_id: DEFAULT_MOTOR_CAN_ID + 1,
+            host_can_id: HOST_CAN_ID,
+            body: ResponseBody::MotorCurrent(can_message::message::MotorCurrent {
+                i_q: 0.0,
+                i_d: 0.0,
+            }),
+        };
+
+        assert!(!response_matches_target(&message, DEFAULT_MOTOR_CAN_ID));
+    }
+
+    #[test]
+    fn response_filter_rejects_other_host_id() {
+        let message = ResponseMessage {
+            motor_can_id: DEFAULT_MOTOR_CAN_ID,
+            host_can_id: HOST_CAN_ID + 1,
+            body: ResponseBody::ParameterValue(ParameterValue::SpeedKp(1.0)),
+        };
+
+        assert!(!response_matches_target(&message, DEFAULT_MOTOR_CAN_ID));
+    }
 }
