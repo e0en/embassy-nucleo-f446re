@@ -21,15 +21,19 @@ use crate::{RESPONSE_CHANNEL, read_sensor};
 /// Maximum PWM compare value (11-bit: 2047)
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
 const MAX_DUTY: u32 = MAX_COMPARE_VALUE + 1;
+const TIM1_CLOCK_HZ: u32 = 170_000_000;
+const DEFAULT_FEEDBACK_HZ: u32 = 1_000;
+const DEFAULT_FEEDBACK_INTERVAL_TICKS: u8 =
+    ((TIM1_CLOCK_HZ / (2 * MAX_DUTY * DEFAULT_FEEDBACK_HZ)) as u8).saturating_sub(1);
 // TIM1 runs from the 170 MHz APB2 clock. In center-aligned mode the counter
 // traverses one full PWM cycle in 2 * ARR counts, and REP=1 reduces the two
 // update events (overflow + underflow) to one TRGO/ADC trigger per full cycle.
-const CONTROL_LOOP_DT_SECONDS: f32 = (2.0 * MAX_DUTY as f32) / 170_000_000.0;
+const CONTROL_LOOP_DT_SECONDS: f32 = (2.0 * MAX_DUTY as f32) / TIM1_CLOCK_HZ as f32;
 
 static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new(None));
 
 static FEEDBACK_TYPE: AtomicU8 = AtomicU8::new(0); // 0 = Status, 1 = Current
-static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(100);
+static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(DEFAULT_FEEDBACK_INTERVAL_TICKS);
 static FEEDBACK_COUNTER: AtomicU8 = AtomicU8::new(0);
 static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(crate::DEFAULT_HOST_CAN_ID);
 static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
