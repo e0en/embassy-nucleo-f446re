@@ -108,6 +108,7 @@ use embassy_stm32::{
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
     channel::{Channel, Sender},
+    mutex::Mutex,
 };
 use embassy_time::{Duration, Instant, Timer};
 
@@ -141,6 +142,11 @@ type FlashMutex = embassy_sync::mutex::Mutex<
 >;
 
 static FLASH: FlashMutex = FlashMutex::new(None);
+
+type CanPropertiesMutex =
+    Mutex<embassy_sync::blocking_mutex::raw::ThreadModeRawMutex, Option<stm32_can::Properties>>;
+
+static CAN_PROPERTIES: CanPropertiesMutex = CanPropertiesMutex::new(None);
 
 type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
 
@@ -700,6 +706,26 @@ fn log_fdcan_registers(context: &'static str) {
     );
 }
 
+fn can_id_filter(can_id: u8) -> stm32_can::filter::ExtendedFilter {
+    stm32_can::filter::ExtendedFilter {
+        filter: stm32_can::filter::FilterType::BitMask {
+            filter: can_id as u32,
+            mask: 0xFF,
+        },
+        action: stm32_can::filter::Action::StoreInFifo1,
+    }
+}
+
+async fn update_can_hardware_filter(can_id: u8) {
+    let guard = CAN_PROPERTIES.lock().await;
+    if let Some(properties) = guard.as_ref() {
+        properties.set_extended_filter(
+            stm32_can::filter::ExtendedFilterSlot::_0,
+            can_id_filter(can_id),
+        );
+    }
+}
+
 #[derive(Clone, Copy)]
 struct FdcanRecoveryConfig {
     nbtp: u32,
@@ -1064,6 +1090,7 @@ async fn can_rx_task(mut can_rx: CanRx<'static>) {
                 match message.command {
                     Command::SetCanId(new_can_id) => {
                         CAN_ID.store(new_can_id, core::sync::atomic::Ordering::Relaxed);
+                        update_can_hardware_filter(new_can_id).await;
                         info!("CAN ID changed to {}", new_can_id);
                         save_can_id_to_flash(new_can_id).await;
                     }
@@ -1159,15 +1186,31 @@ async fn main(spawner: Spawner) {
         *(SPI.lock().await) = Some(p_spi);
     }
 
+    let mut p_flash = Flash::new_blocking(p.FLASH);
+    let stored_config = flash_config::read_config(&mut p_flash);
+    let startup_can_id = stored_config
+        .as_ref()
+        .map(|config| config.can_id)
+        .unwrap_or(0x0F);
+
     let mut can_conf = stm32_can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
     can_conf.set_bitrate(CAN_BITRATE);
+    can_conf.set_config(
+        can_conf
+            .config()
+            .set_global_filter(stm32_can::config::GlobalFilter::reject_all()),
+    );
     can_conf.properties().set_extended_filter(
         stm32_can::filter::ExtendedFilterSlot::_0,
-        stm32_can::filter::ExtendedFilter::accept_all_into_fifo1(),
+        can_id_filter(startup_can_id),
     );
     let p_can = can_conf.into_normal_mode();
     log_fdcan_registers("startup");
-    let (can_tx, can_rx, _properties) = p_can.split();
+    let (can_tx, can_rx, properties) = p_can.split();
+
+    {
+        *(CAN_PROPERTIES.lock().await) = Some(properties);
+    }
 
     let drvoff_pin = gpio::Output::new(p.PB12, gpio::Level::High, gpio::Speed::Medium);
     let drv_fault_pin = gpio::Input::new(p.PB11, gpio::Pull::Up);
@@ -1209,10 +1252,6 @@ async fn main(spawner: Spawner) {
         info!("ENC2 disabled by configuration");
         None
     };
-
-    // Create flash peripheral for config storage
-    let mut p_flash = Flash::new_blocking(p.FLASH);
-    let stored_config = flash_config::read_config(&mut p_flash);
 
     // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor, secondary_sensor)));
