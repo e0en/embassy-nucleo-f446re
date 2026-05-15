@@ -392,12 +392,11 @@ async fn init_foc(
     >,
     mut p_adc: adc::DummyAdc<peripherals::ADC1>,
     p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
+    stored_config: Option<flash_config::ConfigData>,
 ) -> Option<u8> {
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
 
-    // Try to load stored configuration
-    let stored_config = flash_config::read_config(p_flash);
     let has_stored_config = stored_config.is_some();
     let can_id = stored_config.as_ref().map(|c| c.can_id).unwrap_or(0x0F);
 
@@ -1213,11 +1212,12 @@ async fn main(spawner: Spawner) {
 
     // Create flash peripheral for config storage
     let mut p_flash = Flash::new_blocking(p.FLASH);
+    let stored_config = flash_config::read_config(&mut p_flash);
 
     // Start encoder task early so sensor readings are available during FOC init
     unwrap!(spawner.spawn(encoder_task(sensor, secondary_sensor)));
 
-    let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, &mut p_flash).await else {
+    let Some(can_id) = init_foc(drvoff_pin, timer, p_adc, &mut p_flash, stored_config).await else {
         return;
     };
     CAN_ID.store(can_id, core::sync::atomic::Ordering::Relaxed);
