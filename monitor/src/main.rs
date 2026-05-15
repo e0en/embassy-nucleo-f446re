@@ -37,9 +37,8 @@ fn main() -> eframe::Result {
     thread::spawn(move || {
         forward_status(status_sender, rx_socket, rx_target_motor_can_id);
     });
-    let tx_target_motor_can_id = Arc::clone(&target_motor_can_id);
     thread::spawn(move || {
-        forward_command(command_receiver, tx_socket, tx_target_motor_can_id);
+        forward_command(command_receiver, tx_socket);
     });
 
     let options = eframe::NativeOptions {
@@ -59,15 +58,10 @@ fn main() -> eframe::Result {
     )
 }
 
-fn forward_command(
-    command_recv: Receiver<CommandMessage>,
-    socket: CanSocket,
-    target_motor_can_id: Arc<AtomicU8>,
-) {
+fn forward_command(command_recv: Receiver<CommandMessage>, socket: CanSocket) {
     loop {
         for mut command_msg in command_recv.try_iter() {
             command_msg.host_can_id = HOST_CAN_ID;
-            command_msg.motor_can_id = target_motor_can_id.load(Ordering::Relaxed);
             if let Ok(can_msg) = CanMessage::try_from(command_msg) {
                 match can_message_to_can_frame(&can_msg) {
                     Ok(frame) => {
@@ -151,10 +145,6 @@ struct MyApp {
     damping: f32,
 
     run_mode: RunMode,
-
-    frequency: f32,
-    is_non_inverted: bool,
-    last_nonzero_at: Instant,
 
     plot_type: PlotType,
     plot_points_1: [egui_plot::PlotPoint; MAX_PLOT_POINTS],
@@ -253,10 +243,6 @@ impl MyApp {
 
             spring,
             damping,
-
-            frequency: 0.0,
-            is_non_inverted: false,
-            last_nonzero_at: Instant::now(),
 
             plot_type: PlotType::Angle,
             run_mode: RunMode::Impedance,
@@ -607,76 +593,6 @@ impl eframe::App for MyApp {
                         ParameterValue::Damping,
                     );
                 });
-
-            let name_label = ui.label("On-off frequency");
-            let mut frequency_str = self.frequency.to_string();
-            ui.text_edit_singleline(&mut frequency_str)
-                .labelled_by(name_label.id);
-            match frequency_str.parse::<f32>() {
-                Ok(n) => self.frequency = n,
-                _ => self.frequency = 0.0,
-            }
-
-            if self.frequency > 0.0 {
-                let now = Instant::now();
-                let max_dt = Duration::from_millis((1000.0 / self.frequency) as u64);
-                if (now - self.last_nonzero_at) > max_dt {
-                    self.last_nonzero_at = now;
-                    if !self.is_non_inverted {
-                        match self.run_mode {
-                            RunMode::Angle => {
-                                self.send_command(Command::SetParameter(ParameterValue::AngleRef(
-                                    -self.angle,
-                                )));
-                            }
-                            RunMode::Velocity => {
-                                self.send_command(Command::SetParameter(ParameterValue::SpeedRef(
-                                    -self.velocity,
-                                )));
-                            }
-                            RunMode::Torque => {
-                                self.send_command(Command::SetParameter(ParameterValue::IqRef(
-                                    -self.iq,
-                                )));
-                            }
-                            RunMode::Voltage => {
-                                self.send_command(Command::SetParameter(ParameterValue::VqRef(
-                                    -self.vq,
-                                )));
-                            }
-                            _ => (),
-                        }
-                        self.is_non_inverted = true;
-                    } else {
-                        match self.run_mode {
-                            RunMode::Angle => {
-                                self.send_command(Command::SetParameter(ParameterValue::AngleRef(
-                                    self.angle,
-                                )));
-                            }
-                            RunMode::Velocity => {
-                                self.send_command(Command::SetParameter(ParameterValue::SpeedRef(
-                                    self.velocity,
-                                )));
-                            }
-                            RunMode::Torque => {
-                                self.send_command(Command::SetParameter(ParameterValue::IqRef(
-                                    self.iq,
-                                )));
-                            }
-                            RunMode::Voltage => {
-                                self.send_command(Command::SetParameter(ParameterValue::VqRef(
-                                    self.vq,
-                                )));
-                            }
-                            _ => (),
-                        }
-                        self.is_non_inverted = false;
-                    }
-                }
-            }
-
-            ui.end_row();
 
             if ui.button("disable").clicked() {
                 self.send_command(Command::Stop);

@@ -404,9 +404,11 @@ where
 
     pub fn stop(&mut self) {
         self.is_running = false;
+        self.reset();
     }
 
     pub fn enable(&mut self) {
+        self.reset();
         self.is_running = true;
     }
 
@@ -415,6 +417,8 @@ where
         self.current_d_pid.reset();
         self.angle_pid.reset();
         self.velocity_pid.reset();
+        self.current_q_filter.reset();
+        self.current_d_filter.reset();
     }
 
     pub fn set_run_mode(&mut self, mode: RunMode) {
@@ -816,6 +820,27 @@ mod tests {
         // x < y should return x
         assert!((fmodf(2.0, 5.0) - 2.0).abs() < 1e-6);
         assert!((fmodf(0.5, 1.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stop_and_enable_reset_controller_state() {
+        let mut controller = build_controller();
+        controller.current_q_pid.integral = 1.0;
+        controller.current_d_pid.integral = 2.0;
+        controller.angle_pid.integral = 3.0;
+        controller.velocity_pid.integral = 4.0;
+
+        controller.stop();
+
+        assert_eq!(controller.current_q_pid.integral, 0.0);
+        assert_eq!(controller.current_d_pid.integral, 0.0);
+        assert_eq!(controller.angle_pid.integral, 0.0);
+        assert_eq!(controller.velocity_pid.integral, 0.0);
+
+        controller.current_q_pid.integral = 5.0;
+        controller.enable();
+
+        assert_eq!(controller.current_q_pid.integral, 0.0);
     }
 
     #[test]

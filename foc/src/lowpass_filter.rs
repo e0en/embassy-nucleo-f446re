@@ -14,6 +14,10 @@ impl LowPassFilter {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.last_value = None;
+    }
+
     pub fn apply(&mut self, value: f32, dt_seconds: f32) -> f32 {
         if dt_seconds > MAX_DT_SECONDS {
             self.last_value = Some(value);
