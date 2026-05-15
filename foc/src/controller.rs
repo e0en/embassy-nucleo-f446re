@@ -586,6 +586,30 @@ where
 
         self.state.angle = s.angle;
         self.state.velocity = s.velocity;
+        let electrical_angle = self.to_electrical_angle(s.angle);
+
+        if !self.is_running {
+            self.state.angle_error = 0.0;
+            self.state.angle_integral = 0.0;
+            self.state.velocity_error = 0.0;
+            self.state.velocity_integral = 0.0;
+            self.state.i_ref = 0.0;
+            let (i_q, i_d) = if self.use_current_sensing {
+                self.calculate_pq_currents(measured_current, electrical_angle)
+            } else {
+                (0.0, 0.0)
+            };
+            self.state.i_q = i_q;
+            self.state.i_d = i_d;
+            self.state.v_q = 0.0;
+            self.state.v_d = 0.0;
+            self.state.i_q_error = 0.0;
+            self.state.i_q_integral = 0.0;
+            self.state.electrical_angle = electrical_angle;
+
+            let psu_voltage = self.psu_voltage.ok_or(FocError::PsuVoltageNotSet)?;
+            return svpwm(0.0, 0.0, electrical_angle, psu_voltage, &self.f_sincos);
+        }
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
                 let angle_error = self.target.angle - s.angle;
@@ -629,14 +653,10 @@ where
         if let Some(t) = self.torque_limit {
             i_ref = i_ref.min(t).max(-t);
         }
-
         self.state.i_ref = i_ref;
-        let electrical_angle = self.to_electrical_angle(s.angle);
 
         let (v_q, v_d) = {
-            if !self.is_running {
-                (0.0, 0.0)
-            } else if self.mode == RunMode::Voltage {
+            if self.mode == RunMode::Voltage {
                 (self.target.voltage, 0.0)
             } else if self.use_current_sensing {
                 self.state.electrical_angle = electrical_angle;
@@ -841,6 +861,39 @@ mod tests {
         controller.enable();
 
         assert_eq!(controller.current_q_pid.integral, 0.0);
+    }
+
+    #[test]
+    fn stopped_controller_reports_measured_current_and_zero_output() {
+        let mut controller = build_controller();
+        controller.set_psu_voltage(16.0);
+        controller.enable();
+        controller.state.i_q = 3.0;
+        controller.state.i_d = -1.0;
+        controller.state.i_ref = 2.0;
+        controller.set_target_velocity(5.0);
+        controller.set_run_mode(RunMode::Velocity);
+        controller.stop();
+
+        let duty = controller
+            .get_duty_cycle(
+                &AngleReading {
+                    angle: 1.0,
+                    velocity: 0.5,
+                    dt: 0.001,
+                },
+                PhaseCurrent::new(0.3, -0.1, -0.2),
+            )
+            .unwrap();
+
+        assert_eq!(controller.state.i_ref, 0.0);
+        assert_ne!(controller.state.i_q, 3.0);
+        assert_ne!(controller.state.i_d, -1.0);
+        assert_eq!(controller.state.v_q, 0.0);
+        assert_eq!(controller.state.v_d, 0.0);
+        assert_eq!(duty.t1, 0.5);
+        assert_eq!(duty.t2, 0.5);
+        assert_eq!(duty.t3, 0.5);
     }
 
     #[test]
