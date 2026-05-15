@@ -21,7 +21,7 @@ mod motor_tuning;
 mod pwm;
 mod velocity_tuning;
 
-use core::sync::atomic::{AtomicU8, AtomicU32};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use foc::angle_input::AngleReading;
 
@@ -119,9 +119,25 @@ use foc::{
     svpwm,
 };
 
-static ANGLE: AtomicU32 = AtomicU32::new(0);
-static VELOCITY: AtomicU32 = AtomicU32::new(0);
-static DT: AtomicU32 = AtomicU32::new(0);
+struct SensorSnapshotBuffer {
+    angle: AtomicU32,
+    velocity: AtomicU32,
+    dt: AtomicU32,
+}
+
+impl SensorSnapshotBuffer {
+    const fn new() -> Self {
+        Self {
+            angle: AtomicU32::new(0),
+            velocity: AtomicU32::new(0),
+            dt: AtomicU32::new(0),
+        }
+    }
+}
+
+static SENSOR_SNAPSHOTS: [SensorSnapshotBuffer; 2] =
+    [SensorSnapshotBuffer::new(), SensorSnapshotBuffer::new()];
+static ACTIVE_SENSOR_SNAPSHOT: AtomicU8 = AtomicU8::new(0);
 static ANGLE_2: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
 
@@ -995,6 +1011,29 @@ fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
     );
 }
 
+fn write_sensor_snapshot(reading: AngleReading) {
+    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
+    let next_index = active_index ^ 1;
+    let snapshot = &SENSOR_SNAPSHOTS[next_index];
+
+    snapshot.angle.store(
+        u32::from_le_bytes(reading.angle.to_le_bytes()),
+        Ordering::Relaxed,
+    );
+    snapshot.velocity.store(
+        u32::from_le_bytes(reading.velocity.to_le_bytes()),
+        Ordering::Relaxed,
+    );
+    snapshot.dt.store(
+        u32::from_le_bytes(reading.dt.to_le_bytes()),
+        Ordering::Relaxed,
+    );
+
+    // Writer runs in thread mode and reader runs in ADC ISR, so once the
+    // index is published the ISR can only observe a fully written snapshot.
+    ACTIVE_SENSOR_SNAPSHOT.store(next_index as u8, Ordering::Release);
+}
+
 #[embassy_executor::task]
 async fn encoder_task(
     mut sensor: As5047P<'static>,
@@ -1016,18 +1055,7 @@ async fn encoder_task(
                 let wrapped_angle =
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
                 let reading = tracker.update(wrapped_angle, Instant::now());
-                ANGLE.store(
-                    u32::from_le_bytes(reading.angle.to_le_bytes()),
-                    core::sync::atomic::Ordering::Relaxed,
-                );
-                VELOCITY.store(
-                    u32::from_le_bytes(reading.velocity.to_le_bytes()),
-                    core::sync::atomic::Ordering::Relaxed,
-                );
-                DT.store(
-                    u32::from_le_bytes(reading.dt.to_le_bytes()),
-                    core::sync::atomic::Ordering::Relaxed,
-                );
+                write_sensor_snapshot(reading);
             }
             Err(as5047p::Error::CommandFrame) => {
                 if sensor.read_and_reset_error_flag().await.is_err() {
@@ -1070,9 +1098,11 @@ async fn encoder_task(
 }
 
 fn read_sensor() -> AngleReading {
-    let raw_angle = ANGLE.load(core::sync::atomic::Ordering::Relaxed);
-    let raw_velocity = VELOCITY.load(core::sync::atomic::Ordering::Relaxed);
-    let raw_dt = DT.load(core::sync::atomic::Ordering::Relaxed);
+    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
+    let snapshot = &SENSOR_SNAPSHOTS[active_index];
+    let raw_angle = snapshot.angle.load(Ordering::Relaxed);
+    let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
+    let raw_dt = snapshot.dt.load(Ordering::Relaxed);
 
     AngleReading {
         angle: f32::from_le_bytes(raw_angle.to_le_bytes()),
