@@ -1,6 +1,7 @@
 use crate::current::PhaseCurrent;
 
 const INV_SQRT3: f32 = 0.577_350_26;
+const TWO_PI: f32 = 2.0 * core::f32::consts::PI;
 
 /// Default velocity output limit (volts per second)
 const DEFAULT_VELOCITY_OUTPUT_LIMIT: f32 = 1000.0;
@@ -18,6 +19,15 @@ fn fmodf(x: f32, y: f32) -> f32 {
         -((-quot) as i32 as f32)
     };
     x - trunc_quot * y
+}
+
+#[inline]
+fn wrap_0_tau(angle: f32) -> f32 {
+    let mut wrapped = fmodf(angle, TWO_PI);
+    if wrapped < 0.0 {
+        wrapped += TWO_PI;
+    }
+    wrapped
 }
 
 use crate::{
@@ -394,12 +404,16 @@ where
     }
 
     pub fn to_electrical_angle(&self, mechanical_angle: f32) -> f32 {
-        let mut full_angle =
-            (mechanical_angle - self.bias_angle) * (self.motor.pole_pair_count as f32);
-        if self.sensor_direction == Direction::CounterClockWise {
-            full_angle *= -1.0;
-        }
-        fmodf(full_angle, 2.0 * core::f32::consts::PI)
+        // Keep the mechanical delta wrapped before scaling to electrical angle.
+        // Using a monotonically growing mechanical angle here eventually loses
+        // enough f32 resolution to destabilize the phase estimate.
+        let wrapped_mechanical = wrap_0_tau(mechanical_angle - self.bias_angle);
+        let signed_mechanical = if self.sensor_direction == Direction::CounterClockWise {
+            -wrapped_mechanical
+        } else {
+            wrapped_mechanical
+        };
+        wrap_0_tau(signed_mechanical * (self.motor.pole_pair_count as f32))
     }
 
     pub fn stop(&mut self) {
@@ -586,7 +600,7 @@ where
 
         self.state.angle = s.angle;
         self.state.velocity = s.velocity;
-        let electrical_angle = self.to_electrical_angle(s.angle);
+        let electrical_angle = self.to_electrical_angle(s.phase_angle);
 
         if !self.is_running {
             self.state.angle_error = 0.0;
@@ -879,6 +893,7 @@ mod tests {
             .get_duty_cycle(
                 &AngleReading {
                     angle: 1.0,
+                    phase_angle: 1.0,
                     velocity: 0.5,
                     dt: 0.001,
                 },
@@ -993,6 +1008,7 @@ mod tests {
         controller.set_target_angle(1.0);
         let reading = AngleReading {
             angle: 0.0,
+            phase_angle: 0.0,
             velocity: 0.0,
             dt: 0.001,
         };
@@ -1001,5 +1017,44 @@ mod tests {
 
         assert_eq!(controller.target.velocity, 0.0);
         assert!(controller.state.velocity_error > 0.0);
+    }
+
+    #[test]
+    fn voltage_mode_uses_wrapped_phase_angle() {
+        use core::f32::consts::PI;
+
+        let mut controller = build_controller();
+        controller.set_psu_voltage(16.0);
+        controller.enable();
+        controller.set_run_mode(RunMode::Voltage);
+        controller.set_target_voltage(2.0);
+
+        let phase_angle = 1.1;
+        let duty_a = controller
+            .get_duty_cycle(
+                &AngleReading {
+                    angle: phase_angle,
+                    phase_angle,
+                    velocity: 0.0,
+                    dt: 0.001,
+                },
+                PhaseCurrent::new(0.0, 0.0, 0.0),
+            )
+            .unwrap();
+        let duty_b = controller
+            .get_duty_cycle(
+                &AngleReading {
+                    angle: phase_angle + 40_000.0 * PI,
+                    phase_angle,
+                    velocity: 0.0,
+                    dt: 0.001,
+                },
+                PhaseCurrent::new(0.0, 0.0, 0.0),
+            )
+            .unwrap();
+
+        assert!((duty_a.t1 - duty_b.t1).abs() < 1e-6);
+        assert!((duty_a.t2 - duty_b.t2).abs() < 1e-6);
+        assert!((duty_a.t3 - duty_b.t3).abs() < 1e-6);
     }
 }

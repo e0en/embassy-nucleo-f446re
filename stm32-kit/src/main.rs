@@ -121,6 +121,7 @@ use foc::{
 
 struct SensorSnapshotBuffer {
     angle: AtomicU32,
+    phase_angle: AtomicU32,
     velocity: AtomicU32,
     dt: AtomicU32,
 }
@@ -129,6 +130,7 @@ impl SensorSnapshotBuffer {
     const fn new() -> Self {
         Self {
             angle: AtomicU32::new(0),
+            phase_angle: AtomicU32::new(0),
             velocity: AtomicU32::new(0),
             dt: AtomicU32::new(0),
         }
@@ -1062,6 +1064,10 @@ fn write_sensor_snapshot(reading: AngleReading) {
         u32::from_le_bytes(reading.angle.to_le_bytes()),
         Ordering::Relaxed,
     );
+    snapshot.phase_angle.store(
+        u32::from_le_bytes(reading.phase_angle.to_le_bytes()),
+        Ordering::Relaxed,
+    );
     snapshot.velocity.store(
         u32::from_le_bytes(reading.velocity.to_le_bytes()),
         Ordering::Relaxed,
@@ -1143,11 +1149,13 @@ fn read_sensor() -> AngleReading {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
     let raw_angle = snapshot.angle.load(Ordering::Relaxed);
+    let raw_phase_angle = snapshot.phase_angle.load(Ordering::Relaxed);
     let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
     let raw_dt = snapshot.dt.load(Ordering::Relaxed);
 
     AngleReading {
         angle: f32::from_le_bytes(raw_angle.to_le_bytes()),
+        phase_angle: f32::from_le_bytes(raw_phase_angle.to_le_bytes()),
         velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }

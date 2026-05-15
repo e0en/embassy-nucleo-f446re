@@ -62,6 +62,7 @@ pub fn set_runtime_correction(correction: EncoderCorrection) {
 pub struct AngleTracker {
     previous_wrapped_angle: Option<f32>,
     cumulative_angle: f32,
+    observer_angle: f32,
     previous_time: Instant,
     observer: TrackingObserver,
 }
@@ -71,6 +72,7 @@ impl AngleTracker {
         Self {
             previous_wrapped_angle: None,
             cumulative_angle: 0.0,
+            observer_angle: 0.0,
             previous_time: Instant::from_secs(0),
             observer: TrackingObserver::new(observer_bandwidth_hz),
         }
@@ -83,8 +85,10 @@ impl AngleTracker {
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
                 self.cumulative_angle = wrapped_angle;
+                self.observer_angle = wrapped_angle;
                 AngleReading {
                     angle: self.cumulative_angle,
+                    phase_angle: wrapped_angle,
                     velocity: 0.0,
                     dt: 0.0,
                 }
@@ -96,11 +100,21 @@ impl AngleTracker {
                     .unwrap_or(0.0);
                 let delta = wrap_pm_pi(wrapped_angle - previous_wrapped_angle);
                 self.cumulative_angle += delta;
-                let velocity = self.observer.update(self.cumulative_angle, dt);
+                self.observer_angle += delta;
+                if self.observer_angle > PI {
+                    self.observer_angle -= TAU;
+                    self.observer.angle -= TAU;
+                } else if self.observer_angle < -PI {
+                    self.observer_angle += TAU;
+                    self.observer.angle += TAU;
+                }
+
+                let velocity = self.observer.update(self.observer_angle, dt);
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
                 AngleReading {
                     angle: self.cumulative_angle,
+                    phase_angle: wrapped_angle,
                     velocity,
                     dt,
                 }
@@ -253,5 +267,28 @@ mod tests {
         assert!(correction.valid);
         let corrected = correction.correct_wrapped_angle(0.0);
         assert!((corrected - 0.05).abs() < 0.02);
+    }
+
+    #[test]
+    fn angle_tracker_velocity_stays_stable_across_many_turns() {
+        let mut tracker = AngleTracker::new(20.0);
+        let dt = 0.001;
+        let velocity = -80.0;
+        let mut now = Instant::from_micros(0);
+        let mut wrapped_angle = 0.0;
+        let mut last_velocity = 0.0;
+
+        let _ = tracker.update(wrapped_angle, now);
+
+        for _ in 0..120_000 {
+            now += embassy_time::Duration::from_micros(1_000);
+            wrapped_angle = wrap_0_tau(wrapped_angle + velocity * dt);
+            last_velocity = tracker.update(wrapped_angle, now).velocity;
+        }
+
+        assert!(
+            (last_velocity - velocity).abs() < 0.5,
+            "velocity drifted: measured={last_velocity}, expected={velocity}"
+        );
     }
 }

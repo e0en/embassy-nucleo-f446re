@@ -174,6 +174,7 @@ impl<'d> AngleInput for As5048A<'d> {
                 self.previous_angle = Radian(raw_angle as f32 * RAW_TO_RADIAN);
                 Ok(AngleReading {
                     angle: self.previous_angle,
+                    phase_angle: self.previous_angle,
                     velocity: RadianPerSecond(0.0),
                     dt: Second(0.0),
                 })
@@ -222,6 +223,7 @@ impl<'d> AngleInput for As5048A<'d> {
                 self.previous_time = now;
                 Ok(AngleReading {
                     angle: angle + TWO_PI * self.full_rotations as f32,
+                    phase_angle: Radian(raw_angle as f32 * RAW_TO_RADIAN),
                     velocity,
                     dt,
                 })

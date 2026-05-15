@@ -129,6 +129,7 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
             let sensor_reading = read_sensor();
             let reading = AngleReading {
                 angle: sensor_reading.angle,
+                phase_angle: sensor_reading.phase_angle,
                 velocity: sensor_reading.velocity,
                 dt: CONTROL_LOOP_DT_SECONDS,
             };

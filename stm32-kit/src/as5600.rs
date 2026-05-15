@@ -125,6 +125,7 @@ impl AngleInput for As5600 {
                 self.previous_angle = Radian(raw_angle as f32 * RAW_TO_RADIAN);
                 Ok(AngleReading {
                     angle: self.previous_angle,
+                    phase_angle: self.previous_angle,
                     velocity: RadianPerSecond(0.0),
                     dt: Second(0.0),
                 })
@@ -173,6 +174,7 @@ impl AngleInput for As5600 {
                 self.previous_time = now;
                 Ok(AngleReading {
                     angle: angle + 2.0 * core::f32::consts::PI * self.full_rotations as f32,
+                    phase_angle: Radian(raw_angle as f32 * RAW_TO_RADIAN),
                     velocity,
                     dt,
                 })

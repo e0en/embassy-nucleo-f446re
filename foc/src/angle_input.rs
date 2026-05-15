@@ -1,5 +1,6 @@
 pub struct AngleReading {
     pub angle: f32,
+    pub phase_angle: f32,
     pub velocity: f32,
     pub dt: f32,
 }
