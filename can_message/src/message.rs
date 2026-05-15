@@ -39,6 +39,7 @@ pub struct ResponseMessage {
 pub enum ResponseBody {
     MotorStatus(MotorStatus),
     MotorCurrent(MotorCurrent),
+    DebugValue(DebugValue),
     ParameterValue(ParameterValue),
 }
 
@@ -224,6 +225,9 @@ impl ResponseMessage {
 pub enum FeedbackType {
     Status = 0x00,
     Current = 0x01,
+    SpeedError = 0x02,
+    IqRef = 0x03,
+    VelocityIntegral = 0x04,
 }
 
 impl TryFrom<u8> for FeedbackType {
@@ -232,8 +236,53 @@ impl TryFrom<u8> for FeedbackType {
         match value {
             0x00 => Ok(Self::Status),
             0x01 => Ok(Self::Current),
+            0x02 => Ok(Self::SpeedError),
+            0x03 => Ok(Self::IqRef),
+            0x04 => Ok(Self::VelocityIntegral),
             _ => Err(()),
         }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum DebugValueKind {
+    SpeedError,
+    IqRef,
+    VelocityIntegral,
+}
+
+#[derive(Copy, Clone)]
+pub struct DebugValue {
+    pub kind: DebugValueKind,
+    pub value: f32,
+}
+
+impl DebugValue {
+    fn response_type(&self) -> u32 {
+        match self.kind {
+            DebugValueKind::SpeedError => 0x18,
+            DebugValueKind::IqRef => 0x19,
+            DebugValueKind::VelocityIntegral => 0x1A,
+        }
+    }
+}
+
+impl From<[u8; 8]> for DebugValue {
+    fn from(val: [u8; 8]) -> DebugValue {
+        let mut f32_buffer = [0x00u8; 4];
+        f32_buffer.copy_from_slice(&val[0..4]);
+        DebugValue {
+            kind: DebugValueKind::SpeedError,
+            value: f32::from_le_bytes(f32_buffer),
+        }
+    }
+}
+
+impl From<DebugValue> for [u8; 8] {
+    fn from(val: DebugValue) -> [u8; 8] {
+        let mut data = [0x00u8; 8];
+        data[0..4].copy_from_slice(&val.value.to_le_bytes());
+        data
     }
 }
 
@@ -336,6 +385,18 @@ impl TryFrom<CanMessage> for ResponseMessage {
                 let motor_current = MotorCurrent::from(val.data);
                 ResponseBody::MotorCurrent(motor_current)
             }
+            0x18 => ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::SpeedError,
+                ..DebugValue::from(val.data)
+            }),
+            0x19 => ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::IqRef,
+                ..DebugValue::from(val.data)
+            }),
+            0x1A => ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::VelocityIntegral,
+                ..DebugValue::from(val.data)
+            }),
             _ => return Err(()),
         };
         Ok(ResponseMessage {
@@ -352,12 +413,14 @@ impl TryFrom<ResponseMessage> for CanMessage {
         let response_type = match val.body {
             ResponseBody::MotorStatus(_) => 0x02,
             ResponseBody::MotorCurrent(_) => 0x17,
+            ResponseBody::DebugValue(x) => x.response_type(),
             ResponseBody::ParameterValue(_) => 0x11,
         };
         let id = (response_type << 24) | (val.motor_can_id as u32) << 8 | (val.host_can_id as u32);
         let data = match val.body {
             ResponseBody::MotorStatus(x) => x.into(),
             ResponseBody::MotorCurrent(x) => x.into(),
+            ResponseBody::DebugValue(x) => x.into(),
             ResponseBody::ParameterValue(x) => x.into(),
         };
         Ok(CanMessage {
@@ -555,6 +618,19 @@ mod tests {
     }
 
     #[test]
+    fn debug_value_roundtrip() {
+        let debug = DebugValue {
+            kind: DebugValueKind::VelocityIntegral,
+            value: -1.25,
+        };
+
+        let bytes: [u8; 8] = debug.into();
+        let decoded = DebugValue::from(bytes);
+
+        assert!(approx_eq(decoded.value, debug.value, 0.0001));
+    }
+
+    #[test]
     fn parameter_value_f32_roundtrip() {
         let pv = ParameterValue::IqRef(core::f32::consts::PI);
 
@@ -601,6 +677,31 @@ mod tests {
         assert_eq!(decoded.motor_can_id, 0x0F);
         assert_eq!(decoded.host_can_id, 0x01);
         assert!(matches!(decoded.body, ResponseBody::MotorStatus(_)));
+    }
+
+    #[test]
+    fn response_message_debug_value_roundtrip() {
+        let msg = ResponseMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x01,
+            body: ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::SpeedError,
+                value: 3.5,
+            }),
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        let decoded = ResponseMessage::try_from(can_msg).unwrap();
+
+        assert_eq!(decoded.motor_can_id, 0x0F);
+        assert_eq!(decoded.host_can_id, 0x01);
+        assert!(matches!(
+            decoded.body,
+            ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::SpeedError,
+                ..
+            })
+        ));
     }
 
     #[test]

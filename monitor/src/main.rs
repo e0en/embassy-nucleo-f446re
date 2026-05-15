@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use std::{f32, thread};
 
 use can_message::message::{
-    CanMessage, Command, CommandMessage, FeedbackType, ParameterIndex, ParameterValue,
-    ResponseBody, ResponseMessage, RunMode,
+    CanMessage, Command, CommandMessage, DebugValueKind, FeedbackType, ParameterIndex,
+    ParameterValue, ResponseBody, ResponseMessage, RunMode,
 };
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
@@ -103,6 +103,7 @@ struct MyApp {
     selected_tab: usize,
     new_tab_can_id_string: String,
     file_dialog: egui_file_dialog::FileDialog,
+    pending_export_points: Option<Vec<egui_plot::PlotPoint>>,
 }
 
 struct MotorTab {
@@ -154,6 +155,9 @@ enum PlotType {
     Velocity,
     Torque,
     Current,
+    SpeedError,
+    IRef,
+    VelocityIntegral,
 }
 
 impl MotorTab {
@@ -219,6 +223,9 @@ impl MotorTab {
     fn current_feedback_type(&self) -> FeedbackType {
         match self.plot_type {
             PlotType::Current => FeedbackType::Current,
+            PlotType::SpeedError => FeedbackType::SpeedError,
+            PlotType::IRef => FeedbackType::IqRef,
+            PlotType::VelocityIntegral => FeedbackType::VelocityIntegral,
             PlotType::Angle | PlotType::Velocity | PlotType::Torque => FeedbackType::Status,
         }
     }
@@ -243,14 +250,25 @@ impl MotorTab {
     fn apply_response(&mut self, response: &ResponseBody) {
         match response {
             ResponseBody::MotorStatus(x) => {
-                if !self.is_plotting || self.plot_type == PlotType::Current {
+                if !self.is_plotting
+                    || matches!(
+                        self.plot_type,
+                        PlotType::Current
+                            | PlotType::SpeedError
+                            | PlotType::IRef
+                            | PlotType::VelocityIntegral
+                    )
+                {
                     return;
                 }
                 let y = match self.plot_type {
                     PlotType::Angle => x.angle as f64,
                     PlotType::Velocity => x.velocity as f64,
                     PlotType::Torque => x.torque as f64,
-                    PlotType::Current => return,
+                    PlotType::Current
+                    | PlotType::SpeedError
+                    | PlotType::IRef
+                    | PlotType::VelocityIntegral => return,
                 };
                 self.push_plot_points(y, None);
             }
@@ -259,6 +277,21 @@ impl MotorTab {
                     return;
                 }
                 self.push_plot_points(x.i_q as f64, Some(x.i_d as f64));
+            }
+            ResponseBody::DebugValue(x) => {
+                if !self.is_plotting {
+                    return;
+                }
+                let expected_kind = match self.plot_type {
+                    PlotType::SpeedError => Some(DebugValueKind::SpeedError),
+                    PlotType::IRef => Some(DebugValueKind::IqRef),
+                    PlotType::VelocityIntegral => Some(DebugValueKind::VelocityIntegral),
+                    _ => None,
+                };
+                if expected_kind != Some(x.kind) {
+                    return;
+                }
+                self.push_plot_points(x.value as f64, None);
             }
             ResponseBody::ParameterValue(pv) => match pv {
                 ParameterValue::RunMode(x) => self.run_mode = *x,
@@ -321,6 +354,7 @@ impl MyApp {
             selected_tab: 0,
             new_tab_can_id_string: DEFAULT_MOTOR_CAN_ID.to_string(),
             file_dialog: egui_file_dialog::FileDialog::new(),
+            pending_export_points: None,
         };
         app.request_initial_parameters(DEFAULT_MOTOR_CAN_ID);
         app
@@ -662,6 +696,13 @@ impl MyApp {
                     ui.selectable_value(&mut tab.plot_type, PlotType::Velocity, "Velocity");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Torque, "Torque");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Current, "Current");
+                    ui.selectable_value(&mut tab.plot_type, PlotType::SpeedError, "Speed Error");
+                    ui.selectable_value(&mut tab.plot_type, PlotType::IRef, "I Ref");
+                    ui.selectable_value(
+                        &mut tab.plot_type,
+                        PlotType::VelocityIntegral,
+                        "Speed Int",
+                    );
                 });
                 if before != tab.plot_type {
                     queued_commands.push(Command::SetFeedbackType(tab.current_feedback_type()));
@@ -723,6 +764,10 @@ impl MyApp {
             }
 
             if export_requested {
+                self.pending_export_points = self
+                    .selected_tab()
+                    .map(|tab| tab.plot_points_1.iter().copied().collect::<Vec<_>>());
+                self.file_dialog = egui_file_dialog::FileDialog::new();
                 self.file_dialog.save_file();
             }
 
@@ -731,11 +776,8 @@ impl MyApp {
                 .update(ui.ctx())
                 .picked()
                 .map(|path| path.to_path_buf());
-            let export_points = self
-                .selected_tab()
-                .map(|tab| tab.plot_points_1.iter().copied().collect::<Vec<_>>());
             if let Some(path) = picked_path
-                && let Some(points) = export_points
+                && let Some(points) = self.pending_export_points.take()
                 && let Ok(mut file) = File::create(path)
             {
                 for point in &points {

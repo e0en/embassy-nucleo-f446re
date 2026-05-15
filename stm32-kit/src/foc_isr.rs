@@ -9,7 +9,9 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use critical_section::Mutex;
 use embassy_stm32::pac;
 
-use can_message::message::{FeedbackType, MotorCurrent, MotorStatus, ResponseBody};
+use can_message::message::{
+    DebugValue, DebugValueKind, FeedbackType, MotorCurrent, MotorStatus, ResponseBody,
+};
 use foc::angle_input::AngleReading;
 use foc::controller::{FocController, FocState, RunMode};
 use foc::current::PhaseCurrent;
@@ -69,6 +71,9 @@ pub fn set_feedback_type(typ: FeedbackType) {
     let val = match typ {
         FeedbackType::Status => 0,
         FeedbackType::Current => 1,
+        FeedbackType::SpeedError => 2,
+        FeedbackType::IqRef => 3,
+        FeedbackType::VelocityIntegral => 4,
     };
     FEEDBACK_TYPE.store(val, Ordering::Relaxed);
 }
@@ -190,9 +195,21 @@ fn send_feedback(state: &FocState) {
             torque: state.i_q,
             temperature: 0.0,
         }),
-        _ => ResponseBody::MotorCurrent(MotorCurrent {
+        1 => ResponseBody::MotorCurrent(MotorCurrent {
             i_q: state.i_q,
             i_d: state.i_d,
+        }),
+        2 => ResponseBody::DebugValue(DebugValue {
+            kind: DebugValueKind::SpeedError,
+            value: state.velocity_error,
+        }),
+        3 => ResponseBody::DebugValue(DebugValue {
+            kind: DebugValueKind::IqRef,
+            value: state.i_ref,
+        }),
+        _ => ResponseBody::DebugValue(DebugValue {
+            kind: DebugValueKind::VelocityIntegral,
+            value: state.velocity_integral,
         }),
     };
 
