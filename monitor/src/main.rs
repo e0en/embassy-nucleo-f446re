@@ -274,12 +274,23 @@ impl MyApp {
         self.target_motor_can_id.load(Ordering::Relaxed)
     }
 
+    fn set_target_motor_can_id(&mut self, new_id: u8) {
+        self.target_motor_can_id.store(new_id, Ordering::Relaxed);
+        self.n_plot_points = 0;
+        self.request_initial_parameters();
+    }
+
     fn send_command(&self, command: Command) {
         let _ = self.command_send.send(CommandMessage {
             host_can_id: HOST_CAN_ID,
             motor_can_id: self.current_motor_can_id(),
             command,
         });
+    }
+
+    fn send_set_can_id(&mut self, new_id: u8) {
+        self.send_command(Command::SetCanId(new_id));
+        self.set_target_motor_can_id(new_id);
     }
 
     fn request_initial_parameters(&self) {
@@ -415,9 +426,15 @@ impl eframe::App for MyApp {
                     .clicked()
                     && let Some(new_id) = parsed_id
                 {
-                    self.target_motor_can_id.store(new_id, Ordering::Relaxed);
-                    self.n_plot_points = 0;
-                    self.request_initial_parameters();
+                    self.set_target_motor_can_id(new_id);
+                }
+
+                if ui
+                    .add_enabled(parsed_id.is_some(), egui::Button::new("Set on motor"))
+                    .clicked()
+                    && let Some(new_id) = parsed_id
+                {
+                    self.send_set_can_id(new_id);
                 }
 
                 ui.label(format!("Current: {}", self.current_motor_can_id()));
@@ -561,14 +578,14 @@ impl eframe::App for MyApp {
                     if !self.is_non_inverted {
                         match self.run_mode {
                             RunMode::Angle => {
-                                self.send_command(Command::SetParameter(
-                                    ParameterValue::AngleRef(-self.angle),
-                                ));
+                                self.send_command(Command::SetParameter(ParameterValue::AngleRef(
+                                    -self.angle,
+                                )));
                             }
                             RunMode::Velocity => {
-                                self.send_command(Command::SetParameter(
-                                    ParameterValue::SpeedRef(-self.velocity),
-                                ));
+                                self.send_command(Command::SetParameter(ParameterValue::SpeedRef(
+                                    -self.velocity,
+                                )));
                             }
                             RunMode::Torque => {
                                 self.send_command(Command::SetParameter(ParameterValue::IqRef(
@@ -586,14 +603,14 @@ impl eframe::App for MyApp {
                     } else {
                         match self.run_mode {
                             RunMode::Angle => {
-                                self.send_command(Command::SetParameter(
-                                    ParameterValue::AngleRef(self.angle),
-                                ));
+                                self.send_command(Command::SetParameter(ParameterValue::AngleRef(
+                                    self.angle,
+                                )));
                             }
                             RunMode::Velocity => {
-                                self.send_command(Command::SetParameter(
-                                    ParameterValue::SpeedRef(self.velocity),
-                                ));
+                                self.send_command(Command::SetParameter(ParameterValue::SpeedRef(
+                                    self.velocity,
+                                )));
                             }
                             RunMode::Torque => {
                                 self.send_command(Command::SetParameter(ParameterValue::IqRef(
