@@ -59,7 +59,7 @@ const CAN_BITRATE: u32 = 1_000_000;
 const CAN_RECOVERY_REINIT_INTERVAL_MS: u64 = 100;
 const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
-const HOST_CAN_ID: u8 = 0;
+const DEFAULT_HOST_CAN_ID: u8 = 0;
 const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 const AS5047P_RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / ((1 << 14) as f32);
 const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
@@ -125,9 +125,10 @@ static DT: AtomicU32 = AtomicU32::new(0);
 static ANGLE_2: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
 
-static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, Command, 32> = Channel::new();
+static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, can_message::message::CommandMessage, 32> =
+    Channel::new();
 /// Response channel uses CriticalSectionRawMutex because it's accessed from ADC interrupt
-static RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, ResponseBody, 64> = Channel::new();
+static RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, QueuedResponse, 64> = Channel::new();
 
 type SpiMutex = embassy_sync::mutex::Mutex<
     embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
@@ -149,6 +150,12 @@ type CanPropertiesMutex =
 static CAN_PROPERTIES: CanPropertiesMutex = CanPropertiesMutex::new(None);
 
 type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
+
+#[derive(Clone, Copy)]
+struct QueuedResponse {
+    host_can_id: u8,
+    body: ResponseBody,
+}
 
 fn create_foc_controller(use_current_sensing: bool) -> FocControllerType {
     let mut foc = FocController::new(
@@ -843,13 +850,16 @@ async fn command_task() {
     let response_sender = RESPONSE_CHANNEL.sender();
 
     loop {
-        let command = command_receiver.receive().await;
+        let message = command_receiver.receive().await;
+        let command = message.command;
 
         match command {
             Command::SetFeedbackInterval(period) => {
+                foc_isr::set_feedback_host_can_id(message.host_can_id);
                 foc_isr::set_feedback_period(period);
             }
             Command::SetFeedbackType(typ) => {
+                foc_isr::set_feedback_host_can_id(message.host_can_id);
                 foc_isr::set_feedback_type(typ);
             }
             Command::Recalibrate => {
@@ -886,7 +896,7 @@ async fn command_task() {
                 }
             }
             _ => {
-                handle_command_isr(&command, &response_sender).await;
+                handle_command_isr(&command, message.host_can_id, &response_sender).await;
             }
         }
     }
@@ -894,7 +904,8 @@ async fn command_task() {
 
 async fn handle_command_isr(
     command: &Command,
-    response_sender: &Sender<'static, CriticalSectionRawMutex, ResponseBody, 64>,
+    host_can_id: u8,
+    response_sender: &Sender<'static, CriticalSectionRawMutex, QueuedResponse, 64>,
 ) {
     match command {
         Command::Enable => {
@@ -930,6 +941,10 @@ async fn handle_command_isr(
         }
     }
 
+    if let Command::RequestStatus(_) = command {
+        foc_isr::set_feedback_host_can_id(host_can_id);
+    }
+
     if let Command::GetParameter(p) = command {
         info!("parameter requested {}", *p as u16);
         let pv = foc_isr::with_foc(|foc| {
@@ -956,8 +971,12 @@ async fn handle_command_isr(
             )
         });
         if let Some(pv) = pv {
-            let body = ResponseBody::ParameterValue(pv);
-            response_sender.send(body).await;
+            response_sender
+                .send(QueuedResponse {
+                    host_can_id,
+                    body: ResponseBody::ParameterValue(pv),
+                })
+                .await;
         }
     }
 }
@@ -1069,7 +1088,7 @@ async fn can_tx_task(mut can_tx: CanTx<'static>) {
     loop {
         let r = response_receiver.receive().await;
         let can_id = CAN_ID.load(core::sync::atomic::Ordering::Relaxed);
-        let message = ResponseMessage::new(can_id, HOST_CAN_ID, r);
+        let message = ResponseMessage::new(can_id, r.host_can_id, r.body);
         if let Ok(frame) = convert_response_message(message) {
             can_tx.write(&frame).await;
         }
@@ -1095,7 +1114,14 @@ async fn can_rx_task(mut can_rx: CanRx<'static>) {
                         save_can_id_to_flash(new_can_id).await;
                     }
                     cmd => {
-                        if command_sender.try_send(cmd).is_err() {
+                        if command_sender
+                            .try_send(can_message::message::CommandMessage {
+                                motor_can_id: message.motor_can_id,
+                                host_can_id: message.host_can_id,
+                                command: cmd,
+                            })
+                            .is_err()
+                        {
                             warn!("failed to send cmd");
                         }
                     }

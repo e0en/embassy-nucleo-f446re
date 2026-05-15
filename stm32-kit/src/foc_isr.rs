@@ -4,7 +4,7 @@
 //! synchronized with PWM updates for deterministic timing.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 
 use critical_section::Mutex;
 use embassy_stm32::pac;
@@ -31,6 +31,8 @@ static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new
 static FEEDBACK_TYPE: AtomicU8 = AtomicU8::new(0); // 0 = Status, 1 = Current
 static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(100);
 static FEEDBACK_COUNTER: AtomicU8 = AtomicU8::new(0);
+static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(crate::DEFAULT_HOST_CAN_ID);
+static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
 
 static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);
 
@@ -69,6 +71,11 @@ pub fn set_feedback_type(typ: FeedbackType) {
 
 pub fn set_feedback_period(period: u8) {
     FEEDBACK_PERIOD.store(period, Ordering::Relaxed);
+}
+
+pub fn set_feedback_host_can_id(host_can_id: u8) {
+    FEEDBACK_HOST_CAN_ID.store(host_can_id, Ordering::Relaxed);
+    FEEDBACK_HOST_CAN_ID_SET.store(true, Ordering::Relaxed);
 }
 
 pub fn get_loop_counter() -> u16 {
@@ -163,7 +170,12 @@ fn set_pwm_duty(duty: DutyCycle3Phase) {
 
 #[inline(always)]
 fn send_feedback(state: &FocState) {
+    if !FEEDBACK_HOST_CAN_ID_SET.load(Ordering::Relaxed) {
+        return;
+    }
+
     let feedback_type = FEEDBACK_TYPE.load(Ordering::Relaxed);
+    let host_can_id = FEEDBACK_HOST_CAN_ID.load(Ordering::Relaxed);
     let sender = RESPONSE_CHANNEL.sender();
 
     let body = match feedback_type {
@@ -180,5 +192,5 @@ fn send_feedback(state: &FocState) {
     };
 
     // Non-blocking send - drop if channel is full
-    let _ = sender.try_send(body);
+    let _ = sender.try_send(crate::QueuedResponse { host_can_id, body });
 }
