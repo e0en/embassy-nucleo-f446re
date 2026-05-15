@@ -118,6 +118,7 @@ struct MyApp {
     status_recv: Receiver<ResponseMessage>,
     target_motor_can_id: Arc<AtomicU8>,
     target_motor_can_id_string: String,
+    feedback_interval_string: String,
 
     angle_string: String,
     velocity_string: String,
@@ -221,6 +222,7 @@ impl MyApp {
             status_recv,
             target_motor_can_id,
             target_motor_can_id_string: format!("{DEFAULT_MOTOR_CAN_ID}"),
+            feedback_interval_string: "20".to_owned(),
 
             angle_string: angle.to_string(),
             velocity_string: velocity.to_string(),
@@ -304,6 +306,17 @@ impl MyApp {
         sleep(Duration::from_millis(1));
         self.send_command(Command::GetParameter(ParameterIndex::CurrentKi));
         sleep(Duration::from_millis(1));
+    }
+
+    fn current_feedback_type(&self) -> FeedbackType {
+        match self.plot_type {
+            PlotType::Current => FeedbackType::Current,
+            PlotType::Angle | PlotType::Velocity | PlotType::Torque => FeedbackType::Status,
+        }
+    }
+
+    fn send_feedback_request(&self) {
+        self.send_command(Command::RequestStatus(HOST_CAN_ID));
     }
 }
 
@@ -454,6 +467,40 @@ impl eframe::App for MyApp {
                     self.run_mode,
                 )));
             }
+
+            ui.separator();
+            ui.label("Feedback");
+            ui.horizontal(|ui| {
+                if ui.button("Start feedback").clicked() {
+                    self.send_command(Command::SetFeedbackType(self.current_feedback_type()));
+                    self.send_feedback_request();
+                }
+
+                if ui.button("Send status request").clicked() {
+                    self.send_feedback_request();
+                }
+
+                if ui.button("Apply plot type").clicked() {
+                    self.send_command(Command::SetFeedbackType(self.current_feedback_type()));
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let name_label = ui.label("Feedback interval");
+                ui.text_edit_singleline(&mut self.feedback_interval_string)
+                    .labelled_by(name_label.id);
+
+                let parsed_interval = self.feedback_interval_string.parse::<u8>().ok();
+                if ui
+                    .add_enabled(parsed_interval.is_some(), egui::Button::new("Set interval"))
+                    .clicked()
+                    && let Some(period) = parsed_interval
+                {
+                    self.send_command(Command::SetFeedbackInterval(period));
+                }
+
+                ui.label("raw ticks");
+            });
 
             let current_motor_can_id = self.current_motor_can_id();
             egui::Grid::new("params")
