@@ -924,7 +924,17 @@ async fn command_task() {
                 info!("SetZeroPosition command received");
                 let (primary_angle, secondary_angle) = read_zero_reference_angles();
                 write_zero_offsets(primary_angle, secondary_angle);
-                foc_isr::with_foc(|foc| foc.set_target_angle(0.0));
+                foc_isr::with_foc(|foc| {
+                    foc.reset();
+                    foc.set_target_angle(0.0);
+                    foc.state.angle = 0.0;
+                    foc.state.angular_change = 0.0;
+                    foc.state.velocity = 0.0;
+                    foc.state.angle_error = 0.0;
+                    foc.state.angle_integral = 0.0;
+                    foc.state.velocity_error = 0.0;
+                    foc.state.velocity_integral = 0.0;
+                });
             }
             Command::RunMotorTuning => {
                 info!("RunMotorTuning command received, clearing config and resetting");
