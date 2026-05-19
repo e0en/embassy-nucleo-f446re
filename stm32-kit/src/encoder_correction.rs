@@ -61,7 +61,8 @@ pub fn set_runtime_correction(correction: EncoderCorrection) {
 
 pub struct AngleTracker {
     previous_wrapped_angle: Option<f32>,
-    cumulative_angle: f32,
+    full_turns: i32,
+    residual_angle: f32,
     observer_angle: f32,
     previous_time: Instant,
     observer: TrackingObserver,
@@ -71,11 +72,16 @@ impl AngleTracker {
     pub fn new(observer_bandwidth_hz: f32) -> Self {
         Self {
             previous_wrapped_angle: None,
-            cumulative_angle: 0.0,
+            full_turns: 0,
+            residual_angle: 0.0,
             observer_angle: 0.0,
             previous_time: Instant::from_secs(0),
             observer: TrackingObserver::new(observer_bandwidth_hz),
         }
+    }
+
+    fn cumulative_angle(&self) -> f32 {
+        self.full_turns as f32 * TAU + self.residual_angle
     }
 
     pub fn update(&mut self, wrapped_angle: f32, now: Instant) -> AngleReading {
@@ -84,10 +90,11 @@ impl AngleTracker {
             None => {
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
-                self.cumulative_angle = wrapped_angle;
+                self.full_turns = 0;
+                self.residual_angle = wrapped_angle;
                 self.observer_angle = wrapped_angle;
                 AngleReading {
-                    angle: self.cumulative_angle,
+                    angle: self.cumulative_angle(),
                     phase_angle: wrapped_angle,
                     velocity: 0.0,
                     dt: 0.0,
@@ -99,7 +106,15 @@ impl AngleTracker {
                     .map(|x| x.as_micros() as f32 / 1e6)
                     .unwrap_or(0.0);
                 let delta = wrap_pm_pi(wrapped_angle - previous_wrapped_angle);
-                self.cumulative_angle += delta;
+                self.residual_angle += delta;
+                while self.residual_angle >= TAU {
+                    self.residual_angle -= TAU;
+                    self.full_turns += 1;
+                }
+                while self.residual_angle < 0.0 {
+                    self.residual_angle += TAU;
+                    self.full_turns -= 1;
+                }
                 self.observer_angle += delta;
                 if self.observer_angle > PI {
                     self.observer_angle -= TAU;
@@ -113,7 +128,7 @@ impl AngleTracker {
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
                 AngleReading {
-                    angle: self.cumulative_angle,
+                    angle: self.cumulative_angle(),
                     phase_angle: wrapped_angle,
                     velocity,
                     dt,
@@ -289,6 +304,31 @@ mod tests {
         assert!(
             (last_velocity - velocity).abs() < 0.5,
             "velocity drifted: measured={last_velocity}, expected={velocity}"
+        );
+    }
+
+    #[test]
+    fn angle_tracker_preserves_position_across_many_turns() {
+        let mut tracker = AngleTracker::new(20.0);
+        let dt = 0.001f32;
+        let velocity = 80.0f32;
+        let mut now = Instant::from_micros(0);
+        let mut wrapped_angle = 0.0f32;
+        let mut last_angle = 0.0f32;
+        let mut expected_angle = 0.0f64;
+
+        let _ = tracker.update(wrapped_angle, now);
+
+        for _ in 0..120_000 {
+            now += embassy_time::Duration::from_micros(1_000);
+            wrapped_angle = wrap_0_tau(wrapped_angle + velocity * dt);
+            last_angle = tracker.update(wrapped_angle, now).angle;
+            expected_angle += velocity as f64 * dt as f64;
+        }
+
+        assert!(
+            (last_angle as f64 - expected_angle).abs() < 0.05,
+            "angle drifted: measured={last_angle}, expected={expected_angle}"
         );
     }
 }
