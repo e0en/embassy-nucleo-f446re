@@ -18,7 +18,9 @@ use foc::current::PhaseCurrent;
 use foc::pwm_output::DutyCycle3Phase;
 
 use crate::drv8316::{self, CsaGain};
-use crate::{RESPONSE_CHANNEL, read_sensor};
+use crate::{
+    RESPONSE_CHANNEL, input_angle_to_output_angle, input_velocity_to_output_velocity, read_sensor,
+};
 
 /// Maximum PWM compare value (11-bit: 2047)
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
@@ -71,7 +73,6 @@ pub fn set_feedback_type(typ: FeedbackType) {
     let val = match typ {
         FeedbackType::Status => 0,
         FeedbackType::Current => 1,
-        FeedbackType::SpeedError => 2,
         FeedbackType::IqRef => 3,
         FeedbackType::VelocityIntegral => 4,
     };
@@ -190,18 +191,14 @@ fn send_feedback(state: &FocState) {
 
     let body = match feedback_type {
         0 => ResponseBody::MotorStatus(MotorStatus {
-            angle: state.angle,
-            velocity: state.velocity,
+            angle: input_angle_to_output_angle(state.angle),
+            velocity: input_velocity_to_output_velocity(state.velocity),
             torque: state.i_q,
             temperature: 0.0,
         }),
         1 => ResponseBody::MotorCurrent(MotorCurrent {
             i_q: state.i_q,
             i_d: state.i_d,
-        }),
-        2 => ResponseBody::DebugValue(DebugValue {
-            kind: DebugValueKind::SpeedError,
-            value: state.velocity_error,
         }),
         3 => ResponseBody::DebugValue(DebugValue {
             kind: DebugValueKind::IqRef,

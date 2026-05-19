@@ -227,7 +227,6 @@ impl ResponseMessage {
 pub enum FeedbackType {
     Status = 0x00,
     Current = 0x01,
-    SpeedError = 0x02,
     IqRef = 0x03,
     VelocityIntegral = 0x04,
 }
@@ -238,7 +237,6 @@ impl TryFrom<u8> for FeedbackType {
         match value {
             0x00 => Ok(Self::Status),
             0x01 => Ok(Self::Current),
-            0x02 => Ok(Self::SpeedError),
             0x03 => Ok(Self::IqRef),
             0x04 => Ok(Self::VelocityIntegral),
             _ => Err(()),
@@ -248,7 +246,6 @@ impl TryFrom<u8> for FeedbackType {
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum DebugValueKind {
-    SpeedError,
     IqRef,
     VelocityIntegral,
 }
@@ -262,7 +259,6 @@ pub struct DebugValue {
 impl DebugValue {
     fn response_type(&self) -> u32 {
         match self.kind {
-            DebugValueKind::SpeedError => 0x18,
             DebugValueKind::IqRef => 0x19,
             DebugValueKind::VelocityIntegral => 0x1A,
         }
@@ -274,7 +270,7 @@ impl From<[u8; 8]> for DebugValue {
         let mut f32_buffer = [0x00u8; 4];
         f32_buffer.copy_from_slice(&val[0..4]);
         DebugValue {
-            kind: DebugValueKind::SpeedError,
+            kind: DebugValueKind::IqRef,
             value: f32::from_le_bytes(f32_buffer),
         }
     }
@@ -387,10 +383,6 @@ impl TryFrom<CanMessage> for ResponseMessage {
                 let motor_current = MotorCurrent::from(val.data);
                 ResponseBody::MotorCurrent(motor_current)
             }
-            0x18 => ResponseBody::DebugValue(DebugValue {
-                kind: DebugValueKind::SpeedError,
-                ..DebugValue::from(val.data)
-            }),
             0x19 => ResponseBody::DebugValue(DebugValue {
                 kind: DebugValueKind::IqRef,
                 ..DebugValue::from(val.data)
@@ -715,7 +707,7 @@ mod tests {
             motor_can_id: 0x0F,
             host_can_id: 0x01,
             body: ResponseBody::DebugValue(DebugValue {
-                kind: DebugValueKind::SpeedError,
+                kind: DebugValueKind::IqRef,
                 value: 3.5,
             }),
         };
@@ -728,7 +720,7 @@ mod tests {
         assert!(matches!(
             decoded.body,
             ResponseBody::DebugValue(DebugValue {
-                kind: DebugValueKind::SpeedError,
+                kind: DebugValueKind::IqRef,
                 ..
             })
         ));

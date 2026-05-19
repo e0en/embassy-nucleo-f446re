@@ -155,7 +155,6 @@ enum PlotType {
     Velocity,
     Torque,
     Current,
-    SpeedError,
     IRef,
     VelocityIntegral,
 }
@@ -223,7 +222,6 @@ impl MotorTab {
     fn current_feedback_type(&self) -> FeedbackType {
         match self.plot_type {
             PlotType::Current => FeedbackType::Current,
-            PlotType::SpeedError => FeedbackType::SpeedError,
             PlotType::IRef => FeedbackType::IqRef,
             PlotType::VelocityIntegral => FeedbackType::VelocityIntegral,
             PlotType::Angle | PlotType::Velocity | PlotType::Torque => FeedbackType::Status,
@@ -253,10 +251,7 @@ impl MotorTab {
                 if !self.is_plotting
                     || matches!(
                         self.plot_type,
-                        PlotType::Current
-                            | PlotType::SpeedError
-                            | PlotType::IRef
-                            | PlotType::VelocityIntegral
+                        PlotType::Current | PlotType::IRef | PlotType::VelocityIntegral
                     )
                 {
                     return;
@@ -265,10 +260,7 @@ impl MotorTab {
                     PlotType::Angle => x.angle as f64,
                     PlotType::Velocity => x.velocity as f64,
                     PlotType::Torque => x.torque as f64,
-                    PlotType::Current
-                    | PlotType::SpeedError
-                    | PlotType::IRef
-                    | PlotType::VelocityIntegral => return,
+                    PlotType::Current | PlotType::IRef | PlotType::VelocityIntegral => return,
                 };
                 self.push_plot_points(y, None);
             }
@@ -283,7 +275,6 @@ impl MotorTab {
                     return;
                 }
                 let expected_kind = match self.plot_type {
-                    PlotType::SpeedError => Some(DebugValueKind::SpeedError),
                     PlotType::IRef => Some(DebugValueKind::IqRef),
                     PlotType::VelocityIntegral => Some(DebugValueKind::VelocityIntegral),
                     _ => None,
@@ -717,7 +708,6 @@ impl MyApp {
                     ui.selectable_value(&mut tab.plot_type, PlotType::Velocity, "Velocity");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Torque, "Torque");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Current, "Current");
-                    ui.selectable_value(&mut tab.plot_type, PlotType::SpeedError, "Speed Error");
                     ui.selectable_value(&mut tab.plot_type, PlotType::IRef, "I Ref");
                     ui.selectable_value(
                         &mut tab.plot_type,
