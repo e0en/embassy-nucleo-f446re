@@ -692,6 +692,12 @@ impl MyApp {
                 ui.separator();
                 ui.label("Maintenance");
                 ui.horizontal(|ui| {
+                    if ui.button("Set zero").clicked() {
+                        queued_commands.push(Command::SetZeroPosition);
+                    }
+                    ui.small("Use current primary/secondary encoder angles as zero");
+                });
+                ui.horizontal(|ui| {
                     if ui.button("Save settings").clicked() {
                         queued_commands.push(Command::SaveParameters);
                     }

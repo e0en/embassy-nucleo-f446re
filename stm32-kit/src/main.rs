@@ -146,6 +146,7 @@ static DRV_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CAN_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOTOR_DISARMED_BY_FAULT: AtomicBool = AtomicBool::new(false);
 static ANGLE_2: AtomicU32 = AtomicU32::new(0);
+static SECONDARY_RAW_ANGLE: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
 static PRIMARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
@@ -919,6 +920,12 @@ async fn command_task() {
                     }
                 }
             }
+            Command::SetZeroPosition => {
+                info!("SetZeroPosition command received");
+                let (primary_angle, secondary_angle) = read_zero_reference_angles();
+                write_zero_offsets(primary_angle, secondary_angle);
+                foc_isr::with_foc(|foc| foc.set_target_angle(0.0));
+            }
             Command::RunMotorTuning => {
                 info!("RunMotorTuning command received, clearing config and resetting");
                 {
@@ -1115,6 +1122,14 @@ fn read_zero_offsets() -> (f32, f32) {
     (primary, secondary)
 }
 
+fn read_zero_reference_angles() -> (f32, f32) {
+    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
+    let snapshot = &SENSOR_SNAPSHOTS[active_index];
+    let primary = f32::from_le_bytes(snapshot.phase_angle.load(Ordering::Relaxed).to_le_bytes());
+    let secondary = f32::from_le_bytes(SECONDARY_RAW_ANGLE.load(Ordering::Relaxed).to_le_bytes());
+    (primary, secondary)
+}
+
 fn write_zero_offsets(primary_offset: f32, secondary_offset: f32) {
     PRIMARY_ZERO_OFFSET.store(
         u32::from_le_bytes(primary_offset.to_le_bytes()),
@@ -1179,10 +1194,12 @@ async fn encoder_task(
         if let Some(secondary_sensor) = secondary_sensor.as_mut() {
             match secondary_sensor.read_raw_angle().await {
                 Ok(raw_angle) => {
-                    let angle_2 = apply_zero_offset(
-                        raw_angle as f32 * AS5047P_RAW_TO_RADIAN,
-                        secondary_zero_offset,
+                    let raw_secondary_angle = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
+                    SECONDARY_RAW_ANGLE.store(
+                        u32::from_le_bytes(raw_secondary_angle.to_le_bytes()),
+                        core::sync::atomic::Ordering::Relaxed,
                     );
+                    let angle_2 = apply_zero_offset(raw_secondary_angle, secondary_zero_offset);
                     ANGLE_2.store(
                         u32::from_le_bytes(angle_2.to_le_bytes()),
                         core::sync::atomic::Ordering::Relaxed,

@@ -447,6 +447,7 @@ fn u16_to_f32(x: u16, x_min: f32, x_max: f32) -> f32 {
 pub enum Command {
     Stop,
     Enable,
+    SetZeroPosition,
     SetCanId(u8),
     GetParameter(ParameterIndex),
     SetParameter(ParameterValue),
@@ -490,6 +491,13 @@ impl TryFrom<CanMessage> for CommandMessage {
         let command = match command_id {
             0x03 => Command::Enable,
             0x04 => Command::Stop,
+            0x06 => {
+                if data[0] == 1 {
+                    Command::SetZeroPosition
+                } else {
+                    return Err(CommandError::WrongCommand);
+                }
+            }
             0x07 => Command::SetCanId(command_content),
             0x11 => {
                 let mut u16_buffer = [0x00u8; 2];
@@ -541,6 +549,10 @@ impl TryFrom<CommandMessage> for CanMessage {
             }
             Command::Stop => {
                 command_id = 0x04;
+            }
+            Command::SetZeroPosition => {
+                command_id = 0x06;
+                data[0] = 1;
             }
             Command::GetParameter(p) => {
                 command_id = 0x11;
@@ -736,6 +748,22 @@ mod tests {
         assert_eq!(decoded.motor_can_id, 0x0F);
         assert_eq!(decoded.host_can_id, 0x02);
         assert!(matches!(decoded.command, Command::Enable));
+    }
+
+    #[test]
+    fn command_message_set_zero_position_roundtrip() {
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x02,
+            command: Command::SetZeroPosition,
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        assert_eq!(can_msg.id >> 24, 0x06);
+        assert_eq!(can_msg.data[0], 1);
+
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+        assert!(matches!(decoded.command, Command::SetZeroPosition));
     }
 
     #[test]
