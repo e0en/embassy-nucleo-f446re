@@ -909,8 +909,8 @@ async fn command_task() {
                     }
                 }
             }
-            Command::SaveConfig => {
-                info!("SaveConfig command received");
+            Command::SaveParameters | Command::SaveConfig => {
+                info!("Save-to-flash command received");
                 let mut flash_guard = FLASH.lock().await;
                 if let Some(flash) = flash_guard.as_mut() {
                     let can_id = flash_config::read_config(flash)

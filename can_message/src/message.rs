@@ -28,6 +28,8 @@ pub struct CanMessage {
     pub length: u8,
 }
 
+const ROBSTRIDE_SAVE_PAYLOAD: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
 #[derive(Copy, Clone)]
 pub struct ResponseMessage {
     pub motor_can_id: u8,
@@ -450,6 +452,7 @@ pub enum Command {
     SetParameter(ParameterValue),
     RequestStatus(u8),
     SetFeedbackInterval(u8),
+    SaveParameters,
     SetFeedbackType(FeedbackType),
     Recalibrate,
     SaveConfig,
@@ -499,7 +502,13 @@ impl TryFrom<CanMessage> for CommandMessage {
                 Command::SetParameter(pv)
             }
             0x15 => Command::RequestStatus(host_can_id),
-            0x16 => Command::SetFeedbackInterval(command_content),
+            0x16 => {
+                if data == ROBSTRIDE_SAVE_PAYLOAD {
+                    Command::SaveParameters
+                } else {
+                    Command::SetFeedbackInterval(command_content)
+                }
+            }
             0x17 => Command::SetFeedbackType(
                 command_content
                     .try_into()
@@ -551,6 +560,10 @@ impl TryFrom<CommandMessage> for CanMessage {
             Command::SetFeedbackInterval(x) => {
                 command_id = 0x16;
                 command_content = x;
+            }
+            Command::SaveParameters => {
+                command_id = 0x16;
+                data.copy_from_slice(&ROBSTRIDE_SAVE_PAYLOAD);
             }
             Command::SetFeedbackType(x) => {
                 command_id = 0x17;
@@ -738,6 +751,38 @@ mod tests {
         } else {
             panic!("Wrong command variant");
         }
+    }
+
+    #[test]
+    fn command_message_save_parameters_roundtrip() {
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x03,
+            command: Command::SaveParameters,
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        assert_eq!(can_msg.id >> 24, 0x16);
+        assert_eq!(can_msg.data, ROBSTRIDE_SAVE_PAYLOAD);
+
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+        assert!(matches!(decoded.command, Command::SaveParameters));
+    }
+
+    #[test]
+    fn command_message_feedback_interval_still_roundtrips() {
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x03,
+            command: Command::SetFeedbackInterval(20),
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        assert_eq!(can_msg.id >> 24, 0x16);
+        assert_ne!(can_msg.data, ROBSTRIDE_SAVE_PAYLOAD);
+
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+        assert!(matches!(decoded.command, Command::SetFeedbackInterval(20)));
     }
 
     #[test]

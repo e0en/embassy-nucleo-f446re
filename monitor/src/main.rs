@@ -687,6 +687,9 @@ impl MyApp {
                     if ui.button("enable").clicked() {
                         queued_commands.push(Command::Enable);
                     }
+                    if ui.button("Save to flash").clicked() {
+                        queued_commands.push(Command::SaveParameters);
+                    }
                 });
 
                 let before = tab.plot_type;
