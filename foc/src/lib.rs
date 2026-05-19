@@ -6,6 +6,7 @@ pub use pwm::svpwm;
 pub mod angle_input;
 pub mod controller;
 pub mod current;
+pub mod output_angle;
 pub mod pwm_output;
 pub mod tracking_observer;
 pub mod velocity_tuning;
