@@ -687,12 +687,21 @@ impl MyApp {
                     if ui.button("enable").clicked() {
                         queued_commands.push(Command::Enable);
                     }
-                    if ui.button("Save to flash").clicked() {
+                });
+
+                ui.separator();
+                ui.label("Maintenance");
+                ui.horizontal(|ui| {
+                    if ui.button("Save settings").clicked() {
                         queued_commands.push(Command::SaveParameters);
                     }
-                    if ui.button("Run motor tuning").clicked() {
+                    ui.small("Persist current motor settings to flash");
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Retune motor").clicked() {
                         queued_commands.push(Command::RunMotorTuning);
                     }
+                    ui.small("Clear stored calibration and reboot into tuning");
                 });
 
                 let before = tab.plot_type;
