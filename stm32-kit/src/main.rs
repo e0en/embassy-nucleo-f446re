@@ -32,7 +32,9 @@ use crate::{
     can::{convert_response_message, parse_command_frame},
     cordic::{initialize_cordic, run_and_log_validation_tests, sincos},
     current_tuning::calculate_current_pi,
-    encoder_correction::{AngleTracker, runtime_snapshot, runtime_version, set_runtime_correction},
+    encoder_correction::{
+        AngleTracker, runtime_snapshot, runtime_version, set_runtime_correction, wrap_0_tau,
+    },
 };
 
 use crate::gm3506 as motor;
@@ -145,6 +147,9 @@ static CAN_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOTOR_DISARMED_BY_FAULT: AtomicBool = AtomicBool::new(false);
 static ANGLE_2: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
+static PRIMARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
+static SECONDARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
+static ZERO_OFFSET_VERSION: AtomicU32 = AtomicU32::new(1);
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, can_message::message::CommandMessage, 32> =
     Channel::new();
@@ -460,6 +465,7 @@ async fn init_foc(
     if let Some(config) = &stored_config {
         flash_config::apply_to_foc(&mut foc, config);
         set_runtime_correction(config.get_encoder_correction());
+        write_zero_offsets(config.primary_zero_offset, config.secondary_zero_offset);
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
             config.current_mapping.0,
@@ -468,6 +474,7 @@ async fn init_foc(
             config.bias_angle
         );
     } else {
+        write_zero_offsets(0.0, 0.0);
         let align_voltage = match run_motor_calibration(
             &mut foc,
             &mut p_adc,
@@ -520,6 +527,9 @@ async fn init_foc(
         info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 
         let mut config = flash_config::from_foc(&foc, can_id);
+        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
+        config.primary_zero_offset = primary_zero_offset;
+        config.secondary_zero_offset = secondary_zero_offset;
         config.set_encoder_correction(runtime_snapshot());
         if let Err(e) = flash_config::write_config(p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
@@ -933,6 +943,9 @@ async fn command_task() {
 
                     foc_isr::with_foc(|foc| {
                         let mut config = flash_config::from_foc(foc, can_id);
+                        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
+                        config.primary_zero_offset = primary_zero_offset;
+                        config.secondary_zero_offset = secondary_zero_offset;
                         if let Err(e) = flash_config::write_config(flash, &mut config) {
                             error!("Failed to save config: {:?}", e);
                         } else {
@@ -1096,6 +1109,28 @@ fn write_sensor_snapshot(reading: AngleReading) {
     ACTIVE_SENSOR_SNAPSHOT.store(next_index as u8, Ordering::Release);
 }
 
+fn read_zero_offsets() -> (f32, f32) {
+    let primary = f32::from_le_bytes(PRIMARY_ZERO_OFFSET.load(Ordering::Relaxed).to_le_bytes());
+    let secondary = f32::from_le_bytes(SECONDARY_ZERO_OFFSET.load(Ordering::Relaxed).to_le_bytes());
+    (primary, secondary)
+}
+
+fn write_zero_offsets(primary_offset: f32, secondary_offset: f32) {
+    PRIMARY_ZERO_OFFSET.store(
+        u32::from_le_bytes(primary_offset.to_le_bytes()),
+        Ordering::Relaxed,
+    );
+    SECONDARY_ZERO_OFFSET.store(
+        u32::from_le_bytes(secondary_offset.to_le_bytes()),
+        Ordering::Relaxed,
+    );
+    ZERO_OFFSET_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+fn apply_zero_offset(angle: f32, zero_offset: f32) -> f32 {
+    wrap_0_tau(angle - zero_offset)
+}
+
 #[embassy_executor::task]
 async fn encoder_task(
     mut sensor: As5047P<'static>,
@@ -1104,6 +1139,7 @@ async fn encoder_task(
     let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
     let mut correction_version = 0;
     let mut correction = runtime_snapshot();
+    let mut zero_offset_version = ZERO_OFFSET_VERSION.load(Ordering::Relaxed);
 
     loop {
         let latest_version = runtime_version();
@@ -1111,12 +1147,20 @@ async fn encoder_task(
             correction = runtime_snapshot();
             correction_version = latest_version;
         }
+        let latest_zero_offset_version = ZERO_OFFSET_VERSION.load(Ordering::Relaxed);
+        if latest_zero_offset_version != zero_offset_version {
+            tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
+            zero_offset_version = latest_zero_offset_version;
+        }
+        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
 
         match sensor.read_raw_angle().await {
             Ok(raw_angle) => {
                 let wrapped_angle =
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
-                let reading = tracker.update(wrapped_angle, Instant::now());
+                let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
+                let mut reading = tracker.update(zeroed_angle, Instant::now());
+                reading.phase_angle = wrapped_angle;
                 write_sensor_snapshot(reading);
             }
             Err(as5047p::Error::CommandFrame) => {
@@ -1135,7 +1179,10 @@ async fn encoder_task(
         if let Some(secondary_sensor) = secondary_sensor.as_mut() {
             match secondary_sensor.read_raw_angle().await {
                 Ok(raw_angle) => {
-                    let angle_2 = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
+                    let angle_2 = apply_zero_offset(
+                        raw_angle as f32 * AS5047P_RAW_TO_RADIAN,
+                        secondary_zero_offset,
+                    );
                     ANGLE_2.store(
                         u32::from_le_bytes(angle_2.to_le_bytes()),
                         core::sync::atomic::Ordering::Relaxed,
@@ -1257,6 +1304,9 @@ async fn save_can_id_to_flash(new_can_id: u8) {
         && let Some(mut config) = flash_config::read_config(flash)
     {
         config.can_id = new_can_id;
+        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
+        config.primary_zero_offset = primary_zero_offset;
+        config.secondary_zero_offset = secondary_zero_offset;
         if let Err(e) = flash_config::write_config(flash, &mut config) {
             warn!("Failed to save CAN ID to flash: {:?}", e);
         } else {
