@@ -690,6 +690,9 @@ impl MyApp {
                     if ui.button("Save to flash").clicked() {
                         queued_commands.push(Command::SaveParameters);
                     }
+                    if ui.button("Run motor tuning").clicked() {
+                        queued_commands.push(Command::RunMotorTuning);
+                    }
                 });
 
                 let before = tab.plot_type;

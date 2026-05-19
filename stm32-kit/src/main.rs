@@ -909,6 +909,20 @@ async fn command_task() {
                     }
                 }
             }
+            Command::RunMotorTuning => {
+                info!("RunMotorTuning command received, clearing config and resetting");
+                {
+                    let mut flash_guard = FLASH.lock().await;
+                    if let Some(flash) = flash_guard.as_mut() {
+                        if let Err(e) = flash_config::clear_config(flash) {
+                            error!("Failed to clear config: {:?}", e);
+                        } else {
+                            info!("Config cleared, resetting system for full motor tuning");
+                            cortex_m::peripheral::SCB::sys_reset();
+                        }
+                    }
+                }
+            }
             Command::SaveParameters | Command::SaveConfig => {
                 info!("Save-to-flash command received");
                 let mut flash_guard = FLASH.lock().await;

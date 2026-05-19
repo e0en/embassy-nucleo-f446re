@@ -456,6 +456,7 @@ pub enum Command {
     SetFeedbackType(FeedbackType),
     Recalibrate,
     SaveConfig,
+    RunMotorTuning,
 }
 
 #[derive(Debug)]
@@ -516,6 +517,7 @@ impl TryFrom<CanMessage> for CommandMessage {
             ),
             0x18 => Command::Recalibrate,
             0x19 => Command::SaveConfig,
+            0x70 => Command::RunMotorTuning,
 
             _ => return Err(CommandError::WrongCommand),
         };
@@ -574,6 +576,9 @@ impl TryFrom<CommandMessage> for CanMessage {
             }
             Command::SaveConfig => {
                 command_id = 0x19;
+            }
+            Command::RunMotorTuning => {
+                command_id = 0x70;
             }
         }
 
@@ -783,6 +788,21 @@ mod tests {
 
         let decoded = CommandMessage::try_from(can_msg).unwrap();
         assert!(matches!(decoded.command, Command::SetFeedbackInterval(20)));
+    }
+
+    #[test]
+    fn command_message_run_motor_tuning_roundtrip() {
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x03,
+            command: Command::RunMotorTuning,
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        assert_eq!(can_msg.id >> 24, 0x70);
+
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+        assert!(matches!(decoded.command, Command::RunMotorTuning));
     }
 
     #[test]
