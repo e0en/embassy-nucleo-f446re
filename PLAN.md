@@ -111,6 +111,8 @@ Verification:
 
 ### 7. Add raw-to-fused sensor resolution
 
+Status: Completed
+
 - Add a dedicated module, preferably `stm32-kit/src/gear_sensor.rs`.
 - Convert `RawSensorReading` plus alignment validity into `Option<SensorReading>`.
 - Call `resolve_output_phase()` only when aligned.

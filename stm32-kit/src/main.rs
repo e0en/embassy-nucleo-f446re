@@ -15,6 +15,7 @@ mod encoder_correction;
 mod flash_config;
 mod flycat5010;
 mod foc_isr;
+mod gear_sensor;
 mod gm2804;
 mod gm3506;
 mod motor_tuning;
@@ -66,7 +67,8 @@ const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 const AS5047P_RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / ((1 << 14) as f32);
 const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
 const USE_SECONDARY_ENCODER: bool = true;
-const OUTPUT_SHAFT_REDUCTION_RATIO: f32 = -19.0;
+const OUTPUT_SHAFT_REDUCTION_RATIO: i32 = -19;
+const OUTPUT_SHAFT_REDUCTION_RATIO_F32: f32 = OUTPUT_SHAFT_REDUCTION_RATIO as f32;
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
@@ -1299,32 +1301,33 @@ fn read_raw_sensor() -> RawSensorReading {
 
 fn read_sensor() -> SensorReading {
     let raw = read_raw_sensor();
-    SensorReading {
-        output_phase: raw.primary_phase,
-        rotor_phase: raw.primary_phase,
-        rotor_velocity: raw.rotor_velocity,
-        dt: raw.dt,
-    }
+    gear_sensor::resolve_sensor_reading(&raw, zero_alignment_valid(), OUTPUT_SHAFT_REDUCTION_RATIO)
+        .unwrap_or(SensorReading {
+            output_phase: raw.primary_phase,
+            rotor_phase: raw.primary_phase,
+            rotor_velocity: raw.rotor_velocity,
+            dt: raw.dt,
+        })
 }
 
 #[inline]
 pub(crate) fn output_angle_to_input_angle(output_angle: f32) -> f32 {
-    output_angle * OUTPUT_SHAFT_REDUCTION_RATIO
+    output_angle * OUTPUT_SHAFT_REDUCTION_RATIO_F32
 }
 
 #[inline]
 pub(crate) fn input_angle_to_output_angle(input_angle: f32) -> f32 {
-    input_angle / OUTPUT_SHAFT_REDUCTION_RATIO
+    input_angle / OUTPUT_SHAFT_REDUCTION_RATIO_F32
 }
 
 #[inline]
 pub(crate) fn output_velocity_to_input_velocity(output_velocity: f32) -> f32 {
-    output_velocity * OUTPUT_SHAFT_REDUCTION_RATIO
+    output_velocity * OUTPUT_SHAFT_REDUCTION_RATIO_F32
 }
 
 #[inline]
 pub(crate) fn input_velocity_to_output_velocity(input_velocity: f32) -> f32 {
-    input_velocity / OUTPUT_SHAFT_REDUCTION_RATIO
+    input_velocity / OUTPUT_SHAFT_REDUCTION_RATIO_F32
 }
 
 #[embassy_executor::task]
