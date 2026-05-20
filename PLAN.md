@@ -74,6 +74,8 @@ Verification:
 
 ### 5. Rework snapshot storage around raw sensor meaning
 
+Status: Completed
+
 - Update snapshot structures in `stm32-kit/src/main.rs`.
 - Replace ambiguous fields with explicit sensor-side names.
 - Recommended fields:

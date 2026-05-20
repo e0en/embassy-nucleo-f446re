@@ -123,19 +123,21 @@ use foc::{
 };
 
 struct SensorSnapshotBuffer {
-    angle: AtomicU32,
-    phase_angle: AtomicU32,
-    velocity: AtomicU32,
+    output_phase: AtomicU32,
+    rotor_phase: AtomicU32,
+    rotor_velocity: AtomicU32,
     dt: AtomicU32,
+    aligned: AtomicBool,
 }
 
 impl SensorSnapshotBuffer {
     const fn new() -> Self {
         Self {
-            angle: AtomicU32::new(0),
-            phase_angle: AtomicU32::new(0),
-            velocity: AtomicU32::new(0),
+            output_phase: AtomicU32::new(0),
+            rotor_phase: AtomicU32::new(0),
+            rotor_velocity: AtomicU32::new(0),
             dt: AtomicU32::new(0),
+            aligned: AtomicBool::new(false),
         }
     }
 }
@@ -1119,20 +1121,20 @@ async fn disarm_motor_due_to_fault() {
     MOTOR_DISARMED_BY_FAULT.store(true, Ordering::Relaxed);
 }
 
-fn write_sensor_snapshot(reading: SensorReading) {
+fn write_sensor_snapshot(reading: SensorReading, aligned: bool) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
 
-    snapshot.angle.store(
+    snapshot.output_phase.store(
         u32::from_le_bytes(reading.output_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
-    snapshot.phase_angle.store(
+    snapshot.rotor_phase.store(
         u32::from_le_bytes(reading.rotor_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
-    snapshot.velocity.store(
+    snapshot.rotor_velocity.store(
         u32::from_le_bytes(reading.rotor_velocity.to_le_bytes()),
         Ordering::Relaxed,
     );
@@ -1140,6 +1142,7 @@ fn write_sensor_snapshot(reading: SensorReading) {
         u32::from_le_bytes(reading.dt.to_le_bytes()),
         Ordering::Relaxed,
     );
+    snapshot.aligned.store(aligned, Ordering::Relaxed);
 
     // Writer runs in thread mode and reader runs in ADC ISR, so once the
     // index is published the ISR can only observe a fully written snapshot.
@@ -1155,7 +1158,7 @@ fn read_zero_offsets() -> (f32, f32) {
 fn read_zero_reference_angles() -> (f32, f32) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let primary = f32::from_le_bytes(snapshot.phase_angle.load(Ordering::Relaxed).to_le_bytes());
+    let primary = f32::from_le_bytes(snapshot.rotor_phase.load(Ordering::Relaxed).to_le_bytes());
     let secondary = f32::from_le_bytes(SECONDARY_RAW_ANGLE.load(Ordering::Relaxed).to_le_bytes());
     (primary, secondary)
 }
@@ -1222,12 +1225,15 @@ async fn encoder_task(
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
                 let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
                 let rotor = tracker.update(zeroed_angle, Instant::now());
-                write_sensor_snapshot(SensorReading {
-                    output_phase: zeroed_angle,
-                    rotor_phase: wrapped_angle,
-                    rotor_velocity: rotor.rotor_velocity,
-                    dt: rotor.dt,
-                });
+                write_sensor_snapshot(
+                    SensorReading {
+                        output_phase: zeroed_angle,
+                        rotor_phase: wrapped_angle,
+                        rotor_velocity: rotor.rotor_velocity,
+                        dt: rotor.dt,
+                    },
+                    zero_alignment_valid(),
+                );
             }
             Err(as5047p::Error::CommandFrame) => {
                 if sensor.read_and_reset_error_flag().await.is_err() {
@@ -1277,15 +1283,15 @@ async fn encoder_task(
 fn read_sensor() -> SensorReading {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let raw_angle = snapshot.angle.load(Ordering::Relaxed);
-    let raw_phase_angle = snapshot.phase_angle.load(Ordering::Relaxed);
-    let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
+    let raw_output_phase = snapshot.output_phase.load(Ordering::Relaxed);
+    let raw_rotor_phase = snapshot.rotor_phase.load(Ordering::Relaxed);
+    let raw_rotor_velocity = snapshot.rotor_velocity.load(Ordering::Relaxed);
     let raw_dt = snapshot.dt.load(Ordering::Relaxed);
 
     SensorReading {
-        output_phase: f32::from_le_bytes(raw_angle.to_le_bytes()),
-        rotor_phase: f32::from_le_bytes(raw_phase_angle.to_le_bytes()),
-        rotor_velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
+        output_phase: f32::from_le_bytes(raw_output_phase.to_le_bytes()),
+        rotor_phase: f32::from_le_bytes(raw_rotor_phase.to_le_bytes()),
+        rotor_velocity: f32::from_le_bytes(raw_rotor_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }
 }
