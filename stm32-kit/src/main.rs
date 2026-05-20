@@ -23,7 +23,7 @@ mod velocity_tuning;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
-use foc::angle_input::SensorReading;
+use foc::angle_input::{RawSensorReading, SensorReading};
 
 use crate::{
     adc::measure_vm_sense,
@@ -123,8 +123,8 @@ use foc::{
 };
 
 struct SensorSnapshotBuffer {
-    output_phase: AtomicU32,
-    rotor_phase: AtomicU32,
+    primary_phase: AtomicU32,
+    secondary_phase: AtomicU32,
     rotor_velocity: AtomicU32,
     dt: AtomicU32,
     aligned: AtomicBool,
@@ -133,8 +133,8 @@ struct SensorSnapshotBuffer {
 impl SensorSnapshotBuffer {
     const fn new() -> Self {
         Self {
-            output_phase: AtomicU32::new(0),
-            rotor_phase: AtomicU32::new(0),
+            primary_phase: AtomicU32::new(0),
+            secondary_phase: AtomicU32::new(0),
             rotor_velocity: AtomicU32::new(0),
             dt: AtomicU32::new(0),
             aligned: AtomicBool::new(false),
@@ -148,7 +148,7 @@ static ACTIVE_SENSOR_SNAPSHOT: AtomicU8 = AtomicU8::new(0);
 static DRV_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CAN_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOTOR_DISARMED_BY_FAULT: AtomicBool = AtomicBool::new(false);
-static ANGLE_2: AtomicU32 = AtomicU32::new(0);
+static PRIMARY_RAW_ANGLE: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_RAW_ANGLE: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
 static PRIMARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
@@ -1089,14 +1089,10 @@ async fn handle_command_isr(
 fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
     let dt_seconds = (dt.as_micros() as f32) / 1e6;
     let freq = (check_count as f32) / dt_seconds;
-    let angle_2 = f32::from_le_bytes(
-        ANGLE_2
-            .load(core::sync::atomic::Ordering::Relaxed)
-            .to_le_bytes(),
-    );
+    let raw = read_raw_sensor();
     info!(
         "MEASURED: a={}, a2={}, v={}, t={}, {} Hz",
-        state.angle, angle_2, state.velocity, state.v_q, freq
+        state.angle, raw.secondary_phase, state.velocity, state.v_q, freq
     );
 }
 
@@ -1121,17 +1117,17 @@ async fn disarm_motor_due_to_fault() {
     MOTOR_DISARMED_BY_FAULT.store(true, Ordering::Relaxed);
 }
 
-fn write_sensor_snapshot(reading: SensorReading, aligned: bool) {
+fn write_sensor_snapshot(reading: RawSensorReading, aligned: bool) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
 
-    snapshot.output_phase.store(
-        u32::from_le_bytes(reading.output_phase.to_le_bytes()),
+    snapshot.primary_phase.store(
+        u32::from_le_bytes(reading.primary_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
-    snapshot.rotor_phase.store(
-        u32::from_le_bytes(reading.rotor_phase.to_le_bytes()),
+    snapshot.secondary_phase.store(
+        u32::from_le_bytes(reading.secondary_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
     snapshot.rotor_velocity.store(
@@ -1156,9 +1152,7 @@ fn read_zero_offsets() -> (f32, f32) {
 }
 
 fn read_zero_reference_angles() -> (f32, f32) {
-    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
-    let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let primary = f32::from_le_bytes(snapshot.rotor_phase.load(Ordering::Relaxed).to_le_bytes());
+    let primary = f32::from_le_bytes(PRIMARY_RAW_ANGLE.load(Ordering::Relaxed).to_le_bytes());
     let secondary = f32::from_le_bytes(SECONDARY_RAW_ANGLE.load(Ordering::Relaxed).to_le_bytes());
     (primary, secondary)
 }
@@ -1221,14 +1215,49 @@ async fn encoder_task(
 
         match sensor.read_raw_angle().await {
             Ok(raw_angle) => {
-                let wrapped_angle =
+                let primary_raw_angle =
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
-                let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
-                let rotor = tracker.update(zeroed_angle, Instant::now());
+                PRIMARY_RAW_ANGLE.store(
+                    u32::from_le_bytes(primary_raw_angle.to_le_bytes()),
+                    Ordering::Relaxed,
+                );
+                let primary_phase = apply_zero_offset(primary_raw_angle, primary_zero_offset);
+                let rotor = tracker.update(primary_phase, Instant::now());
+                let mut secondary_phase = primary_phase;
+                SECONDARY_RAW_ANGLE.store(
+                    u32::from_le_bytes(primary_raw_angle.to_le_bytes()),
+                    Ordering::Relaxed,
+                );
+
+                if let Some(secondary_sensor) = secondary_sensor.as_mut() {
+                    match secondary_sensor.read_raw_angle().await {
+                        Ok(raw_angle) => {
+                            let secondary_raw_angle = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
+                            SECONDARY_RAW_ANGLE.store(
+                                u32::from_le_bytes(secondary_raw_angle.to_le_bytes()),
+                                Ordering::Relaxed,
+                            );
+                            secondary_phase =
+                                apply_zero_offset(secondary_raw_angle, secondary_zero_offset);
+                        }
+                        Err(as5047p::Error::CommandFrame) => {
+                            if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                                error!("ENC2 CommandFrame error correction failed");
+                            }
+                        }
+                        Err(as5047p::Error::Parity) => {
+                            if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                                error!("ENC2 Parity error correction failed");
+                            }
+                        }
+                        Err(e) => error!("Failed to read from ENC2: {:?}", e),
+                    }
+                }
+
                 write_sensor_snapshot(
-                    SensorReading {
-                        output_phase: zeroed_angle,
-                        rotor_phase: wrapped_angle,
+                    RawSensorReading {
+                        primary_phase: rotor.rotor_phase,
+                        secondary_phase,
                         rotor_velocity: rotor.rotor_velocity,
                         dt: rotor.dt,
                     },
@@ -1248,51 +1277,33 @@ async fn encoder_task(
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
-        if let Some(secondary_sensor) = secondary_sensor.as_mut() {
-            match secondary_sensor.read_raw_angle().await {
-                Ok(raw_angle) => {
-                    let raw_secondary_angle = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
-                    SECONDARY_RAW_ANGLE.store(
-                        u32::from_le_bytes(raw_secondary_angle.to_le_bytes()),
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
-                    let angle_2 = apply_zero_offset(raw_secondary_angle, secondary_zero_offset);
-                    ANGLE_2.store(
-                        u32::from_le_bytes(angle_2.to_le_bytes()),
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
-                }
-                Err(as5047p::Error::CommandFrame) => {
-                    if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                        error!("ENC2 CommandFrame error correction failed");
-                    }
-                }
-                Err(as5047p::Error::Parity) => {
-                    if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                        error!("ENC2 Parity error correction failed");
-                    }
-                }
-                Err(e) => error!("Failed to read from ENC2: {:?}", e),
-            }
-        }
-
         Timer::after_micros(50).await;
     }
 }
 
-fn read_sensor() -> SensorReading {
+fn read_raw_sensor() -> RawSensorReading {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let raw_output_phase = snapshot.output_phase.load(Ordering::Relaxed);
-    let raw_rotor_phase = snapshot.rotor_phase.load(Ordering::Relaxed);
+    let raw_primary_phase = snapshot.primary_phase.load(Ordering::Relaxed);
+    let raw_secondary_phase = snapshot.secondary_phase.load(Ordering::Relaxed);
     let raw_rotor_velocity = snapshot.rotor_velocity.load(Ordering::Relaxed);
     let raw_dt = snapshot.dt.load(Ordering::Relaxed);
 
-    SensorReading {
-        output_phase: f32::from_le_bytes(raw_output_phase.to_le_bytes()),
-        rotor_phase: f32::from_le_bytes(raw_rotor_phase.to_le_bytes()),
+    RawSensorReading {
+        primary_phase: f32::from_le_bytes(raw_primary_phase.to_le_bytes()),
+        secondary_phase: f32::from_le_bytes(raw_secondary_phase.to_le_bytes()),
         rotor_velocity: f32::from_le_bytes(raw_rotor_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
+    }
+}
+
+fn read_sensor() -> SensorReading {
+    let raw = read_raw_sensor();
+    SensorReading {
+        output_phase: raw.primary_phase,
+        rotor_phase: raw.primary_phase,
+        rotor_velocity: raw.rotor_velocity,
+        dt: raw.dt,
     }
 }
 

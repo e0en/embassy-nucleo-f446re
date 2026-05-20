@@ -91,6 +91,8 @@ Verification:
 
 ### 6. Refactor `encoder_task()` into a raw sensor producer
 
+Status: Completed
+
 - Update `stm32-kit/src/main.rs`.
 - Primary path:
   - read raw angle
