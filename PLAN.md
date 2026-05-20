@@ -60,6 +60,8 @@ Verification:
 
 ### 4. Add explicit zero-alignment validity
 
+Status: Completed
+
 - Update `stm32-kit/src/main.rs`.
 - Add a validity flag such as `ZERO_ALIGNMENT_VALID`.
 - Set it on config load and `SetZeroPosition`.

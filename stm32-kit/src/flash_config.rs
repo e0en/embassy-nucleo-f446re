@@ -12,7 +12,7 @@ use crate::encoder_correction::{EncoderCorrection, LUT_SIZE};
 /// Magic number to identify valid config: "MOTC" in ASCII
 const CONFIG_MAGIC: u32 = 0x4D4F5443;
 /// Current config version for future migrations
-const CONFIG_VERSION: u8 = 6;
+const CONFIG_VERSION: u8 = 7;
 /// Flash offset for config page (last 2KB of 128KB)
 const CONFIG_OFFSET: u32 = 0x1F800;
 /// Size of config page
@@ -95,6 +95,8 @@ pub struct ConfigData {
     pub primary_zero_offset: f32,
     /// Secondary encoder zero offset in wrapped mechanical radians
     pub secondary_zero_offset: f32,
+    /// Output-side zero alignment validity flag
+    pub zero_alignment_valid: u8,
 
     /// Encoder LUT validity flag
     pub encoder_lut_valid: u8,
@@ -133,6 +135,7 @@ impl ConfigData {
             kv_rating: 0.0,
             primary_zero_offset: 0.0,
             secondary_zero_offset: 0.0,
+            zero_alignment_valid: 0,
             encoder_lut_valid: 0,
             encoder_error_lut: [0.0; LUT_SIZE],
             crc: 0,
@@ -205,6 +208,14 @@ impl ConfigData {
     pub fn set_encoder_correction(&mut self, correction: EncoderCorrection) {
         self.encoder_lut_valid = if correction.valid { 1 } else { 0 };
         self.encoder_error_lut = correction.error_lut;
+    }
+
+    pub fn zero_alignment_valid(&self) -> bool {
+        self.zero_alignment_valid != 0
+    }
+
+    pub fn set_zero_alignment_valid(&mut self, valid: bool) {
+        self.zero_alignment_valid = if valid { 1 } else { 0 };
     }
 }
 

@@ -152,6 +152,7 @@ static CAN_ID: AtomicU8 = AtomicU8::new(0);
 static PRIMARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
 static ZERO_OFFSET_VERSION: AtomicU32 = AtomicU32::new(1);
+static ZERO_ALIGNMENT_VALID: AtomicBool = AtomicBool::new(false);
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, can_message::message::CommandMessage, 32> =
     Channel::new();
@@ -467,7 +468,11 @@ async fn init_foc(
     if let Some(config) = &stored_config {
         flash_config::apply_to_foc(&mut foc, config);
         set_runtime_correction(config.get_encoder_correction());
-        write_zero_offsets(config.primary_zero_offset, config.secondary_zero_offset);
+        write_zero_alignment(
+            config.primary_zero_offset,
+            config.secondary_zero_offset,
+            config.zero_alignment_valid(),
+        );
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
             config.current_mapping.0,
@@ -476,7 +481,7 @@ async fn init_foc(
             config.bias_angle
         );
     } else {
-        write_zero_offsets(0.0, 0.0);
+        clear_zero_alignment();
         let align_voltage = match run_motor_calibration(
             &mut foc,
             &mut p_adc,
@@ -532,6 +537,7 @@ async fn init_foc(
         let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
         config.primary_zero_offset = primary_zero_offset;
         config.secondary_zero_offset = secondary_zero_offset;
+        config.set_zero_alignment_valid(zero_alignment_valid());
         config.set_encoder_correction(runtime_snapshot());
         if let Err(e) = flash_config::write_config(p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
@@ -908,6 +914,7 @@ async fn command_task() {
             }
             Command::Recalibrate => {
                 info!("Recalibrate command received, clearing config and resetting");
+                clear_zero_alignment();
                 // Clear stored config and trigger system reset
                 {
                     let mut flash_guard = FLASH.lock().await;
@@ -924,7 +931,7 @@ async fn command_task() {
             Command::SetZeroPosition => {
                 info!("SetZeroPosition command received");
                 let (primary_angle, secondary_angle) = read_zero_reference_angles();
-                write_zero_offsets(primary_angle, secondary_angle);
+                write_zero_alignment(primary_angle, secondary_angle, true);
                 foc_isr::with_foc(|foc| {
                     foc.reset();
                     foc.set_target_angle(0.0);
@@ -939,6 +946,7 @@ async fn command_task() {
             }
             Command::RunMotorTuning => {
                 info!("RunMotorTuning command received, clearing config and resetting");
+                clear_zero_alignment();
                 {
                     let mut flash_guard = FLASH.lock().await;
                     if let Some(flash) = flash_guard.as_mut() {
@@ -964,6 +972,7 @@ async fn command_task() {
                         let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
                         config.primary_zero_offset = primary_zero_offset;
                         config.secondary_zero_offset = secondary_zero_offset;
+                        config.set_zero_alignment_valid(zero_alignment_valid());
                         if let Err(e) = flash_config::write_config(flash, &mut config) {
                             error!("Failed to save config: {:?}", e);
                         } else {
@@ -1161,6 +1170,23 @@ fn write_zero_offsets(primary_offset: f32, secondary_offset: f32) {
         Ordering::Relaxed,
     );
     ZERO_OFFSET_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+fn zero_alignment_valid() -> bool {
+    ZERO_ALIGNMENT_VALID.load(Ordering::Relaxed)
+}
+
+fn set_zero_alignment_valid(valid: bool) {
+    ZERO_ALIGNMENT_VALID.store(valid, Ordering::Relaxed);
+}
+
+fn write_zero_alignment(primary_offset: f32, secondary_offset: f32, valid: bool) {
+    write_zero_offsets(primary_offset, secondary_offset);
+    set_zero_alignment_valid(valid);
+}
+
+fn clear_zero_alignment() {
+    write_zero_alignment(0.0, 0.0, false);
 }
 
 fn apply_zero_offset(angle: f32, zero_offset: f32) -> f32 {
@@ -1369,6 +1395,7 @@ async fn save_can_id_to_flash(new_can_id: u8) {
         let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
         config.primary_zero_offset = primary_zero_offset;
         config.secondary_zero_offset = secondary_zero_offset;
+        config.set_zero_alignment_valid(zero_alignment_valid());
         if let Err(e) = flash_config::write_config(flash, &mut config) {
             warn!("Failed to save CAN ID to flash: {:?}", e);
         } else {
