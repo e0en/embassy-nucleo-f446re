@@ -125,6 +125,8 @@ Verification:
 
 ### 8. Add an output-angle tracker
 
+Status: Completed
+
 - Add `stm32-kit/src/output_tracker.rs`.
 - Track continuous `output_angle` from wrapped `output_phase`.
 - Do not estimate velocity here.
