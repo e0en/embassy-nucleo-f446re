@@ -2,11 +2,12 @@ use crate::adc;
 use crate::adc::AdcSelector;
 use crate::bldc_driver::PwmDriver;
 use crate::drv8316;
+use crate::input_velocity_to_output_velocity;
 
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::Timer;
-use foc::angle_input::SensorReading;
+use foc::angle_input::{ControlReading, SensorReading};
 use foc::controller::{FocController, RunMode};
 use foc::pid::PID;
 use foc::pwm_output::PwmOutput;
@@ -39,6 +40,15 @@ fn estimate_velocity_from_angle(
         0.0
     } else {
         (angle - previous_angle) / dt
+    }
+}
+
+fn to_control_reading(reading: SensorReading) -> ControlReading {
+    ControlReading {
+        output_angle: reading.output_phase,
+        output_velocity: input_velocity_to_output_velocity(reading.rotor_velocity),
+        rotor_phase: reading.rotor_phase,
+        dt: reading.dt,
     }
 }
 
@@ -76,7 +86,7 @@ where
 
         // Hold zero torque before the test so the sample window starts at the torque step.
         for _ in 0..PRE_STEP_SETTLE_MS {
-            let reading = read_sensor();
+            let reading = to_control_reading(read_sensor());
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
             if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
@@ -89,7 +99,7 @@ where
 
         // Let the current loop settle before estimating the velocity plant.
         for _ in 0..POST_STEP_SETTLE_MS {
-            let reading = read_sensor();
+            let reading = to_control_reading(read_sensor());
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
             if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
@@ -108,7 +118,7 @@ where
         let mut velocity_samples = 0usize;
 
         for i in 0..N_SAMPLES {
-            let reading = read_sensor();
+            let reading = to_control_reading(read_sensor());
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
             if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
@@ -124,13 +134,13 @@ where
                     previous_elapsed,
                     previous_angle,
                     elapsed,
-                    reading.output_phase,
+                    reading.output_angle,
                 );
                 velocity_samples += 1;
             }
             iq_sum += foc.state.i_q;
             previous_elapsed = elapsed;
-            previous_angle = reading.output_phase;
+            previous_angle = reading.output_angle;
             Timer::after_millis(1).await;
         }
 

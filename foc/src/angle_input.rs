@@ -12,6 +12,13 @@ pub struct SensorReading {
     pub dt: f32,
 }
 
+pub struct ControlReading {
+    pub output_angle: f32,
+    pub output_velocity: f32,
+    pub rotor_phase: f32,
+    pub dt: f32,
+}
+
 pub trait AngleInput {
     type ReadError;
 

@@ -1019,17 +1019,13 @@ async fn handle_command_isr(
             foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
         }
         Command::SetParameter(ParameterValue::AngleRef(angle)) => {
-            foc_isr::with_foc(|foc| foc.set_target_angle(output_angle_to_input_angle(*angle)));
+            foc_isr::with_foc(|foc| foc.set_target_angle(*angle));
         }
         Command::SetParameter(ParameterValue::SpeedRef(velocity)) => {
-            foc_isr::with_foc(|foc| {
-                foc.set_target_velocity(output_velocity_to_input_velocity(*velocity))
-            });
+            foc_isr::with_foc(|foc| foc.set_target_velocity(*velocity));
         }
         Command::SetParameter(ParameterValue::SpeedLimit(limit)) => {
-            foc_isr::with_foc(|foc| {
-                foc.set_velocity_limit(output_velocity_to_input_velocity(*limit))
-            });
+            foc_isr::with_foc(|foc| foc.set_velocity_limit(*limit));
         }
 
         _ => {
@@ -1060,11 +1056,11 @@ async fn handle_command_isr(
             dispatch_get_param!(p,
                 RunMode => encode_run_mode(&foc.mode),
                 IqRef => foc.state.i_ref,
-                Angle => input_angle_to_output_angle(foc.state.angle),
-                AngleRef => input_angle_to_output_angle(foc.target.angle),
-                Speed => input_velocity_to_output_velocity(foc.state.velocity),
-                SpeedRef => input_velocity_to_output_velocity(foc.target.velocity),
-                SpeedLimit => input_velocity_to_output_velocity(foc.velocity_limit.unwrap_or(0.0)),
+                Angle => foc.state.angle,
+                AngleRef => foc.target.angle,
+                Speed => foc.state.velocity,
+                SpeedRef => foc.target.velocity,
+                SpeedLimit => foc.velocity_limit.unwrap_or(0.0),
                 TorqueLimit => foc.torque_limit.unwrap_or(0.0),
                 Iq => foc.state.i_q,
                 AngleKp => foc.angle_pid.gains.p,
@@ -1320,21 +1316,6 @@ fn read_sensor() -> SensorReading {
         rotor_velocity: f32::from_le_bytes(raw_rotor_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }
-}
-
-#[inline]
-pub(crate) fn output_angle_to_input_angle(output_angle: f32) -> f32 {
-    output_angle * OUTPUT_SHAFT_REDUCTION_RATIO_F32
-}
-
-#[inline]
-pub(crate) fn input_angle_to_output_angle(input_angle: f32) -> f32 {
-    input_angle / OUTPUT_SHAFT_REDUCTION_RATIO_F32
-}
-
-#[inline]
-pub(crate) fn output_velocity_to_input_velocity(output_velocity: f32) -> f32 {
-    output_velocity * OUTPUT_SHAFT_REDUCTION_RATIO_F32
 }
 
 #[inline]

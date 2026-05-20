@@ -12,15 +12,13 @@ use embassy_stm32::pac;
 use can_message::message::{
     DebugValue, DebugValueKind, FeedbackType, MotorCurrent, MotorStatus, ResponseBody,
 };
-use foc::angle_input::SensorReading;
+use foc::angle_input::ControlReading;
 use foc::controller::{FocController, FocState, RunMode};
 use foc::current::PhaseCurrent;
 use foc::pwm_output::DutyCycle3Phase;
 
 use crate::drv8316::{self, CsaGain};
-use crate::{
-    RESPONSE_CHANNEL, input_angle_to_output_angle, input_velocity_to_output_velocity, read_sensor,
-};
+use crate::{RESPONSE_CHANNEL, input_velocity_to_output_velocity, read_sensor};
 
 /// Maximum PWM compare value (11-bit: 2047)
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
@@ -133,10 +131,10 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
         if let Some(ref mut ctx) = *FOC_CONTEXT.borrow(cs).borrow_mut() {
             // Read sensor data from atomics (updated by encoder_task)
             let sensor_reading = read_sensor();
-            let reading = SensorReading {
-                output_phase: sensor_reading.output_phase,
+            let reading = ControlReading {
+                output_angle: sensor_reading.output_phase,
+                output_velocity: input_velocity_to_output_velocity(sensor_reading.rotor_velocity),
                 rotor_phase: sensor_reading.rotor_phase,
-                rotor_velocity: sensor_reading.rotor_velocity,
                 dt: CONTROL_LOOP_DT_SECONDS,
             };
 
@@ -191,8 +189,8 @@ fn send_feedback(state: &FocState) {
 
     let body = match feedback_type {
         0 => ResponseBody::MotorStatus(MotorStatus {
-            angle: input_angle_to_output_angle(state.angle),
-            velocity: input_velocity_to_output_velocity(state.velocity),
+            angle: state.angle,
+            velocity: state.velocity,
             torque: state.i_q,
             temperature: 0.0,
         }),

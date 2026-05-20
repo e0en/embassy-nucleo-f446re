@@ -2,11 +2,12 @@ use crate::adc;
 use crate::adc::AdcSelector;
 use crate::bldc_driver::PwmDriver;
 use crate::drv8316;
+use crate::input_velocity_to_output_velocity;
 
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::SensorReading;
+use foc::angle_input::{ControlReading, SensorReading};
 use foc::controller::{FocController, RunMode};
 use foc::pwm_output::PwmOutput;
 
@@ -43,9 +44,15 @@ where
         while i_sample < n_sample {
             let now = Instant::now();
             let reading = read_sensor();
+            let control = ControlReading {
+                output_angle: reading.output_phase,
+                output_velocity: input_velocity_to_output_velocity(reading.rotor_velocity),
+                rotor_phase: reading.rotor_phase,
+                dt: reading.dt,
+            };
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+            if let Ok(duty) = foc.get_duty_cycle(&control, phase_current) {
                 driver.run(duty);
             }
 

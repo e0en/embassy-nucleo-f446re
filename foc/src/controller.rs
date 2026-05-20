@@ -31,7 +31,7 @@ fn wrap_0_tau(angle: f32) -> f32 {
 }
 
 use crate::{
-    angle_input::SensorReading,
+    angle_input::{ControlReading, SensorReading},
     lowpass_filter::LowPassFilter,
     pid::{PID, PIDController},
     pwm::FocError,
@@ -592,14 +592,14 @@ where
 
     pub fn get_duty_cycle(
         &mut self,
-        angle_reading: &SensorReading,
+        angle_reading: &ControlReading,
         measured_current: PhaseCurrent,
     ) -> Result<DutyCycle3Phase, FocError> {
         let s = angle_reading;
         self.state.dt = s.dt;
 
-        self.state.angle = s.output_phase;
-        self.state.velocity = s.rotor_velocity;
+        self.state.angle = s.output_angle;
+        self.state.velocity = s.output_velocity;
         let electrical_angle = self.to_electrical_angle(s.rotor_phase);
 
         if !self.is_running {
@@ -626,27 +626,27 @@ where
         }
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
-                let angle_error = self.target.angle - s.output_phase;
+                let angle_error = self.target.angle - s.output_angle;
                 self.state.angle_error = angle_error;
                 let mut target_velocity = self.angle_pid.update(angle_error, s.dt);
                 self.state.angle_integral = self.angle_pid.integral;
                 if let Some(v) = self.velocity_limit {
                     target_velocity = target_velocity.min(v).max(-v);
                 }
-                let velocity_error = target_velocity - s.rotor_velocity;
+                let velocity_error = target_velocity - s.output_velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Velocity => {
-                let velocity_error = self.target.velocity - s.rotor_velocity;
+                let velocity_error = self.target.velocity - s.output_velocity;
                 self.state.velocity_error = velocity_error;
                 self.state.velocity_integral = self.velocity_pid.integral;
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Impedance => {
-                let angle_error = self.target.angle - s.output_phase;
-                let velocity_error = self.target.velocity - s.rotor_velocity;
+                let angle_error = self.target.angle - s.output_angle;
+                let velocity_error = self.target.velocity - s.output_velocity;
                 self.state.angle_error = angle_error;
                 self.state.velocity_error = velocity_error;
                 self.target.spring * angle_error
@@ -774,7 +774,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{FocController, MotorSetup, OutputLimit, PID, fmodf};
-    use crate::angle_input::SensorReading;
+    use crate::angle_input::ControlReading;
     use crate::controller::RunMode;
     use crate::current::PhaseCurrent;
 
@@ -891,10 +891,10 @@ mod tests {
 
         let duty = controller
             .get_duty_cycle(
-                &SensorReading {
-                    output_phase: 1.0,
+                &ControlReading {
+                    output_angle: 1.0,
+                    output_velocity: 0.5,
                     rotor_phase: 1.0,
-                    rotor_velocity: 0.5,
                     dt: 0.001,
                 },
                 PhaseCurrent::new(0.3, -0.1, -0.2),
@@ -1006,10 +1006,10 @@ mod tests {
 
         controller.set_run_mode(RunMode::Angle);
         controller.set_target_angle(1.0);
-        let reading = SensorReading {
-            output_phase: 0.0,
+        let reading = ControlReading {
+            output_angle: 0.0,
+            output_velocity: 0.0,
             rotor_phase: 0.0,
-            rotor_velocity: 0.0,
             dt: 0.001,
         };
 
@@ -1032,10 +1032,10 @@ mod tests {
         let phase_angle = 1.1;
         let duty_a = controller
             .get_duty_cycle(
-                &SensorReading {
-                    output_phase: phase_angle,
+                &ControlReading {
+                    output_angle: phase_angle,
+                    output_velocity: 0.0,
                     rotor_phase: phase_angle,
-                    rotor_velocity: 0.0,
                     dt: 0.001,
                 },
                 PhaseCurrent::new(0.0, 0.0, 0.0),
@@ -1043,10 +1043,10 @@ mod tests {
             .unwrap();
         let duty_b = controller
             .get_duty_cycle(
-                &SensorReading {
-                    output_phase: phase_angle + 40_000.0 * PI,
+                &ControlReading {
+                    output_angle: phase_angle + 40_000.0 * PI,
+                    output_velocity: 0.0,
                     rotor_phase: phase_angle,
-                    rotor_velocity: 0.0,
                     dt: 0.001,
                 },
                 PhaseCurrent::new(0.0, 0.0, 0.0),
@@ -1056,5 +1056,27 @@ mod tests {
         assert!((duty_a.t1 - duty_b.t1).abs() < 1e-6);
         assert!((duty_a.t2 - duty_b.t2).abs() < 1e-6);
         assert!((duty_a.t3 - duty_b.t3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn controller_state_uses_output_side_angle_and_velocity() {
+        let mut controller = build_controller();
+        controller.set_psu_voltage(16.0);
+        controller.enable();
+        controller.set_run_mode(RunMode::Velocity);
+        controller.set_target_velocity(2.0);
+
+        let reading = ControlReading {
+            output_angle: 1.25,
+            output_velocity: 0.5,
+            rotor_phase: 0.75,
+            dt: 0.001,
+        };
+
+        let _ = controller.get_duty_cycle(&reading, PhaseCurrent::new(0.0, 0.0, 0.0));
+
+        assert!((controller.state.angle - 1.25).abs() < 1e-6);
+        assert!((controller.state.velocity - 0.5).abs() < 1e-6);
+        assert!((controller.state.velocity_error - 1.5).abs() < 1e-6);
     }
 }

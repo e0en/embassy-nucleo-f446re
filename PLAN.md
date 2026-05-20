@@ -138,6 +138,8 @@ Verification:
 
 ### 9. Split controller input from sensor input
 
+Status: Completed
+
 - Update `foc/src/controller.rs`, `foc/src/angle_input.rs`, and `stm32-kit/src/foc_isr.rs`.
 - Introduce a controller-facing input type such as:
   - `ControlReading { output_angle, output_velocity, rotor_phase, dt }`
