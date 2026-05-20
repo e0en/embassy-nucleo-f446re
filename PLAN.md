@@ -44,6 +44,8 @@ Verification:
 
 ### 3. Make the primary tracker rotor-specific
 
+Status: Completed
+
 - Update `stm32-kit/src/encoder_correction.rs`.
 - Keep the existing primary-encoder tracking logic, but make its role explicit:
   - wrapped `rotor_phase`

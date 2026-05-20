@@ -33,7 +33,7 @@ use crate::{
     cordic::{initialize_cordic, run_and_log_validation_tests, sincos},
     current_tuning::calculate_current_pi,
     encoder_correction::{
-        AngleTracker, runtime_snapshot, runtime_version, set_runtime_correction, wrap_0_tau,
+        RotorTracker, runtime_snapshot, runtime_version, set_runtime_correction, wrap_0_tau,
     },
 };
 
@@ -1172,7 +1172,7 @@ async fn encoder_task(
     mut sensor: As5047P<'static>,
     mut secondary_sensor: Option<As5047P<'static>>,
 ) {
-    let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
+    let mut tracker = RotorTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
     let mut correction_version = 0;
     let mut correction = runtime_snapshot();
     let mut zero_offset_version = ZERO_OFFSET_VERSION.load(Ordering::Relaxed);
@@ -1185,7 +1185,7 @@ async fn encoder_task(
         }
         let latest_zero_offset_version = ZERO_OFFSET_VERSION.load(Ordering::Relaxed);
         if latest_zero_offset_version != zero_offset_version {
-            tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
+            tracker = RotorTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
             zero_offset_version = latest_zero_offset_version;
         }
         let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
@@ -1195,9 +1195,13 @@ async fn encoder_task(
                 let wrapped_angle =
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
                 let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
-                let mut reading = tracker.update(zeroed_angle, Instant::now());
-                reading.rotor_phase = wrapped_angle;
-                write_sensor_snapshot(reading);
+                let rotor = tracker.update(zeroed_angle, Instant::now());
+                write_sensor_snapshot(SensorReading {
+                    output_phase: zeroed_angle,
+                    rotor_phase: wrapped_angle,
+                    rotor_velocity: rotor.rotor_velocity,
+                    dt: rotor.dt,
+                });
             }
             Err(as5047p::Error::CommandFrame) => {
                 if sensor.read_and_reset_error_flag().await.is_err() {
