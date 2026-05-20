@@ -6,7 +6,7 @@ use crate::drv8316;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::AngleReading;
+use foc::angle_input::SensorReading;
 use foc::controller::{FocController, RunMode};
 use foc::pwm_output::PwmOutput;
 
@@ -20,7 +20,7 @@ pub async fn find_kv_rating<'a, Fsincos, Fsensor, TIM, T>(
 ) -> f32
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> SensorReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -52,7 +52,7 @@ where
             if let Some(dt) = now.checked_duration_since(t0)
                 && dt > Duration::from_secs(2)
             {
-                *v_avg += reading.velocity / n_sample as f32;
+                *v_avg += reading.rotor_velocity / n_sample as f32;
                 i_sample += 1;
             }
             Timer::after_millis(1).await;

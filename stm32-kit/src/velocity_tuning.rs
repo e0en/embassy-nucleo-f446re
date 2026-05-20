@@ -6,7 +6,7 @@ use crate::drv8316;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::Timer;
-use foc::angle_input::AngleReading;
+use foc::angle_input::SensorReading;
 use foc::controller::{FocController, RunMode};
 use foc::pid::PID;
 use foc::pwm_output::PwmOutput;
@@ -54,7 +54,7 @@ pub async fn tune_velocity_pi<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Option<PID>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> SensorReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -68,7 +68,7 @@ where
     ) -> Option<f32>
     where
         Fsincos: Fn(f32) -> (f32, f32),
-        Fsensor: Fn() -> AngleReading,
+        Fsensor: Fn() -> SensorReading,
         TIM: AdvancedInstance4Channel,
         T: stm32_adc::Instance + AdcSelector,
     {
@@ -124,13 +124,13 @@ where
                     previous_elapsed,
                     previous_angle,
                     elapsed,
-                    reading.angle,
+                    reading.output_phase,
                 );
                 velocity_samples += 1;
             }
             iq_sum += foc.state.i_q;
             previous_elapsed = elapsed;
-            previous_angle = reading.angle;
+            previous_angle = reading.output_phase;
             Timer::after_millis(1).await;
         }
 

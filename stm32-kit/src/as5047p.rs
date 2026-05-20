@@ -1,7 +1,7 @@
 use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::{AngleInput, AngleReading};
+use foc::angle_input::{AngleInput, SensorReading};
 use foc::tracking_observer::TrackingObserver;
 
 const RAW_ANGLE_MAX: u16 = 1 << 14;
@@ -149,7 +149,7 @@ type SpiMutex = embassy_sync::mutex::Mutex<
 impl<'d> AngleInput for As5047P<'d> {
     type ReadError = Error;
 
-    async fn read_async(&mut self) -> Result<AngleReading, Self::ReadError> {
+    async fn read_async(&mut self) -> Result<SensorReading, Self::ReadError> {
         let now = Instant::now();
         let dt_duration = now
             .checked_duration_since(self.previous_time)
@@ -162,10 +162,10 @@ impl<'d> AngleInput for As5047P<'d> {
                 self.previous_time = now;
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = raw_angle as f32 * RAW_TO_RADIAN;
-                Ok(AngleReading {
-                    angle: self.previous_angle,
-                    phase_angle: self.previous_angle,
-                    velocity: 0.0,
+                Ok(SensorReading {
+                    output_phase: self.previous_angle,
+                    rotor_phase: self.previous_angle,
+                    rotor_velocity: 0.0,
                     dt: 0.0,
                 })
             }
@@ -209,10 +209,10 @@ impl<'d> AngleInput for As5047P<'d> {
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
-                Ok(AngleReading {
-                    angle: cumulative_angle,
-                    phase_angle: raw_angle as f32 * RAW_TO_RADIAN,
-                    velocity,
+                Ok(SensorReading {
+                    output_phase: cumulative_angle,
+                    rotor_phase: raw_angle as f32 * RAW_TO_RADIAN,
+                    rotor_velocity: velocity,
                     dt,
                 })
             }

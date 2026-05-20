@@ -2,7 +2,7 @@ use crate::i2c;
 use embassy_stm32::i2c::{self as stm32_i2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::{AngleInput, AngleReading};
+use foc::angle_input::{AngleInput, SensorReading};
 use foc::units::{Radian, RadianPerSecond, Second};
 
 const I2C_ADDRESS: u8 = 0x36; // AS5600 I2C address
@@ -114,7 +114,7 @@ impl As5600 {
 impl AngleInput for As5600 {
     type ReadError = stm32_i2c::Error;
 
-    async fn read_async(&mut self) -> Result<AngleReading, Self::ReadError> {
+    async fn read_async(&mut self) -> Result<SensorReading, Self::ReadError> {
         let now = Instant::now();
         let dt = Second((now - self.previous_time).as_micros() as f32 / 1e6);
         let raw_angle = self.read_raw_angle().await?;
@@ -123,10 +123,10 @@ impl AngleInput for As5600 {
                 self.previous_time = now;
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = Radian(raw_angle as f32 * RAW_TO_RADIAN);
-                Ok(AngleReading {
-                    angle: self.previous_angle,
-                    phase_angle: self.previous_angle,
-                    velocity: RadianPerSecond(0.0),
+                Ok(SensorReading {
+                    output_phase: self.previous_angle,
+                    rotor_phase: self.previous_angle,
+                    rotor_velocity: RadianPerSecond(0.0),
                     dt: Second(0.0),
                 })
             }
@@ -172,10 +172,10 @@ impl AngleInput for As5600 {
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
-                Ok(AngleReading {
-                    angle: angle + 2.0 * core::f32::consts::PI * self.full_rotations as f32,
-                    phase_angle: Radian(raw_angle as f32 * RAW_TO_RADIAN),
-                    velocity,
+                Ok(SensorReading {
+                    output_phase: angle + 2.0 * core::f32::consts::PI * self.full_rotations as f32,
+                    rotor_phase: Radian(raw_angle as f32 * RAW_TO_RADIAN),
+                    rotor_velocity: velocity,
                     dt,
                 })
             }

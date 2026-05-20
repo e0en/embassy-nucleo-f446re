@@ -23,7 +23,7 @@ mod velocity_tuning;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
-use foc::angle_input::AngleReading;
+use foc::angle_input::SensorReading;
 
 use crate::{
     adc::measure_vm_sense,
@@ -331,7 +331,7 @@ async fn find_minimum_align_voltage(
         Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SETTLE_MS).await;
 
         let mut electrical_angle = LOCK_ANGLE;
-        let mut previous_angle = read_sensor().angle;
+        let mut previous_angle = read_sensor().output_phase;
         let mut forward_positive_steps = 0;
         let mut forward_negative_steps = 0;
         let mut forward_net_angle = 0.0;
@@ -348,7 +348,7 @@ async fn find_minimum_align_voltage(
             .map_err(|_| "Failed to generate align search sweep signal")?;
             driver.run(signal);
             Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().angle;
+            let angle = read_sensor().output_phase;
             let delta = angle - previous_angle;
             if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
                 forward_positive_steps += 1;
@@ -374,7 +374,7 @@ async fn find_minimum_align_voltage(
             .map_err(|_| "Failed to generate align search sweep signal")?;
             driver.run(signal);
             Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().angle;
+            let angle = read_sensor().output_phase;
             let delta = angle - previous_angle;
             if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
                 backward_negative_steps += 1;
@@ -1110,21 +1110,21 @@ async fn disarm_motor_due_to_fault() {
     MOTOR_DISARMED_BY_FAULT.store(true, Ordering::Relaxed);
 }
 
-fn write_sensor_snapshot(reading: AngleReading) {
+fn write_sensor_snapshot(reading: SensorReading) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
 
     snapshot.angle.store(
-        u32::from_le_bytes(reading.angle.to_le_bytes()),
+        u32::from_le_bytes(reading.output_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
     snapshot.phase_angle.store(
-        u32::from_le_bytes(reading.phase_angle.to_le_bytes()),
+        u32::from_le_bytes(reading.rotor_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
     snapshot.velocity.store(
-        u32::from_le_bytes(reading.velocity.to_le_bytes()),
+        u32::from_le_bytes(reading.rotor_velocity.to_le_bytes()),
         Ordering::Relaxed,
     );
     snapshot.dt.store(
@@ -1196,7 +1196,7 @@ async fn encoder_task(
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
                 let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
                 let mut reading = tracker.update(zeroed_angle, Instant::now());
-                reading.phase_angle = wrapped_angle;
+                reading.rotor_phase = wrapped_angle;
                 write_sensor_snapshot(reading);
             }
             Err(as5047p::Error::CommandFrame) => {
@@ -1244,7 +1244,7 @@ async fn encoder_task(
     }
 }
 
-fn read_sensor() -> AngleReading {
+fn read_sensor() -> SensorReading {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
     let raw_angle = snapshot.angle.load(Ordering::Relaxed);
@@ -1252,10 +1252,10 @@ fn read_sensor() -> AngleReading {
     let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
     let raw_dt = snapshot.dt.load(Ordering::Relaxed);
 
-    AngleReading {
-        angle: f32::from_le_bytes(raw_angle.to_le_bytes()),
-        phase_angle: f32::from_le_bytes(raw_phase_angle.to_le_bytes()),
-        velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
+    SensorReading {
+        output_phase: f32::from_le_bytes(raw_angle.to_le_bytes()),
+        rotor_phase: f32::from_le_bytes(raw_phase_angle.to_le_bytes()),
+        rotor_velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }
 }

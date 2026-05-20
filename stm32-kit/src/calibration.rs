@@ -151,7 +151,7 @@ where
 {
     // assumption: mechanical angle and voltage (electrical) angle are aligned
     let duty = foc
-        .get_vq_duty_cycle(align_voltage, read_sensor().angle)
+        .get_vq_duty_cycle(align_voltage, read_sensor().output_phase)
         .ok()?;
     driver.run(duty);
     Timer::after_millis(SETTLE_TIME_MS).await;
@@ -162,7 +162,7 @@ where
         let measured = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
         let mapped = foc.normalize_current(measured);
         let reading = read_sensor();
-        let angle = reading.angle;
+        let angle = reading.output_phase;
         let e_angle = foc.to_electrical_angle(angle);
 
         let (i_alpha, i_beta) = clarke_transform(mapped.a, mapped.b, mapped.c);
@@ -284,7 +284,7 @@ async fn average_sensor_angle(sample_count: usize) -> Option<f32> {
     let mut sum_cos = 0.0;
 
     for _ in 0..sample_count {
-        let angle = wrap_0_tau(read_sensor().angle);
+        let angle = wrap_0_tau(read_sensor().output_phase);
         let (s, c) = sincos(angle);
         sum_sin += s;
         sum_cos += c;

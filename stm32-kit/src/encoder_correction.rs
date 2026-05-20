@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use embassy_time::Instant;
-use foc::angle_input::AngleReading;
+use foc::angle_input::SensorReading;
 use foc::tracking_observer::TrackingObserver;
 
 use crate::cordic::atan2;
@@ -84,7 +84,7 @@ impl AngleTracker {
         self.full_turns as f32 * TAU + self.residual_angle
     }
 
-    pub fn update(&mut self, wrapped_angle: f32, now: Instant) -> AngleReading {
+    pub fn update(&mut self, wrapped_angle: f32, now: Instant) -> SensorReading {
         let wrapped_angle = wrap_0_tau(wrapped_angle);
         match self.previous_wrapped_angle {
             None => {
@@ -93,10 +93,10 @@ impl AngleTracker {
                 self.full_turns = 0;
                 self.residual_angle = wrapped_angle;
                 self.observer_angle = wrapped_angle;
-                AngleReading {
-                    angle: self.cumulative_angle(),
-                    phase_angle: wrapped_angle,
-                    velocity: 0.0,
+                SensorReading {
+                    output_phase: self.cumulative_angle(),
+                    rotor_phase: wrapped_angle,
+                    rotor_velocity: 0.0,
                     dt: 0.0,
                 }
             }
@@ -124,13 +124,13 @@ impl AngleTracker {
                     self.observer.angle += TAU;
                 }
 
-                let velocity = self.observer.update(self.observer_angle, dt);
+                let rotor_velocity = self.observer.update(self.observer_angle, dt);
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
-                AngleReading {
-                    angle: self.cumulative_angle(),
-                    phase_angle: wrapped_angle,
-                    velocity,
+                SensorReading {
+                    output_phase: self.cumulative_angle(),
+                    rotor_phase: wrapped_angle,
+                    rotor_velocity,
                     dt,
                 }
             }
@@ -298,7 +298,7 @@ mod tests {
         for _ in 0..120_000 {
             now += embassy_time::Duration::from_micros(1_000);
             wrapped_angle = wrap_0_tau(wrapped_angle + velocity * dt);
-            last_velocity = tracker.update(wrapped_angle, now).velocity;
+            last_velocity = tracker.update(wrapped_angle, now).rotor_velocity;
         }
 
         assert!(
@@ -322,7 +322,7 @@ mod tests {
         for _ in 0..120_000 {
             now += embassy_time::Duration::from_micros(1_000);
             wrapped_angle = wrap_0_tau(wrapped_angle + velocity * dt);
-            last_angle = tracker.update(wrapped_angle, now).angle;
+            last_angle = tracker.update(wrapped_angle, now).output_phase;
             expected_angle += velocity as f64 * dt as f64;
         }
 

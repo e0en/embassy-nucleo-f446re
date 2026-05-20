@@ -4,6 +4,7 @@ pub mod pid;
 pub mod pwm;
 pub use pwm::svpwm;
 pub mod angle_input;
+pub use angle_input::{RawSensorReading, SensorReading};
 pub mod controller;
 pub mod current;
 pub mod output_angle;
