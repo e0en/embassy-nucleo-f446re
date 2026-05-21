@@ -13,7 +13,7 @@ use crate::{
     calibration,
     cordic::sincos,
     current_tuning, drv8316, drv8316t,
-    encoder_correction::{runtime_snapshot, set_runtime_correction},
+    encoder_correction::{runtime_snapshot, set_runtime_correction, wrap_pm_pi},
     flash_config, foc_isr, gm3506 as motor, motor_tuning, pwm, velocity_tuning,
 };
 
@@ -165,7 +165,7 @@ async fn find_minimum_align_voltage(
         Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SETTLE_MS).await;
 
         let mut electrical_angle = LOCK_ANGLE;
-        let mut previous_angle = read_sensor().cumulative_angle;
+        let mut previous_angle = read_sensor().phase;
         let mut forward_positive_steps = 0;
         let mut forward_negative_steps = 0;
         let mut forward_net_angle = 0.0;
@@ -182,8 +182,10 @@ async fn find_minimum_align_voltage(
             .map_err(|_| "Failed to generate align search sweep signal")?;
             driver.run(signal);
             Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().cumulative_angle;
-            let delta = angle - previous_angle;
+            let angle = read_sensor().phase;
+            // The sweep only needs the local signed motion, so wrap the phase
+            // delta to preserve direction across the 0/2pi boundary.
+            let delta = wrap_pm_pi(angle - previous_angle);
             if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
                 forward_positive_steps += 1;
             } else if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
@@ -208,8 +210,8 @@ async fn find_minimum_align_voltage(
             .map_err(|_| "Failed to generate align search sweep signal")?;
             driver.run(signal);
             Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().cumulative_angle;
-            let delta = angle - previous_angle;
+            let angle = read_sensor().phase;
+            let delta = wrap_pm_pi(angle - previous_angle);
             if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
                 backward_negative_steps += 1;
             } else if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
