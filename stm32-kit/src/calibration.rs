@@ -161,8 +161,8 @@ where
         let (ia_raw, ib_raw, ic_raw) = p_adc.read();
         let measured = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
         let mapped = foc.normalize_current(measured);
-        let reading = read_sensor();
-        let angle = reading.angle;
+        let encoder_reading = read_sensor();
+        let angle = encoder_reading.angle;
         let e_angle = foc.to_electrical_angle(angle);
 
         let (i_alpha, i_beta) = clarke_transform(mapped.a, mapped.b, mapped.c);

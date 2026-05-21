@@ -31,7 +31,7 @@ fn wrap_0_tau(angle: f32) -> f32 {
 }
 
 use crate::{
-    angle_input::AngleReading,
+    encoder::EncoderReading,
     lowpass_filter::LowPassFilter,
     pid::{PID, PIDController},
     pwm::FocError,
@@ -260,7 +260,7 @@ where
         wait_function: FWait,
     ) -> Result<(), FocError>
     where
-        FSensor: Fn() -> AngleReading,
+        FSensor: Fn() -> EncoderReading,
         FMotor: FnMut(DutyCycle3Phase),
         FWait: Fn(f32) -> FutUnit + 'a,
         FutUnit: Future<Output = ()> + Send + 'a,
@@ -344,7 +344,7 @@ where
         wait_function: FWait,
     ) -> Result<u8, FocError>
     where
-        FSensor: Fn() -> AngleReading,
+        FSensor: Fn() -> EncoderReading,
         FMotor: FnMut(DutyCycle3Phase),
         FWait: Fn(f32) -> FutUnit + 'a,
         FutUnit: Future<Output = ()> + Send + 'a,
@@ -592,10 +592,10 @@ where
 
     pub fn get_duty_cycle(
         &mut self,
-        angle_reading: &AngleReading,
+        encoder_reading: &EncoderReading,
         measured_current: PhaseCurrent,
     ) -> Result<DutyCycle3Phase, FocError> {
-        let s = angle_reading;
+        let s = encoder_reading;
         self.state.dt = s.dt;
 
         self.state.angle = s.angle;
@@ -774,9 +774,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{FocController, MotorSetup, OutputLimit, PID, fmodf};
-    use crate::angle_input::AngleReading;
     use crate::controller::RunMode;
     use crate::current::PhaseCurrent;
+    use crate::encoder::EncoderReading;
 
     fn test_sincos(_: f32) -> (f32, f32) {
         (0.0, 1.0)
@@ -891,7 +891,7 @@ mod tests {
 
         let duty = controller
             .get_duty_cycle(
-                &AngleReading {
+                &EncoderReading {
                     angle: 1.0,
                     phase_angle: 1.0,
                     velocity: 0.5,
@@ -1006,14 +1006,14 @@ mod tests {
 
         controller.set_run_mode(RunMode::Angle);
         controller.set_target_angle(1.0);
-        let reading = AngleReading {
+        let encoder_reading = EncoderReading {
             angle: 0.0,
             phase_angle: 0.0,
             velocity: 0.0,
             dt: 0.001,
         };
 
-        let _ = controller.get_duty_cycle(&reading, PhaseCurrent::new(0.0, 0.0, 0.0));
+        let _ = controller.get_duty_cycle(&encoder_reading, PhaseCurrent::new(0.0, 0.0, 0.0));
 
         assert_eq!(controller.target.velocity, 0.0);
         assert!(controller.state.velocity_error > 0.0);
@@ -1032,7 +1032,7 @@ mod tests {
         let phase_angle = 1.1;
         let duty_a = controller
             .get_duty_cycle(
-                &AngleReading {
+                &EncoderReading {
                     angle: phase_angle,
                     phase_angle,
                     velocity: 0.0,
@@ -1043,7 +1043,7 @@ mod tests {
             .unwrap();
         let duty_b = controller
             .get_duty_cycle(
-                &AngleReading {
+                &EncoderReading {
                     angle: phase_angle + 40_000.0 * PI,
                     phase_angle,
                     velocity: 0.0,

@@ -6,8 +6,8 @@ use crate::drv8316;
 use core::hint::spin_loop;
 use core::sync::atomic::Ordering;
 
-use foc::angle_input::AngleReading;
 use foc::controller::FocController;
+use foc::encoder::EncoderReading;
 use foc::pid::PID;
 use foc::pwm_output::PwmOutput;
 
@@ -133,7 +133,7 @@ fn measure_d_axis_current<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<(f32, u32), ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -163,7 +163,7 @@ fn measure_q_axis_current<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<(f32, u32), ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -212,7 +212,7 @@ fn measure_d_axis_inductance_once<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -283,7 +283,7 @@ fn measure_d_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -313,7 +313,7 @@ fn measure_q_axis_inductance_once<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -384,7 +384,7 @@ fn measure_q_axis_inductance<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -416,7 +416,7 @@ fn measure_resistance<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -471,7 +471,7 @@ fn find_inductance_step_voltage<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -534,7 +534,7 @@ fn find_resistance_test_voltage<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<f32, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -584,7 +584,7 @@ pub async fn find_motor_impedance<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Result<MotorImpedance, ImpedanceError>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {

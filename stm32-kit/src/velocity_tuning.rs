@@ -6,8 +6,8 @@ use crate::drv8316;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::Timer;
-use foc::angle_input::AngleReading;
 use foc::controller::{FocController, RunMode};
+use foc::encoder::EncoderReading;
 use foc::pid::PID;
 use foc::pwm_output::PwmOutput;
 use foc::velocity_tuning::{calculate_velocity_pi, linear_regression_slope};
@@ -54,7 +54,7 @@ pub async fn tune_velocity_pi<'a, Fsincos, Fsensor, TIM, T>(
 ) -> Option<PID>
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -68,7 +68,7 @@ where
     ) -> Option<f32>
     where
         Fsincos: Fn(f32) -> (f32, f32),
-        Fsensor: Fn() -> AngleReading,
+        Fsensor: Fn() -> EncoderReading,
         TIM: AdvancedInstance4Channel,
         T: stm32_adc::Instance + AdcSelector,
     {
@@ -76,10 +76,10 @@ where
 
         // Hold zero torque before the test so the sample window starts at the torque step.
         for _ in 0..PRE_STEP_SETTLE_MS {
-            let reading = read_sensor();
+            let encoder_reading = read_sensor();
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+            if let Ok(duty) = foc.get_duty_cycle(&encoder_reading, phase_current) {
                 driver.run(duty);
             }
             Timer::after_millis(1).await;
@@ -89,10 +89,10 @@ where
 
         // Let the current loop settle before estimating the velocity plant.
         for _ in 0..POST_STEP_SETTLE_MS {
-            let reading = read_sensor();
+            let encoder_reading = read_sensor();
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+            if let Ok(duty) = foc.get_duty_cycle(&encoder_reading, phase_current) {
                 driver.run(duty);
             }
             Timer::after_millis(1).await;
@@ -108,10 +108,10 @@ where
         let mut velocity_samples = 0usize;
 
         for i in 0..N_SAMPLES {
-            let reading = read_sensor();
+            let encoder_reading = read_sensor();
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+            if let Ok(duty) = foc.get_duty_cycle(&encoder_reading, phase_current) {
                 driver.run(duty);
             }
             let elapsed = embassy_time::Instant::now()
@@ -124,13 +124,13 @@ where
                     previous_elapsed,
                     previous_angle,
                     elapsed,
-                    reading.angle,
+                    encoder_reading.angle,
                 );
                 velocity_samples += 1;
             }
             iq_sum += foc.state.i_q;
             previous_elapsed = elapsed;
-            previous_angle = reading.angle;
+            previous_angle = encoder_reading.angle;
             Timer::after_millis(1).await;
         }
 

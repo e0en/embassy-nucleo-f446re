@@ -12,9 +12,9 @@ use embassy_stm32::pac;
 use can_message::message::{
     DebugValue, DebugValueKind, FeedbackType, MotorCurrent, MotorStatus, ResponseBody,
 };
-use foc::angle_input::AngleReading;
 use foc::controller::{FocController, FocState, RunMode};
 use foc::current::PhaseCurrent;
+use foc::encoder::EncoderReading;
 use foc::pwm_output::DutyCycle3Phase;
 
 use crate::drv8316::{self, CsaGain};
@@ -131,11 +131,11 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
     critical_section::with(|cs| {
         if let Some(ref mut ctx) = *FOC_CONTEXT.borrow(cs).borrow_mut() {
             // Read sensor data from atomics (updated by encoder_task)
-            let sensor_reading = read_sensor();
-            let reading = AngleReading {
-                angle: sensor_reading.angle,
-                phase_angle: sensor_reading.phase_angle,
-                velocity: sensor_reading.velocity,
+            let encoder_reading = read_sensor();
+            let foc_reading = EncoderReading {
+                angle: encoder_reading.angle,
+                phase_angle: encoder_reading.phase_angle,
+                velocity: encoder_reading.velocity,
                 dt: CONTROL_LOOP_DT_SECONDS,
             };
 
@@ -145,7 +145,7 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
                 PhaseCurrent::new(0.0, 0.0, 0.0)
             };
 
-            if let Ok(duty) = ctx.foc.get_duty_cycle(&reading, phase_current) {
+            if let Ok(duty) = ctx.foc.get_duty_cycle(&foc_reading, phase_current) {
                 // Update PWM directly via PAC (no Embassy overhead)
                 set_pwm_duty(duty);
 

@@ -2,7 +2,7 @@ use defmt::{error, info};
 use embassy_stm32::mode::Async;
 use embassy_stm32::{gpio, spi};
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::{AngleInput, AngleReading};
+use foc::encoder::{AngleInput, EncoderReading};
 use foc::units::{Radian, RadianPerSecond, Second};
 
 const RAW_ANGLE_MAX: u16 = 1 << 12;
@@ -163,7 +163,7 @@ type SpiMutex = embassy_sync::mutex::Mutex<
 impl<'d> AngleInput for As5048A<'d> {
     type ReadError = Error;
 
-    async fn read_async(&mut self) -> Result<AngleReading, Self::ReadError> {
+    async fn read_async(&mut self) -> Result<EncoderReading, Self::ReadError> {
         let now = Instant::now();
         let dt = Second((now - self.previous_time).as_micros() as f32 / MICROS_PER_SECOND);
         let raw_angle = self.read_raw_angle().await?;
@@ -172,7 +172,7 @@ impl<'d> AngleInput for As5048A<'d> {
                 self.previous_time = now;
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = Radian(raw_angle as f32 * RAW_TO_RADIAN);
-                Ok(AngleReading {
+                Ok(EncoderReading {
                     angle: self.previous_angle,
                     phase_angle: self.previous_angle,
                     velocity: RadianPerSecond(0.0),
@@ -221,7 +221,7 @@ impl<'d> AngleInput for As5048A<'d> {
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = angle;
                 self.previous_time = now;
-                Ok(AngleReading {
+                Ok(EncoderReading {
                     angle: angle + TWO_PI * self.full_rotations as f32,
                     phase_angle: Radian(raw_angle as f32 * RAW_TO_RADIAN),
                     velocity,

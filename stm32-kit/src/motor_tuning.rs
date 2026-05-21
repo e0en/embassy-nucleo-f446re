@@ -6,8 +6,8 @@ use crate::drv8316;
 use embassy_stm32::adc as stm32_adc;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::{Duration, Instant, Timer};
-use foc::angle_input::AngleReading;
 use foc::controller::{FocController, RunMode};
+use foc::encoder::EncoderReading;
 use foc::pwm_output::PwmOutput;
 
 #[allow(dead_code)]
@@ -20,7 +20,7 @@ pub async fn find_kv_rating<'a, Fsincos, Fsensor, TIM, T>(
 ) -> f32
 where
     Fsincos: Fn(f32) -> (f32, f32),
-    Fsensor: Fn() -> AngleReading,
+    Fsensor: Fn() -> EncoderReading,
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
@@ -42,17 +42,17 @@ where
         i_sample = 0;
         while i_sample < n_sample {
             let now = Instant::now();
-            let reading = read_sensor();
+            let encoder_reading = read_sensor();
             let (ia_raw, ib_raw, ic_raw) = p_adc.read();
             let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, csa_gain);
-            if let Ok(duty) = foc.get_duty_cycle(&reading, phase_current) {
+            if let Ok(duty) = foc.get_duty_cycle(&encoder_reading, phase_current) {
                 driver.run(duty);
             }
 
             if let Some(dt) = now.checked_duration_since(t0)
                 && dt > Duration::from_secs(2)
             {
-                *v_avg += reading.velocity / n_sample as f32;
+                *v_avg += encoder_reading.velocity / n_sample as f32;
                 i_sample += 1;
             }
             Timer::after_millis(1).await;

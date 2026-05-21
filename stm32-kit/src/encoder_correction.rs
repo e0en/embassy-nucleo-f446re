@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use embassy_time::Instant;
-use foc::angle_input::AngleReading;
+use foc::encoder::EncoderReading;
 use foc::tracking_observer::TrackingObserver;
 
 use crate::cordic::atan2;
@@ -84,7 +84,7 @@ impl AngleTracker {
         self.full_turns as f32 * TAU + self.residual_angle
     }
 
-    pub fn update(&mut self, wrapped_angle: f32, now: Instant) -> AngleReading {
+    pub fn update(&mut self, wrapped_angle: f32, now: Instant) -> EncoderReading {
         let wrapped_angle = wrap_0_tau(wrapped_angle);
         match self.previous_wrapped_angle {
             None => {
@@ -93,7 +93,7 @@ impl AngleTracker {
                 self.full_turns = 0;
                 self.residual_angle = wrapped_angle;
                 self.observer_angle = wrapped_angle;
-                AngleReading {
+                EncoderReading {
                     angle: self.cumulative_angle(),
                     phase_angle: wrapped_angle,
                     velocity: 0.0,
@@ -127,7 +127,7 @@ impl AngleTracker {
                 let velocity = self.observer.update(self.observer_angle, dt);
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
-                AngleReading {
+                EncoderReading {
                     angle: self.cumulative_angle(),
                     phase_angle: wrapped_angle,
                     velocity,
