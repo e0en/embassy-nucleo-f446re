@@ -1,9 +1,9 @@
 use core::f32::consts::TAU;
 
-/// Estimate output angle from wrapped primary and secondary encoder angles.
+/// Estimate output revolution count from wrapped primary and secondary encoder angles.
 ///
 /// `angle_p` and `angle_s` must already be wrapped to `[0, TAU)`.
-pub fn estimate_output_angle(angle_p: f32, angle_s: f32, reduction_ratio: i32) -> f32 {
+pub fn estimate_output_rev_count(angle_p: f32, angle_s: f32, reduction_ratio: i32) -> i32 {
     let reduction_ratio_f = reduction_ratio as f32;
     let rev_p = angle_p * (reduction_ratio_f + 1.0) / TAU;
     let rev_s = -angle_s * reduction_ratio_f / TAU;
@@ -12,8 +12,7 @@ pub fn estimate_output_angle(angle_p: f32, angle_s: f32, reduction_ratio: i32) -
         rev_diff += reduction_ratio_f;
     }
 
-    let rev_count = round_positive(rev_diff) % reduction_ratio;
-    -(angle_p / reduction_ratio_f + rev_count as f32 * TAU / reduction_ratio_f)
+    round_positive(rev_diff) % reduction_ratio
 }
 
 #[inline]
@@ -43,23 +42,28 @@ mod tests {
         (a - b).abs() < EPSILON
     }
 
+    fn reconstruct_output_angle(angle_p: f32, rev_count: i32) -> f32 {
+        -(angle_p / REDUCTION_RATIO as f32 + rev_count as f32 * TAU / REDUCTION_RATIO as f32)
+    }
+
     #[test]
-    fn reconstructs_output_angle_from_ideal_sensor_pair() {
+    fn reconstructs_rev_count_from_ideal_sensor_pair() {
         let mut output_angle = -TAU;
         while output_angle <= 0.0 {
             let angle_p = wrap(-output_angle * REDUCTION_RATIO as f32);
             let angle_s = wrap(output_angle * (REDUCTION_RATIO as f32 + 1.0));
-            let estimate = estimate_output_angle(angle_p, angle_s, REDUCTION_RATIO);
+            let rev_count = estimate_output_rev_count(angle_p, angle_s, REDUCTION_RATIO);
+            let estimate = reconstruct_output_angle(angle_p, rev_count);
             assert!(
                 approx_eq(estimate, output_angle),
-                "output_angle={output_angle}, angle_p={angle_p}, angle_s={angle_s}, estimate={estimate}"
+                "output_angle={output_angle}, angle_p={angle_p}, angle_s={angle_s}, rev_count={rev_count}, estimate={estimate}"
             );
             output_angle += 0.01;
         }
     }
 
     #[test]
-    fn estimate_is_stable_across_wrapped_primary_boundaries() {
+    fn rev_count_is_stable_across_wrapped_primary_boundaries() {
         let base_output_angle = -1.0;
         let mut previous = None;
 
@@ -67,11 +71,12 @@ mod tests {
             let output_angle = base_output_angle + step as f32 * 0.001;
             let angle_p = wrap(-output_angle * REDUCTION_RATIO as f32);
             let angle_s = wrap(output_angle * (REDUCTION_RATIO as f32 + 1.0));
-            let estimate = estimate_output_angle(angle_p, angle_s, REDUCTION_RATIO);
+            let rev_count = estimate_output_rev_count(angle_p, angle_s, REDUCTION_RATIO);
+            let estimate = reconstruct_output_angle(angle_p, rev_count);
 
             assert!(
                 approx_eq(estimate, output_angle),
-                "output_angle={output_angle}, angle_p={angle_p}, angle_s={angle_s}, estimate={estimate}"
+                "output_angle={output_angle}, angle_p={angle_p}, angle_s={angle_s}, rev_count={rev_count}, estimate={estimate}"
             );
 
             if let Some(previous_estimate) = previous {
@@ -88,12 +93,12 @@ mod tests {
     fn wraps_rev_count_at_reduction_ratio_boundary() {
         let angle_p = 0.0;
         let angle_s = 0.0;
-        let estimate = estimate_output_angle(angle_p, angle_s, REDUCTION_RATIO);
-        assert!(approx_eq(estimate, 0.0), "estimate={estimate}");
+        let rev_count = estimate_output_rev_count(angle_p, angle_s, REDUCTION_RATIO);
+        assert_eq!(rev_count, 0, "rev_count={rev_count}");
     }
 
     #[test]
-    fn tolerates_secondary_encoder_noise() {
+    fn rev_count_tolerates_secondary_encoder_noise() {
         let mut output_angle = -TAU;
         let mut max_error = 0.0f32;
 
@@ -102,7 +107,8 @@ mod tests {
             let ideal_angle_s = wrap(output_angle * (REDUCTION_RATIO as f32 + 1.0));
             let noise = NOISE_AMPLITUDE * (output_angle * 17.0).sin();
             let angle_s = wrap(ideal_angle_s + noise);
-            let estimate = estimate_output_angle(angle_p, angle_s, REDUCTION_RATIO);
+            let rev_count = estimate_output_rev_count(angle_p, angle_s, REDUCTION_RATIO);
+            let estimate = reconstruct_output_angle(angle_p, rev_count);
             let error = (estimate - output_angle).abs();
 
             max_error = max_error.max(error);
