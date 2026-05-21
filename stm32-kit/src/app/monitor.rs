@@ -5,7 +5,6 @@ use foc::controller::FocState;
 
 use crate::{adc, foc_isr};
 
-use super::encoder::read_secondary_angle;
 use super::fault::log_fdcan_status;
 
 #[task]
@@ -44,9 +43,8 @@ pub(crate) async fn monitor_task() {
 fn log_state(state: &FocState, dt: &Duration, check_count: usize) {
     let dt_seconds = (dt.as_micros() as f32) / 1e6;
     let freq = (check_count as f32) / dt_seconds;
-    let angle_2 = read_secondary_angle();
     info!(
-        "MEASURED: a={}, a2={}, v={}, t={}, {} Hz",
-        state.angle, angle_2, state.velocity, state.v_q, freq
+        "MEASURED: a={}, v={}, t={}, {} Hz",
+        state.angle, state.velocity, state.v_q, freq
     );
 }

@@ -10,8 +10,8 @@ use embassy_time::{Instant, Timer};
 use foc::encoder::EncoderReading;
 
 use crate::{
-    as5047p::{self, As5047P, raw_to_angle},
-    dual_encoder::DualEncoder,
+    as5047p::{self, As5047P},
+    dual_encoder::{DualEncoder, DualEncoderReadError},
     encoder_correction::{AngleTracker, runtime_snapshot, runtime_version},
 };
 
@@ -40,7 +40,6 @@ impl SensorSnapshotBuffer {
 static SENSOR_SNAPSHOTS: [SensorSnapshotBuffer; 2] =
     [SensorSnapshotBuffer::new(), SensorSnapshotBuffer::new()];
 static ACTIVE_SENSOR_SNAPSHOT: AtomicU8 = AtomicU8::new(0);
-static ANGLE_2: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
 enum EncoderTaskCommand {
@@ -184,67 +183,57 @@ pub(crate) async fn encoder_task(
             continue;
         }
 
-        match dual_encoder.primary_mut().read_raw_angle().await {
-            Ok(raw_angle) => {
-                let zeroed_angle = correction.correct_wrapped_angle(raw_to_angle(raw_angle));
+        match dual_encoder.read_pair_async().await {
+            Ok(dual_reading) => {
+                let zeroed_angle = correction.correct_wrapped_angle(dual_reading.primary.phase);
                 let mut encoder_reading = tracker.update(zeroed_angle, Instant::now());
                 encoder_reading.phase = zeroed_angle;
                 write_sensor_snapshot(&encoder_reading);
-
-                match dual_encoder.secondary_mut().read_raw_angle().await {
-                    Ok(secondary_raw_angle) => {
-                        let secondary_angle = raw_to_angle(secondary_raw_angle);
-                        encoder_reading.phase = zeroed_angle;
-                        dual_encoder.observe(&encoder_reading, secondary_angle);
-                        ANGLE_2.store(
-                            u32::from_le_bytes(secondary_angle.to_le_bytes()),
-                            Ordering::Relaxed,
-                        );
-                    }
-                    Err(as5047p::Error::CommandFrame) => {
-                        if dual_encoder
-                            .secondary_mut()
-                            .read_and_reset_error_flag()
-                            .await
-                            .is_err()
-                        {
-                            error!("ENC2 CommandFrame error correction failed");
-                        }
-                    }
-                    Err(as5047p::Error::Parity) => {
-                        if dual_encoder
-                            .secondary_mut()
-                            .read_and_reset_error_flag()
-                            .await
-                            .is_err()
-                        {
-                            error!("ENC2 Parity error correction failed");
-                        }
-                    }
-                    Err(e) => error!("Failed to read from ENC2: {:?}", e),
-                }
             }
-            Err(as5047p::Error::CommandFrame) => {
+            Err(DualEncoderReadError::Primary(as5047p::Error::CommandFrame)) => {
                 if dual_encoder
                     .primary_mut()
                     .read_and_reset_error_flag()
                     .await
                     .is_err()
                 {
-                    error!("CommandFrame error correction failed");
+                    error!("ENC1 CommandFrame error correction failed");
                 }
             }
-            Err(as5047p::Error::Parity) => {
+            Err(DualEncoderReadError::Primary(as5047p::Error::Parity)) => {
                 if dual_encoder
                     .primary_mut()
                     .read_and_reset_error_flag()
                     .await
                     .is_err()
                 {
-                    error!("Parity error correction failed");
+                    error!("ENC1 Parity error correction failed");
                 }
             }
-            Err(e) => error!("Failed to read from sensor: {:?}", e),
+            Err(DualEncoderReadError::Primary(e)) => error!("Failed to read from ENC1: {:?}", e),
+            Err(DualEncoderReadError::Secondary(as5047p::Error::CommandFrame)) => {
+                if dual_encoder
+                    .secondary_mut()
+                    .read_and_reset_error_flag()
+                    .await
+                    .is_err()
+                {
+                    error!("ENC2 CommandFrame error correction failed");
+                }
+            }
+            Err(DualEncoderReadError::Secondary(as5047p::Error::Parity)) => {
+                if dual_encoder
+                    .secondary_mut()
+                    .read_and_reset_error_flag()
+                    .await
+                    .is_err()
+                {
+                    error!("ENC2 Parity error correction failed");
+                }
+            }
+            Err(DualEncoderReadError::Secondary(e)) => {
+                error!("Failed to read from ENC2: {:?}", e)
+            }
         }
 
         Timer::after_micros(50).await;
@@ -267,8 +256,4 @@ pub(crate) fn read_sensor() -> EncoderReading {
         velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }
-}
-
-pub(crate) fn read_secondary_angle() -> f32 {
-    f32::from_le_bytes(ANGLE_2.load(Ordering::Relaxed).to_le_bytes())
 }

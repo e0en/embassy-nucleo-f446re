@@ -12,6 +12,11 @@ pub enum DualEncoderReadError<PE, SE> {
     Secondary(SE),
 }
 
+pub struct DualEncoderReading {
+    pub primary: EncoderReading,
+    pub secondary_phase: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DualEncoderStatus {
     Ok,
@@ -102,21 +107,30 @@ where
     P: AngleInput,
     S: AngleInput,
 {
-    pub async fn read_async(
+    pub async fn read_pair_async(
         &mut self,
-    ) -> Result<EncoderReading, DualEncoderReadError<P::ReadError, S::ReadError>> {
-        let encoder_reading = self
+    ) -> Result<DualEncoderReading, DualEncoderReadError<P::ReadError, S::ReadError>> {
+        let primary = self
             .primary
             .read_async()
             .await
             .map_err(DualEncoderReadError::Primary)?;
-        let secondary_reading = self
+        let secondary = self
             .secondary
             .read_async()
             .await
             .map_err(DualEncoderReadError::Secondary)?;
-        self.observe(&encoder_reading, secondary_reading.phase);
+        self.observe(&primary, secondary.phase);
 
-        Ok(encoder_reading)
+        Ok(DualEncoderReading {
+            primary,
+            secondary_phase: secondary.phase,
+        })
+    }
+
+    pub async fn read_async(
+        &mut self,
+    ) -> Result<EncoderReading, DualEncoderReadError<P::ReadError, S::ReadError>> {
+        self.read_pair_async().await.map(|reading| reading.primary)
     }
 }
