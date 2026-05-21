@@ -124,13 +124,13 @@ where
                     previous_elapsed,
                     previous_angle,
                     elapsed,
-                    encoder_reading.angle,
+                    encoder_reading.cumulative_angle,
                 );
                 velocity_samples += 1;
             }
             iq_sum += foc.state.i_q;
             previous_elapsed = elapsed;
-            previous_angle = encoder_reading.angle;
+            previous_angle = encoder_reading.cumulative_angle;
             Timer::after_millis(1).await;
         }
 

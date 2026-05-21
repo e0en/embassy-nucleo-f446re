@@ -163,8 +163,9 @@ impl<'d> AngleInput for As5047P<'d> {
                 self.previous_raw_angle = Some(raw_angle);
                 self.previous_angle = raw_angle as f32 * RAW_TO_RADIAN;
                 Ok(EncoderReading {
-                    angle: self.previous_angle,
-                    phase_angle: self.previous_angle,
+                    phase: self.previous_angle,
+                    full_rotations: self.full_rotations,
+                    cumulative_angle: self.previous_angle,
                     velocity: 0.0,
                     dt: 0.0,
                 })
@@ -210,8 +211,9 @@ impl<'d> AngleInput for As5047P<'d> {
                 self.previous_angle = angle;
                 self.previous_time = now;
                 Ok(EncoderReading {
-                    angle: cumulative_angle,
-                    phase_angle: raw_angle as f32 * RAW_TO_RADIAN,
+                    phase: raw_angle as f32 * RAW_TO_RADIAN,
+                    full_rotations: self.full_rotations,
+                    cumulative_angle,
                     velocity,
                     dt,
                 })

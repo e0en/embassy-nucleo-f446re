@@ -1,6 +1,7 @@
 pub struct EncoderReading {
-    pub angle: f32,
-    pub phase_angle: f32,
+    pub phase: f32,
+    pub full_rotations: i32,
+    pub cumulative_angle: f32,
     pub velocity: f32,
     pub dt: f32,
 }

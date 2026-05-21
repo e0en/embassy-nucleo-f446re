@@ -94,8 +94,9 @@ impl AngleTracker {
                 self.residual_angle = wrapped_angle;
                 self.observer_angle = wrapped_angle;
                 EncoderReading {
-                    angle: self.cumulative_angle(),
-                    phase_angle: wrapped_angle,
+                    phase: wrapped_angle,
+                    full_rotations: self.full_turns,
+                    cumulative_angle: self.cumulative_angle(),
                     velocity: 0.0,
                     dt: 0.0,
                 }
@@ -128,8 +129,9 @@ impl AngleTracker {
                 self.previous_wrapped_angle = Some(wrapped_angle);
                 self.previous_time = now;
                 EncoderReading {
-                    angle: self.cumulative_angle(),
-                    phase_angle: wrapped_angle,
+                    phase: wrapped_angle,
+                    full_rotations: self.full_turns,
+                    cumulative_angle: self.cumulative_angle(),
                     velocity,
                     dt,
                 }
@@ -322,7 +324,7 @@ mod tests {
         for _ in 0..120_000 {
             now += embassy_time::Duration::from_micros(1_000);
             wrapped_angle = wrap_0_tau(wrapped_angle + velocity * dt);
-            last_angle = tracker.update(wrapped_angle, now).angle;
+            last_angle = tracker.update(wrapped_angle, now).cumulative_angle;
             expected_angle += velocity as f64 * dt as f64;
         }
 

@@ -137,7 +137,7 @@ where
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
-    let angle = read_sensor().angle;
+    let angle = read_sensor().phase;
     let duty = foc
         .get_vd_duty_cycle(v_d, angle)
         .map_err(|_| ImpedanceError::DutyGenerationFailed)?;
@@ -167,7 +167,7 @@ where
     TIM: AdvancedInstance4Channel,
     T: stm32_adc::Instance + AdcSelector,
 {
-    let angle = read_sensor().angle;
+    let angle = read_sensor().phase;
     let duty = foc
         .get_vq_duty_cycle(v_q, angle)
         .map_err(|_| ImpedanceError::DutyGenerationFailed)?;

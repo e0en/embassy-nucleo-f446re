@@ -21,7 +21,7 @@ mod motor_tuning;
 mod pwm;
 mod velocity_tuning;
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, Ordering};
 
 use foc::encoder::EncoderReading;
 
@@ -122,8 +122,9 @@ use foc::{
 };
 
 struct SensorSnapshotBuffer {
-    angle: AtomicU32,
-    phase_angle: AtomicU32,
+    phase: AtomicU32,
+    full_rotations: AtomicI32,
+    cumulative_angle: AtomicU32,
     velocity: AtomicU32,
     dt: AtomicU32,
 }
@@ -131,8 +132,9 @@ struct SensorSnapshotBuffer {
 impl SensorSnapshotBuffer {
     const fn new() -> Self {
         Self {
-            angle: AtomicU32::new(0),
-            phase_angle: AtomicU32::new(0),
+            phase: AtomicU32::new(0),
+            full_rotations: AtomicI32::new(0),
+            cumulative_angle: AtomicU32::new(0),
             velocity: AtomicU32::new(0),
             dt: AtomicU32::new(0),
         }
@@ -330,7 +332,7 @@ async fn find_minimum_align_voltage(
         Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SETTLE_MS).await;
 
         let mut electrical_angle = LOCK_ANGLE;
-        let mut previous_angle = read_sensor().angle;
+        let mut previous_angle = read_sensor().cumulative_angle;
         let mut forward_positive_steps = 0;
         let mut forward_negative_steps = 0;
         let mut forward_net_angle = 0.0;
@@ -347,7 +349,7 @@ async fn find_minimum_align_voltage(
             .map_err(|_| "Failed to generate align search sweep signal")?;
             driver.run(signal);
             Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().angle;
+            let angle = read_sensor().cumulative_angle;
             let delta = angle - previous_angle;
             if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
                 forward_positive_steps += 1;
@@ -373,7 +375,7 @@ async fn find_minimum_align_voltage(
             .map_err(|_| "Failed to generate align search sweep signal")?;
             driver.run(signal);
             Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().angle;
+            let angle = read_sensor().cumulative_angle;
             let delta = angle - previous_angle;
             if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
                 backward_negative_steps += 1;
@@ -1104,12 +1106,15 @@ fn write_sensor_snapshot(encoder_reading: EncoderReading) {
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
 
-    snapshot.angle.store(
-        u32::from_le_bytes(encoder_reading.angle.to_le_bytes()),
+    snapshot.phase.store(
+        u32::from_le_bytes(encoder_reading.phase.to_le_bytes()),
         Ordering::Relaxed,
     );
-    snapshot.phase_angle.store(
-        u32::from_le_bytes(encoder_reading.phase_angle.to_le_bytes()),
+    snapshot
+        .full_rotations
+        .store(encoder_reading.full_rotations, Ordering::Relaxed);
+    snapshot.cumulative_angle.store(
+        u32::from_le_bytes(encoder_reading.cumulative_angle.to_le_bytes()),
         Ordering::Relaxed,
     );
     snapshot.velocity.store(
@@ -1135,7 +1140,7 @@ fn read_zero_offsets() -> (f32, f32) {
 fn read_zero_reference_angles() -> (f32, f32) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let primary = f32::from_le_bytes(snapshot.phase_angle.load(Ordering::Relaxed).to_le_bytes());
+    let primary = f32::from_le_bytes(snapshot.phase.load(Ordering::Relaxed).to_le_bytes());
     let secondary = f32::from_le_bytes(SECONDARY_RAW_ANGLE.load(Ordering::Relaxed).to_le_bytes());
     (primary, secondary)
 }
@@ -1185,7 +1190,7 @@ async fn encoder_task(
                     correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
                 let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
                 let mut encoder_reading = tracker.update(zeroed_angle, Instant::now());
-                encoder_reading.phase_angle = wrapped_angle;
+                encoder_reading.phase = wrapped_angle;
                 write_sensor_snapshot(encoder_reading);
             }
             Err(as5047p::Error::CommandFrame) => {
@@ -1236,14 +1241,16 @@ async fn encoder_task(
 fn read_sensor() -> EncoderReading {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
     let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let raw_angle = snapshot.angle.load(Ordering::Relaxed);
-    let raw_phase_angle = snapshot.phase_angle.load(Ordering::Relaxed);
+    let raw_phase = snapshot.phase.load(Ordering::Relaxed);
+    let full_rotations = snapshot.full_rotations.load(Ordering::Relaxed);
+    let raw_cumulative_angle = snapshot.cumulative_angle.load(Ordering::Relaxed);
     let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
     let raw_dt = snapshot.dt.load(Ordering::Relaxed);
 
     EncoderReading {
-        angle: f32::from_le_bytes(raw_angle.to_le_bytes()),
-        phase_angle: f32::from_le_bytes(raw_phase_angle.to_le_bytes()),
+        phase: f32::from_le_bytes(raw_phase.to_le_bytes()),
+        full_rotations,
+        cumulative_angle: f32::from_le_bytes(raw_cumulative_angle.to_le_bytes()),
         velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }

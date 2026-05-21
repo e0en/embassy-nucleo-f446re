@@ -133,8 +133,9 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
             // Read sensor data from atomics (updated by encoder_task)
             let encoder_reading = read_sensor();
             let foc_reading = EncoderReading {
-                angle: encoder_reading.angle,
-                phase_angle: encoder_reading.phase_angle,
+                phase: encoder_reading.phase,
+                full_rotations: encoder_reading.full_rotations,
+                cumulative_angle: encoder_reading.cumulative_angle,
                 velocity: encoder_reading.velocity,
                 dt: CONTROL_LOOP_DT_SECONDS,
             };

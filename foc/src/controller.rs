@@ -281,7 +281,7 @@ where
         let mut angle = 0.0;
         let mut last_angle = 0.0;
         for _ in 0..100 {
-            angle = read_sensor().angle;
+            angle = read_sensor().phase;
             wait_function(0.01).await;
             if angle == last_angle {
                 break;
@@ -364,7 +364,7 @@ where
             wait_function(0.01).await;
         }
 
-        let start_angle = read_sensor().angle;
+        let start_angle = read_sensor().cumulative_angle;
 
         // Sweep through NUM_CYCLES electrical cycles
         let total_electrical = NUM_CYCLES * TWO_PI;
@@ -383,7 +383,7 @@ where
             wait_function(STEP_TIME).await;
         }
 
-        let end_angle = read_sensor().angle;
+        let end_angle = read_sensor().cumulative_angle;
         let delta_mechanical = (end_angle - start_angle).abs();
 
         // Validate minimum mechanical movement
@@ -598,9 +598,9 @@ where
         let s = encoder_reading;
         self.state.dt = s.dt;
 
-        self.state.angle = s.angle;
+        self.state.angle = s.cumulative_angle;
         self.state.velocity = s.velocity;
-        let electrical_angle = self.to_electrical_angle(s.phase_angle);
+        let electrical_angle = self.to_electrical_angle(s.phase);
 
         if !self.is_running {
             self.state.angle_error = 0.0;
@@ -626,7 +626,7 @@ where
         }
         let mut i_ref = match &self.mode {
             RunMode::Angle => {
-                let angle_error = self.target.angle - s.angle;
+                let angle_error = self.target.angle - s.cumulative_angle;
                 self.state.angle_error = angle_error;
                 let mut target_velocity = self.angle_pid.update(angle_error, s.dt);
                 self.state.angle_integral = self.angle_pid.integral;
@@ -645,7 +645,7 @@ where
                 self.velocity_pid.update(velocity_error, s.dt)
             }
             RunMode::Impedance => {
-                let angle_error = self.target.angle - s.angle;
+                let angle_error = self.target.angle - s.cumulative_angle;
                 let velocity_error = self.target.velocity - s.velocity;
                 self.state.angle_error = angle_error;
                 self.state.velocity_error = velocity_error;
@@ -892,8 +892,9 @@ mod tests {
         let duty = controller
             .get_duty_cycle(
                 &EncoderReading {
-                    angle: 1.0,
-                    phase_angle: 1.0,
+                    phase: 1.0,
+                    full_rotations: 0,
+                    cumulative_angle: 1.0,
                     velocity: 0.5,
                     dt: 0.001,
                 },
@@ -1007,8 +1008,9 @@ mod tests {
         controller.set_run_mode(RunMode::Angle);
         controller.set_target_angle(1.0);
         let encoder_reading = EncoderReading {
-            angle: 0.0,
-            phase_angle: 0.0,
+            phase: 0.0,
+            full_rotations: 0,
+            cumulative_angle: 0.0,
             velocity: 0.0,
             dt: 0.001,
         };
@@ -1033,8 +1035,9 @@ mod tests {
         let duty_a = controller
             .get_duty_cycle(
                 &EncoderReading {
-                    angle: phase_angle,
-                    phase_angle,
+                    phase: phase_angle,
+                    full_rotations: 0,
+                    cumulative_angle: phase_angle,
                     velocity: 0.0,
                     dt: 0.001,
                 },
@@ -1044,8 +1047,9 @@ mod tests {
         let duty_b = controller
             .get_duty_cycle(
                 &EncoderReading {
-                    angle: phase_angle + 40_000.0 * PI,
-                    phase_angle,
+                    phase: phase_angle,
+                    full_rotations: 20_000,
+                    cumulative_angle: phase_angle + 40_000.0 * PI,
                     velocity: 0.0,
                     dt: 0.001,
                 },
