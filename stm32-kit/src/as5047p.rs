@@ -12,6 +12,7 @@ pub struct As5047P<'d> {
     previous_angle: f32,
     previous_time: Instant,
     full_rotations: i32,
+    zero_offset_raw: u16,
     spi_mutex: &'static SpiMutex,
     cs_pin: gpio::Output<'d>,
     observer: TrackingObserver,
@@ -45,16 +46,31 @@ impl<'d> As5047P<'d> {
         spi_mutex: &'static SpiMutex,
         cs_pin: gpio::Output<'d>,
         observer_bandwidth_hz: f32,
+        zero_offset: f32,
     ) -> Self {
         As5047P {
             previous_raw_angle: None,
             previous_angle: 0.0,
             previous_time: Instant::from_secs(0),
             full_rotations: 0,
+            zero_offset_raw: angle_to_raw(zero_offset),
             spi_mutex,
             cs_pin,
             observer: TrackingObserver::new(observer_bandwidth_hz),
         }
+    }
+
+    pub async fn set_current_angle_as_zero(&mut self) -> Result<(), Error> {
+        let raw_angle = self.read_raw_angle_unoffset().await?;
+        self.zero_offset_raw = raw_angle;
+        self.previous_raw_angle = None;
+        self.previous_angle = 0.0;
+        self.full_rotations = 0;
+        Ok(())
+    }
+
+    pub fn zero_offset(&self) -> f32 {
+        raw_to_angle(self.zero_offset_raw)
     }
 
     pub async fn initialize(&mut self) -> Result<Diagnostics, Error> {
@@ -73,8 +89,17 @@ impl<'d> As5047P<'d> {
         self.read_diagnostics().await
     }
 
-    pub async fn read_raw_angle(&mut self) -> Result<u16, Error> {
+    async fn read_raw_angle_unoffset(&mut self) -> Result<u16, Error> {
         self.read_address(0x3FFF).await
+    }
+
+    pub fn apply_zero_offset_raw(&self, raw_angle: u16) -> u16 {
+        (RAW_ANGLE_MAX + raw_angle - self.zero_offset_raw) % RAW_ANGLE_MAX
+    }
+
+    pub async fn read_raw_angle(&mut self) -> Result<u16, Error> {
+        let raw_angle = self.read_raw_angle_unoffset().await?;
+        Ok(self.apply_zero_offset_raw(raw_angle))
     }
 
     pub async fn read_diagnostics(&mut self) -> Result<Diagnostics, Error> {
@@ -135,6 +160,19 @@ impl<'d> As5047P<'d> {
     }
 }
 
+pub fn raw_to_angle(raw_angle: u16) -> f32 {
+    raw_angle as f32 * RAW_TO_RADIAN
+}
+
+fn angle_to_raw(angle: f32) -> u16 {
+    let tau = 2.0 * core::f32::consts::PI;
+    let mut wrapped = angle % tau;
+    if wrapped < 0.0 {
+        wrapped += tau;
+    }
+    ((wrapped / tau) * RAW_ANGLE_MAX as f32) as u16 % RAW_ANGLE_MAX
+}
+
 fn to_read_command(address: &u16) -> [u8; 2] {
     let cmd = 0x4000u16 | (address & 0x3FFFu16);
     let parity = cmd.count_ones() % 2;
@@ -161,7 +199,7 @@ impl<'d> AngleInput for As5047P<'d> {
             None => {
                 self.previous_time = now;
                 self.previous_raw_angle = Some(raw_angle);
-                self.previous_angle = raw_angle as f32 * RAW_TO_RADIAN;
+                self.previous_angle = raw_to_angle(raw_angle);
                 Ok(EncoderReading {
                     phase: self.previous_angle,
                     full_rotations: self.full_rotations,
@@ -211,7 +249,7 @@ impl<'d> AngleInput for As5047P<'d> {
                 self.previous_angle = angle;
                 self.previous_time = now;
                 Ok(EncoderReading {
-                    phase: raw_angle as f32 * RAW_TO_RADIAN,
+                    phase: raw_to_angle(raw_angle),
                     full_rotations: self.full_rotations,
                     cumulative_angle,
                     velocity,

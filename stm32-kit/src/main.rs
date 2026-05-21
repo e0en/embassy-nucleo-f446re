@@ -11,6 +11,7 @@ mod current_tuning;
 mod drv8316;
 mod drv8316c;
 mod drv8316t;
+mod dual_encoder;
 mod encoder_correction;
 mod flash_config;
 mod flycat5010;
@@ -27,14 +28,12 @@ use foc::encoder::EncoderReading;
 
 use crate::{
     adc::measure_vm_sense,
-    as5047p::As5047P,
+    as5047p::{As5047P, raw_to_angle},
     bldc_driver::PwmDriver,
     can::{convert_response_message, parse_command_frame},
     cordic::{initialize_cordic, run_and_log_validation_tests, sincos},
     current_tuning::calculate_current_pi,
-    encoder_correction::{
-        AngleTracker, runtime_snapshot, runtime_version, set_runtime_correction, wrap_0_tau,
-    },
+    encoder_correction::{AngleTracker, runtime_snapshot, runtime_version, set_runtime_correction},
 };
 
 use crate::gm3506 as motor;
@@ -63,9 +62,7 @@ const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 const DEFAULT_HOST_CAN_ID: u8 = 0;
 const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
-const AS5047P_RAW_TO_RADIAN: f32 = 2.0 * core::f32::consts::PI / ((1 << 14) as f32);
 const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
-const USE_SECONDARY_ENCODER: bool = true;
 
 use can_message::message::{
     Command, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
@@ -148,13 +145,27 @@ static DRV_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CAN_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOTOR_DISARMED_BY_FAULT: AtomicBool = AtomicBool::new(false);
 static ANGLE_2: AtomicU32 = AtomicU32::new(0);
-static SECONDARY_RAW_ANGLE: AtomicU32 = AtomicU32::new(0);
 static CAN_ID: AtomicU8 = AtomicU8::new(0);
-static PRIMARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
-static SECONDARY_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
-static ZERO_OFFSET_VERSION: AtomicU32 = AtomicU32::new(1);
+
+#[derive(Clone, Copy)]
+enum EncoderTaskCommand {
+    CaptureZeroOffset,
+    ReadZeroOffsets,
+}
+
+#[derive(Clone, Copy)]
+#[allow(clippy::enum_variant_names)]
+enum EncoderTaskResponse {
+    ZeroOffsetCaptured,
+    ZeroOffsetCaptureFailed,
+    ZeroOffsets(f32, f32),
+}
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, can_message::message::CommandMessage, 32> =
+    Channel::new();
+static ENCODER_TASK_COMMAND_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskCommand, 1> =
+    Channel::new();
+static ENCODER_TASK_RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskResponse, 1> =
     Channel::new();
 /// Response channel uses CriticalSectionRawMutex because it's accessed from ADC interrupt
 static RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, QueuedResponse, 64> = Channel::new();
@@ -468,7 +479,6 @@ async fn init_foc(
     if let Some(config) = &stored_config {
         flash_config::apply_to_foc(&mut foc, config);
         set_runtime_correction(config.get_encoder_correction());
-        write_zero_offsets(config.primary_zero_offset, config.secondary_zero_offset);
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
             config.current_mapping.0,
@@ -477,7 +487,6 @@ async fn init_foc(
             config.bias_angle
         );
     } else {
-        write_zero_offsets(0.0, 0.0);
         let align_voltage = match run_motor_calibration(
             &mut foc,
             &mut p_adc,
@@ -530,9 +539,8 @@ async fn init_foc(
         info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 
         let mut config = flash_config::from_foc(&foc, can_id);
-        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
-        config.primary_zero_offset = primary_zero_offset;
-        config.secondary_zero_offset = secondary_zero_offset;
+        config.primary_zero_offset = 0.0;
+        config.secondary_zero_offset = 0.0;
         config.set_encoder_correction(runtime_snapshot());
         if let Err(e) = flash_config::write_config(p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
@@ -924,19 +932,31 @@ async fn command_task() {
             }
             Command::SetZeroPosition => {
                 info!("SetZeroPosition command received");
-                let (primary_angle, secondary_angle) = read_zero_reference_angles();
-                write_zero_offsets(primary_angle, secondary_angle);
-                foc_isr::with_foc(|foc| {
-                    foc.reset();
-                    foc.set_target_angle(0.0);
-                    foc.state.angle = 0.0;
-                    foc.state.angular_change = 0.0;
-                    foc.state.velocity = 0.0;
-                    foc.state.angle_error = 0.0;
-                    foc.state.angle_integral = 0.0;
-                    foc.state.velocity_error = 0.0;
-                    foc.state.velocity_integral = 0.0;
-                });
+                ENCODER_TASK_COMMAND_CHANNEL
+                    .sender()
+                    .send(EncoderTaskCommand::CaptureZeroOffset)
+                    .await;
+                match ENCODER_TASK_RESPONSE_CHANNEL.receiver().receive().await {
+                    EncoderTaskResponse::ZeroOffsetCaptured => {
+                        foc_isr::with_foc(|foc| {
+                            foc.reset();
+                            foc.set_target_angle(0.0);
+                            foc.state.angle = 0.0;
+                            foc.state.angular_change = 0.0;
+                            foc.state.velocity = 0.0;
+                            foc.state.angle_error = 0.0;
+                            foc.state.angle_integral = 0.0;
+                            foc.state.velocity_error = 0.0;
+                            foc.state.velocity_integral = 0.0;
+                        });
+                    }
+                    EncoderTaskResponse::ZeroOffsetCaptureFailed => {
+                        warn!("SetZeroPosition failed in encoder task");
+                    }
+                    EncoderTaskResponse::ZeroOffsets(_, _) => {
+                        warn!("Unexpected zero-offset read response for SetZeroPosition");
+                    }
+                }
             }
             Command::RunMotorTuning => {
                 info!("RunMotorTuning command received, clearing config and resetting");
@@ -959,18 +979,28 @@ async fn command_task() {
                     let can_id = flash_config::read_config(flash)
                         .map(|c| c.can_id)
                         .unwrap_or(0x0F);
-
-                    foc_isr::with_foc(|foc| {
-                        let mut config = flash_config::from_foc(foc, can_id);
-                        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
-                        config.primary_zero_offset = primary_zero_offset;
-                        config.secondary_zero_offset = secondary_zero_offset;
-                        if let Err(e) = flash_config::write_config(flash, &mut config) {
-                            error!("Failed to save config: {:?}", e);
-                        } else {
-                            info!("Config saved to flash");
+                    ENCODER_TASK_COMMAND_CHANNEL
+                        .sender()
+                        .send(EncoderTaskCommand::ReadZeroOffsets)
+                        .await;
+                    match ENCODER_TASK_RESPONSE_CHANNEL.receiver().receive().await {
+                        EncoderTaskResponse::ZeroOffsets(
+                            primary_zero_offset,
+                            secondary_zero_offset,
+                        ) => {
+                            foc_isr::with_foc(|foc| {
+                                let mut config = flash_config::from_foc(foc, can_id);
+                                config.primary_zero_offset = primary_zero_offset;
+                                config.secondary_zero_offset = secondary_zero_offset;
+                                if let Err(e) = flash_config::write_config(flash, &mut config) {
+                                    error!("Failed to save config: {:?}", e);
+                                } else {
+                                    info!("Config saved to flash");
+                                }
+                            });
                         }
-                    });
+                        _ => warn!("Failed to read zero offsets from encoder task"),
+                    }
                 }
             }
             _ => {
@@ -1131,45 +1161,77 @@ fn write_sensor_snapshot(encoder_reading: EncoderReading) {
     ACTIVE_SENSOR_SNAPSHOT.store(next_index as u8, Ordering::Release);
 }
 
-fn read_zero_offsets() -> (f32, f32) {
-    let primary = f32::from_le_bytes(PRIMARY_ZERO_OFFSET.load(Ordering::Relaxed).to_le_bytes());
-    let secondary = f32::from_le_bytes(SECONDARY_ZERO_OFFSET.load(Ordering::Relaxed).to_le_bytes());
-    (primary, secondary)
+#[derive(defmt::Format)]
+enum ZeroOffsetWriteError {
+    Primary(as5047p::Error),
+    Secondary(as5047p::Error),
 }
 
-fn read_zero_reference_angles() -> (f32, f32) {
-    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
-    let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let primary = f32::from_le_bytes(snapshot.phase.load(Ordering::Relaxed).to_le_bytes());
-    let secondary = f32::from_le_bytes(SECONDARY_RAW_ANGLE.load(Ordering::Relaxed).to_le_bytes());
-    (primary, secondary)
+async fn write_zero_offsets(
+    sensor: &mut As5047P<'static>,
+    secondary_sensor: &mut As5047P<'static>,
+) -> Result<(), ZeroOffsetWriteError> {
+    sensor
+        .set_current_angle_as_zero()
+        .await
+        .map_err(ZeroOffsetWriteError::Primary)?;
+    secondary_sensor
+        .set_current_angle_as_zero()
+        .await
+        .map_err(ZeroOffsetWriteError::Secondary)?;
+    Ok(())
 }
 
-fn write_zero_offsets(primary_offset: f32, secondary_offset: f32) {
-    PRIMARY_ZERO_OFFSET.store(
-        u32::from_le_bytes(primary_offset.to_le_bytes()),
-        Ordering::Relaxed,
-    );
-    SECONDARY_ZERO_OFFSET.store(
-        u32::from_le_bytes(secondary_offset.to_le_bytes()),
-        Ordering::Relaxed,
-    );
-    ZERO_OFFSET_VERSION.fetch_add(1, Ordering::Relaxed);
-}
-
-fn apply_zero_offset(angle: f32, zero_offset: f32) -> f32 {
-    wrap_0_tau(angle - zero_offset)
+async fn handle_encoder_task_command(
+    command: EncoderTaskCommand,
+    sensor: &mut As5047P<'static>,
+    secondary_sensor: &mut As5047P<'static>,
+    response_sender: &Sender<'static, ThreadModeRawMutex, EncoderTaskResponse, 1>,
+) -> bool {
+    match command {
+        EncoderTaskCommand::CaptureZeroOffset => {
+            match write_zero_offsets(sensor, secondary_sensor).await {
+                Ok(()) => {
+                    response_sender
+                        .send(EncoderTaskResponse::ZeroOffsetCaptured)
+                        .await;
+                    true
+                }
+                Err(ZeroOffsetWriteError::Primary(e)) => {
+                    error!("Failed to set ENC1 zero offset: {:?}", e);
+                    response_sender
+                        .send(EncoderTaskResponse::ZeroOffsetCaptureFailed)
+                        .await;
+                    false
+                }
+                Err(ZeroOffsetWriteError::Secondary(e)) => {
+                    error!("Failed to set ENC2 zero offset: {:?}", e);
+                    response_sender
+                        .send(EncoderTaskResponse::ZeroOffsetCaptureFailed)
+                        .await;
+                    false
+                }
+            }
+        }
+        EncoderTaskCommand::ReadZeroOffsets => {
+            response_sender
+                .send(EncoderTaskResponse::ZeroOffsets(
+                    sensor.zero_offset(),
+                    secondary_sensor.zero_offset(),
+                ))
+                .await;
+            false
+        }
+    }
 }
 
 #[embassy_executor::task]
-async fn encoder_task(
-    mut sensor: As5047P<'static>,
-    mut secondary_sensor: Option<As5047P<'static>>,
-) {
+async fn encoder_task(mut sensor: As5047P<'static>, mut secondary_sensor: As5047P<'static>) {
     let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
     let mut correction_version = 0;
     let mut correction = runtime_snapshot();
-    let mut zero_offset_version = ZERO_OFFSET_VERSION.load(Ordering::Relaxed);
+    let command_receiver = ENCODER_TASK_COMMAND_CHANNEL.receiver();
+    let response_sender = ENCODER_TASK_RESPONSE_CHANNEL.sender();
 
     loop {
         let latest_version = runtime_version();
@@ -1177,20 +1239,25 @@ async fn encoder_task(
             correction = runtime_snapshot();
             correction_version = latest_version;
         }
-        let latest_zero_offset_version = ZERO_OFFSET_VERSION.load(Ordering::Relaxed);
-        if latest_zero_offset_version != zero_offset_version {
+
+        if let Ok(command) = command_receiver.try_receive()
+            && handle_encoder_task_command(
+                command,
+                &mut sensor,
+                &mut secondary_sensor,
+                &response_sender,
+            )
+            .await
+        {
             tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
-            zero_offset_version = latest_zero_offset_version;
+            continue;
         }
-        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
 
         match sensor.read_raw_angle().await {
             Ok(raw_angle) => {
-                let wrapped_angle =
-                    correction.correct_wrapped_angle(raw_angle as f32 * AS5047P_RAW_TO_RADIAN);
-                let zeroed_angle = apply_zero_offset(wrapped_angle, primary_zero_offset);
+                let zeroed_angle = correction.correct_wrapped_angle(raw_to_angle(raw_angle));
                 let mut encoder_reading = tracker.update(zeroed_angle, Instant::now());
-                encoder_reading.phase = wrapped_angle;
+                encoder_reading.phase = zeroed_angle;
                 write_sensor_snapshot(encoder_reading);
             }
             Err(as5047p::Error::CommandFrame) => {
@@ -1206,32 +1273,25 @@ async fn encoder_task(
             Err(e) => error!("Failed to read from sensor: {:?}", e),
         }
 
-        if let Some(secondary_sensor) = secondary_sensor.as_mut() {
-            match secondary_sensor.read_raw_angle().await {
-                Ok(raw_angle) => {
-                    let raw_secondary_angle = raw_angle as f32 * AS5047P_RAW_TO_RADIAN;
-                    SECONDARY_RAW_ANGLE.store(
-                        u32::from_le_bytes(raw_secondary_angle.to_le_bytes()),
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
-                    let angle_2 = apply_zero_offset(raw_secondary_angle, secondary_zero_offset);
-                    ANGLE_2.store(
-                        u32::from_le_bytes(angle_2.to_le_bytes()),
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
-                }
-                Err(as5047p::Error::CommandFrame) => {
-                    if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                        error!("ENC2 CommandFrame error correction failed");
-                    }
-                }
-                Err(as5047p::Error::Parity) => {
-                    if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                        error!("ENC2 Parity error correction failed");
-                    }
-                }
-                Err(e) => error!("Failed to read from ENC2: {:?}", e),
+        match secondary_sensor.read_raw_angle().await {
+            Ok(raw_angle) => {
+                let angle_2 = raw_to_angle(raw_angle);
+                ANGLE_2.store(
+                    u32::from_le_bytes(angle_2.to_le_bytes()),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
             }
+            Err(as5047p::Error::CommandFrame) => {
+                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("ENC2 CommandFrame error correction failed");
+                }
+            }
+            Err(as5047p::Error::Parity) => {
+                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
+                    error!("ENC2 Parity error correction failed");
+                }
+            }
+            Err(e) => error!("Failed to read from ENC2: {:?}", e),
         }
 
         Timer::after_micros(50).await;
@@ -1338,9 +1398,6 @@ async fn save_can_id_to_flash(new_can_id: u8) {
         && let Some(mut config) = flash_config::read_config(flash)
     {
         config.can_id = new_can_id;
-        let (primary_zero_offset, secondary_zero_offset) = read_zero_offsets();
-        config.primary_zero_offset = primary_zero_offset;
-        config.secondary_zero_offset = secondary_zero_offset;
         if let Err(e) = flash_config::write_config(flash, &mut config) {
             warn!("Failed to save CAN ID to flash: {:?}", e);
         } else {
@@ -1392,6 +1449,14 @@ async fn main(spawner: Spawner) {
 
     let mut p_flash = Flash::new_blocking(p.FLASH);
     let stored_config = flash_config::read_config(&mut p_flash);
+    let primary_zero_offset = stored_config
+        .as_ref()
+        .map(|config| config.primary_zero_offset)
+        .unwrap_or(0.0);
+    let secondary_zero_offset = stored_config
+        .as_ref()
+        .map(|config| config.secondary_zero_offset)
+        .unwrap_or(0.0);
     let startup_can_id = stored_config
         .as_ref()
         .map(|config| config.can_id)
@@ -1431,7 +1496,12 @@ async fn main(spawner: Spawner) {
         timer.get_frequency()
     );
 
-    let mut sensor = As5047P::new(&SPI, enc1_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
+    let mut sensor = As5047P::new(
+        &SPI,
+        enc1_cs_out,
+        VELOCITY_OBSERVER_BANDWIDTH,
+        primary_zero_offset,
+    );
     match sensor.initialize().await {
         Ok(diagnostics) => info!("ENC1 diagnostics: {:?}", diagnostics),
         Err(e) => {
@@ -1440,21 +1510,18 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    let secondary_sensor = if USE_SECONDARY_ENCODER {
-        let mut secondary_sensor = As5047P::new(&SPI, enc2_cs_out, VELOCITY_OBSERVER_BANDWIDTH);
-        match secondary_sensor.initialize().await {
-            Ok(diagnostics) => {
-                info!("ENC2 diagnostics: {:?}", diagnostics);
-                Some(secondary_sensor)
-            }
-            Err(e) => {
-                warn!("ENC2 initialization failed, continuing without it: {:?}", e);
-                None
-            }
+    let mut secondary_sensor = As5047P::new(
+        &SPI,
+        enc2_cs_out,
+        VELOCITY_OBSERVER_BANDWIDTH,
+        secondary_zero_offset,
+    );
+    match secondary_sensor.initialize().await {
+        Ok(diagnostics) => info!("ENC2 diagnostics: {:?}", diagnostics),
+        Err(e) => {
+            error!("ENC2 initialization failed, {:?}", e);
+            return;
         }
-    } else {
-        info!("ENC2 disabled by configuration");
-        None
     };
 
     // Start encoder task early so sensor readings are available during FOC init
