@@ -30,6 +30,7 @@ use app::{
 };
 use as5047p::As5047P;
 use defmt::*;
+use dual_encoder::DualEncoder;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, bind_interrupts,
@@ -165,7 +166,9 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    unwrap!(spawner.spawn(encoder::encoder_task(sensor, secondary_sensor)));
+    let dual_encoder = DualEncoder::new(sensor, secondary_sensor, 19);
+
+    unwrap!(spawner.spawn(encoder::encoder_task(dual_encoder)));
 
     let Some(can_id) = init::init_foc(drvoff_pin, timer, p_adc, &mut p_flash, stored_config).await
     else {

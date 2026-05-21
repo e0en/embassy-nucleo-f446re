@@ -11,6 +11,7 @@ use foc::encoder::EncoderReading;
 
 use crate::{
     as5047p::{self, As5047P, raw_to_angle},
+    dual_encoder::DualEncoder,
     encoder_correction::{AngleTracker, runtime_snapshot, runtime_version},
 };
 
@@ -57,7 +58,7 @@ static ENCODER_TASK_COMMAND_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskComm
 static ENCODER_TASK_RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskResponse, 1> =
     Channel::new();
 
-fn write_sensor_snapshot(encoder_reading: EncoderReading) {
+fn write_sensor_snapshot(encoder_reading: &EncoderReading) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
@@ -94,54 +95,55 @@ enum ZeroOffsetWriteError {
 }
 
 async fn write_zero_offsets(
-    sensor: &mut As5047P<'static>,
-    secondary_sensor: &mut As5047P<'static>,
+    dual_encoder: &mut DualEncoder<As5047P<'static>, As5047P<'static>>,
 ) -> Result<(f32, f32), ZeroOffsetWriteError> {
-    sensor
+    dual_encoder
+        .primary_mut()
         .set_current_angle_as_zero()
         .await
         .map_err(ZeroOffsetWriteError::Primary)?;
-    secondary_sensor
+    dual_encoder
+        .secondary_mut()
         .set_current_angle_as_zero()
         .await
         .map_err(ZeroOffsetWriteError::Secondary)?;
-    Ok((sensor.zero_offset(), secondary_sensor.zero_offset()))
+    Ok((
+        dual_encoder.primary_mut().zero_offset(),
+        dual_encoder.secondary_mut().zero_offset(),
+    ))
 }
 
 async fn handle_encoder_task_command(
     command: EncoderTaskCommand,
-    sensor: &mut As5047P<'static>,
-    secondary_sensor: &mut As5047P<'static>,
+    dual_encoder: &mut DualEncoder<As5047P<'static>, As5047P<'static>>,
     response_sender: &Sender<'static, ThreadModeRawMutex, EncoderTaskResponse, 1>,
 ) -> bool {
     match command {
-        EncoderTaskCommand::CaptureZeroOffset => {
-            match write_zero_offsets(sensor, secondary_sensor).await {
-                Ok((primary_zero_offset, secondary_zero_offset)) => {
-                    response_sender
-                        .send(EncoderTaskResponse::Captured(
-                            primary_zero_offset,
-                            secondary_zero_offset,
-                        ))
-                        .await;
-                    true
-                }
-                Err(ZeroOffsetWriteError::Primary(e)) => {
-                    error!("Failed to set ENC1 zero offset: {:?}", e);
-                    response_sender
-                        .send(EncoderTaskResponse::CaptureFailed)
-                        .await;
-                    false
-                }
-                Err(ZeroOffsetWriteError::Secondary(e)) => {
-                    error!("Failed to set ENC2 zero offset: {:?}", e);
-                    response_sender
-                        .send(EncoderTaskResponse::CaptureFailed)
-                        .await;
-                    false
-                }
+        EncoderTaskCommand::CaptureZeroOffset => match write_zero_offsets(dual_encoder).await {
+            Ok((primary_zero_offset, secondary_zero_offset)) => {
+                response_sender
+                    .send(EncoderTaskResponse::Captured(
+                        primary_zero_offset,
+                        secondary_zero_offset,
+                    ))
+                    .await;
+                true
             }
-        }
+            Err(ZeroOffsetWriteError::Primary(e)) => {
+                error!("Failed to set ENC1 zero offset: {:?}", e);
+                response_sender
+                    .send(EncoderTaskResponse::CaptureFailed)
+                    .await;
+                false
+            }
+            Err(ZeroOffsetWriteError::Secondary(e)) => {
+                error!("Failed to set ENC2 zero offset: {:?}", e);
+                response_sender
+                    .send(EncoderTaskResponse::CaptureFailed)
+                    .await;
+                false
+            }
+        },
     }
 }
 
@@ -160,8 +162,7 @@ pub(crate) async fn request_zero_offset_capture() -> Option<(f32, f32)> {
 
 #[task]
 pub(crate) async fn encoder_task(
-    mut sensor: As5047P<'static>,
-    mut secondary_sensor: As5047P<'static>,
+    mut dual_encoder: DualEncoder<As5047P<'static>, As5047P<'static>>,
 ) {
     let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
     let mut correction_version = 0;
@@ -177,54 +178,73 @@ pub(crate) async fn encoder_task(
         }
 
         if let Ok(command) = command_receiver.try_receive()
-            && handle_encoder_task_command(
-                command,
-                &mut sensor,
-                &mut secondary_sensor,
-                &response_sender,
-            )
-            .await
+            && handle_encoder_task_command(command, &mut dual_encoder, &response_sender).await
         {
             tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
             continue;
         }
 
-        match sensor.read_raw_angle().await {
+        match dual_encoder.primary_mut().read_raw_angle().await {
             Ok(raw_angle) => {
                 let zeroed_angle = correction.correct_wrapped_angle(raw_to_angle(raw_angle));
                 let mut encoder_reading = tracker.update(zeroed_angle, Instant::now());
                 encoder_reading.phase = zeroed_angle;
-                write_sensor_snapshot(encoder_reading);
+                write_sensor_snapshot(&encoder_reading);
+
+                match dual_encoder.secondary_mut().read_raw_angle().await {
+                    Ok(secondary_raw_angle) => {
+                        let secondary_angle = raw_to_angle(secondary_raw_angle);
+                        encoder_reading.phase = zeroed_angle;
+                        dual_encoder.observe(&encoder_reading, secondary_angle);
+                        ANGLE_2.store(
+                            u32::from_le_bytes(secondary_angle.to_le_bytes()),
+                            Ordering::Relaxed,
+                        );
+                    }
+                    Err(as5047p::Error::CommandFrame) => {
+                        if dual_encoder
+                            .secondary_mut()
+                            .read_and_reset_error_flag()
+                            .await
+                            .is_err()
+                        {
+                            error!("ENC2 CommandFrame error correction failed");
+                        }
+                    }
+                    Err(as5047p::Error::Parity) => {
+                        if dual_encoder
+                            .secondary_mut()
+                            .read_and_reset_error_flag()
+                            .await
+                            .is_err()
+                        {
+                            error!("ENC2 Parity error correction failed");
+                        }
+                    }
+                    Err(e) => error!("Failed to read from ENC2: {:?}", e),
+                }
             }
             Err(as5047p::Error::CommandFrame) => {
-                if sensor.read_and_reset_error_flag().await.is_err() {
+                if dual_encoder
+                    .primary_mut()
+                    .read_and_reset_error_flag()
+                    .await
+                    .is_err()
+                {
                     error!("CommandFrame error correction failed");
                 }
             }
             Err(as5047p::Error::Parity) => {
-                if sensor.read_and_reset_error_flag().await.is_err() {
+                if dual_encoder
+                    .primary_mut()
+                    .read_and_reset_error_flag()
+                    .await
+                    .is_err()
+                {
                     error!("Parity error correction failed");
                 }
             }
             Err(e) => error!("Failed to read from sensor: {:?}", e),
-        }
-
-        match secondary_sensor.read_raw_angle().await {
-            Ok(raw_angle) => {
-                let angle_2 = raw_to_angle(raw_angle);
-                ANGLE_2.store(u32::from_le_bytes(angle_2.to_le_bytes()), Ordering::Relaxed);
-            }
-            Err(as5047p::Error::CommandFrame) => {
-                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                    error!("ENC2 CommandFrame error correction failed");
-                }
-            }
-            Err(as5047p::Error::Parity) => {
-                if secondary_sensor.read_and_reset_error_flag().await.is_err() {
-                    error!("ENC2 Parity error correction failed");
-                }
-            }
-            Err(e) => error!("Failed to read from ENC2: {:?}", e),
         }
 
         Timer::after_micros(50).await;
