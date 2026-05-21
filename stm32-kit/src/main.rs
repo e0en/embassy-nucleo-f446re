@@ -150,15 +150,12 @@ static CAN_ID: AtomicU8 = AtomicU8::new(0);
 #[derive(Clone, Copy)]
 enum EncoderTaskCommand {
     CaptureZeroOffset,
-    ReadZeroOffsets,
 }
 
 #[derive(Clone, Copy)]
-#[allow(clippy::enum_variant_names)]
 enum EncoderTaskResponse {
-    ZeroOffsetCaptured,
-    ZeroOffsetCaptureFailed,
-    ZeroOffsets(f32, f32),
+    Captured(f32, f32),
+    CaptureFailed,
 }
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, can_message::message::CommandMessage, 32> =
@@ -937,7 +934,9 @@ async fn command_task() {
                     .send(EncoderTaskCommand::CaptureZeroOffset)
                     .await;
                 match ENCODER_TASK_RESPONSE_CHANNEL.receiver().receive().await {
-                    EncoderTaskResponse::ZeroOffsetCaptured => {
+                    EncoderTaskResponse::Captured(primary_zero_offset, secondary_zero_offset) => {
+                        save_zero_offsets_to_flash(primary_zero_offset, secondary_zero_offset)
+                            .await;
                         foc_isr::with_foc(|foc| {
                             foc.reset();
                             foc.set_target_angle(0.0);
@@ -950,11 +949,8 @@ async fn command_task() {
                             foc.state.velocity_integral = 0.0;
                         });
                     }
-                    EncoderTaskResponse::ZeroOffsetCaptureFailed => {
+                    EncoderTaskResponse::CaptureFailed => {
                         warn!("SetZeroPosition failed in encoder task");
-                    }
-                    EncoderTaskResponse::ZeroOffsets(_, _) => {
-                        warn!("Unexpected zero-offset read response for SetZeroPosition");
                     }
                 }
             }
@@ -976,31 +972,24 @@ async fn command_task() {
                 info!("Save-to-flash command received");
                 let mut flash_guard = FLASH.lock().await;
                 if let Some(flash) = flash_guard.as_mut() {
-                    let can_id = flash_config::read_config(flash)
-                        .map(|c| c.can_id)
-                        .unwrap_or(0x0F);
-                    ENCODER_TASK_COMMAND_CHANNEL
-                        .sender()
-                        .send(EncoderTaskCommand::ReadZeroOffsets)
-                        .await;
-                    match ENCODER_TASK_RESPONSE_CHANNEL.receiver().receive().await {
-                        EncoderTaskResponse::ZeroOffsets(
-                            primary_zero_offset,
-                            secondary_zero_offset,
-                        ) => {
-                            foc_isr::with_foc(|foc| {
-                                let mut config = flash_config::from_foc(foc, can_id);
-                                config.primary_zero_offset = primary_zero_offset;
-                                config.secondary_zero_offset = secondary_zero_offset;
-                                if let Err(e) = flash_config::write_config(flash, &mut config) {
-                                    error!("Failed to save config: {:?}", e);
-                                } else {
-                                    info!("Config saved to flash");
-                                }
-                            });
+                    let stored_config = flash_config::read_config(flash);
+                    let can_id = stored_config.map(|c| c.can_id).unwrap_or(0x0F);
+                    let primary_zero_offset =
+                        stored_config.map(|c| c.primary_zero_offset).unwrap_or(0.0);
+                    let secondary_zero_offset = stored_config
+                        .map(|c| c.secondary_zero_offset)
+                        .unwrap_or(0.0);
+
+                    foc_isr::with_foc(|foc| {
+                        let mut config = flash_config::from_foc(foc, can_id);
+                        config.primary_zero_offset = primary_zero_offset;
+                        config.secondary_zero_offset = secondary_zero_offset;
+                        if let Err(e) = flash_config::write_config(flash, &mut config) {
+                            error!("Failed to save config: {:?}", e);
+                        } else {
+                            info!("Config saved to flash");
                         }
-                        _ => warn!("Failed to read zero offsets from encoder task"),
-                    }
+                    });
                 }
             }
             _ => {
@@ -1170,7 +1159,7 @@ enum ZeroOffsetWriteError {
 async fn write_zero_offsets(
     sensor: &mut As5047P<'static>,
     secondary_sensor: &mut As5047P<'static>,
-) -> Result<(), ZeroOffsetWriteError> {
+) -> Result<(f32, f32), ZeroOffsetWriteError> {
     sensor
         .set_current_angle_as_zero()
         .await
@@ -1179,7 +1168,7 @@ async fn write_zero_offsets(
         .set_current_angle_as_zero()
         .await
         .map_err(ZeroOffsetWriteError::Secondary)?;
-    Ok(())
+    Ok((sensor.zero_offset(), secondary_sensor.zero_offset()))
 }
 
 async fn handle_encoder_task_command(
@@ -1191,36 +1180,30 @@ async fn handle_encoder_task_command(
     match command {
         EncoderTaskCommand::CaptureZeroOffset => {
             match write_zero_offsets(sensor, secondary_sensor).await {
-                Ok(()) => {
+                Ok((primary_zero_offset, secondary_zero_offset)) => {
                     response_sender
-                        .send(EncoderTaskResponse::ZeroOffsetCaptured)
+                        .send(EncoderTaskResponse::Captured(
+                            primary_zero_offset,
+                            secondary_zero_offset,
+                        ))
                         .await;
                     true
                 }
                 Err(ZeroOffsetWriteError::Primary(e)) => {
                     error!("Failed to set ENC1 zero offset: {:?}", e);
                     response_sender
-                        .send(EncoderTaskResponse::ZeroOffsetCaptureFailed)
+                        .send(EncoderTaskResponse::CaptureFailed)
                         .await;
                     false
                 }
                 Err(ZeroOffsetWriteError::Secondary(e)) => {
                     error!("Failed to set ENC2 zero offset: {:?}", e);
                     response_sender
-                        .send(EncoderTaskResponse::ZeroOffsetCaptureFailed)
+                        .send(EncoderTaskResponse::CaptureFailed)
                         .await;
                     false
                 }
             }
-        }
-        EncoderTaskCommand::ReadZeroOffsets => {
-            response_sender
-                .send(EncoderTaskResponse::ZeroOffsets(
-                    sensor.zero_offset(),
-                    secondary_sensor.zero_offset(),
-                ))
-                .await;
-            false
         }
     }
 }
@@ -1402,6 +1385,21 @@ async fn save_can_id_to_flash(new_can_id: u8) {
             warn!("Failed to save CAN ID to flash: {:?}", e);
         } else {
             info!("CAN ID saved to flash");
+        }
+    }
+}
+
+async fn save_zero_offsets_to_flash(primary_zero_offset: f32, secondary_zero_offset: f32) {
+    let mut flash_guard = FLASH.lock().await;
+    if let Some(flash) = flash_guard.as_mut()
+        && let Some(mut config) = flash_config::read_config(flash)
+    {
+        config.primary_zero_offset = primary_zero_offset;
+        config.secondary_zero_offset = secondary_zero_offset;
+        if let Err(e) = flash_config::write_config(flash, &mut config) {
+            warn!("Failed to save zero offsets to flash: {:?}", e);
+        } else {
+            info!("Zero offsets saved to flash");
         }
     }
 }
