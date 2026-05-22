@@ -19,6 +19,9 @@ const WINDOW_WIDTH: f32 = 1024.0;
 const WINDOW_HEIGHT: f32 = 768.0;
 const MAX_PLOT_POINTS: usize = 100_000;
 const UI_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+const CHIRP_COMMAND_INTERVAL: Duration = Duration::from_millis(10);
+const CHIRP_START_FREQ_HZ: f32 = 0.2;
+const CHIRP_END_FREQ_HZ: f32 = 10.0;
 const HOST_CAN_ID: u8 = 0x00;
 const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
 
@@ -140,6 +143,9 @@ struct MotorTab {
 
     spring: f32,
     damping: f32,
+    chirp_amplitude: f32,
+    chirp_duration: f32,
+    chirp_target: ChirpTarget,
 
     run_mode: RunMode,
     plot_type: PlotType,
@@ -147,6 +153,24 @@ struct MotorTab {
     plot_points_2: VecDeque<egui_plot::PlotPoint>,
     is_plotting: bool,
     t0: Instant,
+    chirp_amplitude_string: String,
+    chirp_duration_string: String,
+    active_chirp: Option<ActiveChirp>,
+}
+
+struct ActiveChirp {
+    t0: Instant,
+    duration: Duration,
+    amplitude: f32,
+    target: ChirpTarget,
+    last_command_at: Option<Instant>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChirpTarget {
+    Angle,
+    Velocity,
+    Torque,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +199,8 @@ impl MotorTab {
 
         let spring = 0.0;
         let damping = 0.0;
+        let chirp_amplitude = 5.0;
+        let chirp_duration = 30.0;
 
         Self {
             can_id,
@@ -210,6 +236,9 @@ impl MotorTab {
 
             spring,
             damping,
+            chirp_amplitude,
+            chirp_duration,
+            chirp_target: ChirpTarget::Velocity,
 
             run_mode: RunMode::Impedance,
             plot_type: PlotType::Angle,
@@ -217,6 +246,9 @@ impl MotorTab {
             plot_points_2: VecDeque::with_capacity(MAX_PLOT_POINTS),
             is_plotting: false,
             t0: Instant::now(),
+            chirp_amplitude_string: chirp_amplitude.to_string(),
+            chirp_duration_string: chirp_duration.to_string(),
+            active_chirp: None,
         }
     }
 
@@ -234,6 +266,49 @@ impl MotorTab {
         self.plot_points_1.clear();
         self.plot_points_2.clear();
         self.t0 = Instant::now();
+    }
+
+    fn start_chirp(&mut self) {
+        self.active_chirp = Some(ActiveChirp {
+            t0: Instant::now(),
+            duration: Duration::from_secs_f32(self.chirp_duration),
+            amplitude: self.chirp_amplitude,
+            target: self.chirp_target,
+            last_command_at: None,
+        });
+    }
+
+    fn stop_chirp(&mut self) {
+        self.active_chirp = None;
+    }
+
+    fn chirp_active(&self) -> bool {
+        self.active_chirp.is_some()
+    }
+
+    fn chirp_run_mode(&self) -> RunMode {
+        match self.chirp_target {
+            ChirpTarget::Angle => RunMode::Angle,
+            ChirpTarget::Velocity => RunMode::Velocity,
+            ChirpTarget::Torque => RunMode::Torque,
+        }
+    }
+
+    fn set_chirp_value(&mut self, target: ChirpTarget, value: f32) {
+        match target {
+            ChirpTarget::Angle => {
+                self.angle = value;
+                self.angle_string = value.to_string();
+            }
+            ChirpTarget::Velocity => {
+                self.velocity = value;
+                self.velocity_string = value.to_string();
+            }
+            ChirpTarget::Torque => {
+                self.iq = value;
+                self.iq_string = value.to_string();
+            }
+        }
     }
 
     fn push_plot_points(&mut self, y1: f64, y2: Option<f64>) {
@@ -443,12 +518,54 @@ impl MyApp {
             }
         }
     }
+
+    fn update_chirp_commands(&mut self) {
+        let now = Instant::now();
+        let mut queued_commands = Vec::new();
+
+        for tab in &mut self.tabs {
+            let Some(active_chirp) = tab.active_chirp.as_mut() else {
+                continue;
+            };
+
+            let elapsed = now.saturating_duration_since(active_chirp.t0);
+            if elapsed >= active_chirp.duration {
+                let target = active_chirp.target;
+                tab.active_chirp = None;
+                queued_commands.push((tab.can_id, chirp_parameter(target, 0.0)));
+                tab.set_chirp_value(target, 0.0);
+                continue;
+            }
+
+            if active_chirp
+                .last_command_at
+                .is_some_and(|last| now.saturating_duration_since(last) < CHIRP_COMMAND_INTERVAL)
+            {
+                continue;
+            }
+
+            active_chirp.last_command_at = Some(now);
+            let target = active_chirp.target;
+            let value = chirp_velocity_command(
+                active_chirp.amplitude,
+                elapsed.as_secs_f32(),
+                active_chirp.duration.as_secs_f32(),
+            );
+            queued_commands.push((tab.can_id, chirp_parameter(target, value)));
+            tab.set_chirp_value(target, value);
+        }
+
+        for (can_id, command) in queued_commands {
+            self.send_command_to(can_id, command);
+        }
+    }
 }
 
 impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_incoming_messages();
         self.render_ui(ui);
+        self.update_chirp_commands();
         ui.ctx().request_repaint_after(UI_REPAINT_INTERVAL);
     }
 }
@@ -682,12 +799,76 @@ impl MyApp {
 
                 ui.horizontal(|ui| {
                     if ui.button("disable").clicked() {
+                        tab.stop_chirp();
                         queued_commands.push(Command::Stop);
                     }
                     if ui.button("enable").clicked() {
                         queued_commands.push(Command::Enable);
                     }
                 });
+
+                ui.separator();
+                ui.label("Chirp");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Angle, "Angle");
+                    ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Velocity, "Velocity");
+                    ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Torque, "Torque");
+                });
+                ui.horizontal(|ui| {
+                    let amplitude_label = ui.label("Amplitude");
+                    ui.text_edit_singleline(&mut tab.chirp_amplitude_string)
+                        .labelled_by(amplitude_label.id);
+                    let amplitude_valid = tab
+                        .chirp_amplitude_string
+                        .parse::<f32>()
+                        .map(|value| {
+                            tab.chirp_amplitude = value;
+                            value.is_finite() && value > 0.0
+                        })
+                        .unwrap_or(false);
+
+                    let duration_label = ui.label("Duration [s]");
+                    ui.text_edit_singleline(&mut tab.chirp_duration_string)
+                        .labelled_by(duration_label.id);
+                    let duration_valid = tab
+                        .chirp_duration_string
+                        .parse::<f32>()
+                        .map(|value| {
+                            tab.chirp_duration = value;
+                            value.is_finite() && value > 0.0
+                        })
+                        .unwrap_or(false);
+
+                    let can_start_chirp = amplitude_valid && duration_valid;
+                    if ui
+                        .add_enabled(
+                            can_start_chirp && !tab.chirp_active(),
+                            egui::Button::new("Start chirp"),
+                        )
+                        .clicked()
+                    {
+                        tab.run_mode = tab.chirp_run_mode();
+                        tab.start_chirp();
+                        queued_commands
+                            .push(Command::SetParameter(ParameterValue::RunMode(tab.run_mode)));
+                    }
+
+                    if ui
+                        .add_enabled(tab.chirp_active(), egui::Button::new("Stop chirp"))
+                        .clicked()
+                    {
+                        let target = tab.chirp_target;
+                        tab.stop_chirp();
+                        tab.set_chirp_value(target, 0.0);
+                        queued_commands.push(chirp_parameter(target, 0.0));
+                    }
+                });
+                ui.small(format!(
+                    "{:.1} -> {:.1} Hz logarithmic sweep on {}",
+                    CHIRP_START_FREQ_HZ,
+                    CHIRP_END_FREQ_HZ,
+                    tab.chirp_target.label()
+                ));
 
                 ui.separator();
                 ui.label("Maintenance");
@@ -834,6 +1015,40 @@ fn push_point(buffer: &mut VecDeque<egui_plot::PlotPoint>, point: egui_plot::Plo
     buffer.push_back(point);
 }
 
+impl ChirpTarget {
+    fn label(self) -> &'static str {
+        match self {
+            ChirpTarget::Angle => "AngleRef",
+            ChirpTarget::Velocity => "SpeedRef",
+            ChirpTarget::Torque => "IqRef",
+        }
+    }
+}
+
+fn chirp_parameter(target: ChirpTarget, value: f32) -> Command {
+    let parameter = match target {
+        ChirpTarget::Angle => ParameterValue::AngleRef(value),
+        ChirpTarget::Velocity => ParameterValue::SpeedRef(value),
+        ChirpTarget::Torque => ParameterValue::IqRef(value),
+    };
+    Command::SetParameter(parameter)
+}
+
+fn chirp_velocity_command(amplitude: f32, elapsed_secs: f32, duration_secs: f32) -> f32 {
+    if !(amplitude.is_finite() && duration_secs.is_finite())
+        || amplitude <= 0.0
+        || duration_secs <= 0.0
+    {
+        return 0.0;
+    }
+
+    let sweep_ratio = CHIRP_END_FREQ_HZ / CHIRP_START_FREQ_HZ;
+    let exponent = elapsed_secs / duration_secs;
+    let phase = 2.0 * f32::consts::PI * CHIRP_START_FREQ_HZ * duration_secs / sweep_ratio.ln()
+        * (sweep_ratio.powf(exponent) - 1.0);
+    amplitude * phase.sin()
+}
+
 // Helper functions for CAN frame conversions
 fn can_frame_to_can_message(frame: &CanFrame) -> CanMessage {
     let id = frame.id();
@@ -908,5 +1123,16 @@ mod tests {
         assert_eq!(points.len(), MAX_PLOT_POINTS);
         assert_eq!(points.front().unwrap().x, 1.0);
         assert_eq!(points.back().unwrap().x, MAX_PLOT_POINTS as f64);
+    }
+
+    #[test]
+    fn chirp_starts_at_zero() {
+        assert_eq!(chirp_velocity_command(5.0, 0.0, 30.0), 0.0);
+    }
+
+    #[test]
+    fn chirp_respects_amplitude_bound() {
+        let sample = chirp_velocity_command(5.0, 7.5, 30.0);
+        assert!(sample.abs() <= 5.0);
     }
 }
