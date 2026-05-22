@@ -17,6 +17,7 @@ use foc::current::PhaseCurrent;
 use foc::encoder::EncoderReading;
 use foc::pwm_output::DutyCycle3Phase;
 
+use crate::app::ACTUATOR_REDUCTION_RATIO;
 use crate::drv8316::{self, CsaGain};
 use crate::{RESPONSE_CHANNEL, read_sensor};
 
@@ -41,6 +42,11 @@ static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(crate::DEFAULT_HOST_CAN_ID
 static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
 
 static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);
+
+#[inline(always)]
+fn input_to_output_shaft(value: f32) -> f32 {
+    value / ACTUATOR_REDUCTION_RATIO
+}
 
 pub struct FocContext {
     pub foc: FocController<fn(f32) -> (f32, f32)>,
@@ -191,8 +197,8 @@ fn send_feedback(state: &FocState) {
 
     let body = match feedback_type {
         0 => ResponseBody::MotorStatus(MotorStatus {
-            angle: state.angle,
-            velocity: state.velocity,
+            angle: input_to_output_shaft(state.angle),
+            velocity: input_to_output_shaft(state.velocity),
             torque: state.i_q,
             temperature: 0.0,
         }),

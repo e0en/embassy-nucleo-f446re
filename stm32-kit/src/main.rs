@@ -24,8 +24,8 @@ mod pwm;
 mod velocity_tuning;
 
 use app::{
-    CAN_BITRATE, CAN_INTERRUPT_PRIORITY, INIT_DELAY_CYCLES, VELOCITY_OBSERVER_BANDWIDTH,
-    can_control, encoder, fault, init, monitor,
+    ACTUATOR_REDUCTION_RATIO_MAGNITUDE, CAN_BITRATE, CAN_INTERRUPT_PRIORITY, INIT_DELAY_CYCLES,
+    VELOCITY_OBSERVER_BANDWIDTH, can_control, encoder, fault, init, monitor,
     persistence::{CAN_ID, CAN_PROPERTIES, FLASH, SPI},
 };
 use as5047p::As5047P;
@@ -166,7 +166,8 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let dual_encoder = DualEncoder::new(sensor, secondary_sensor, 19);
+    let dual_encoder =
+        DualEncoder::new(sensor, secondary_sensor, ACTUATOR_REDUCTION_RATIO_MAGNITUDE);
 
     unwrap!(spawner.spawn(encoder::encoder_task(dual_encoder)));
 

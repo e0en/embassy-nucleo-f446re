@@ -34,3 +34,5 @@ pub(crate) const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 pub(crate) const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 pub(crate) const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 pub(crate) const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
+pub(crate) const ACTUATOR_REDUCTION_RATIO_MAGNITUDE: i32 = 19;
+pub(crate) const ACTUATOR_REDUCTION_RATIO: f32 = -(ACTUATOR_REDUCTION_RATIO_MAGNITUDE as f32);

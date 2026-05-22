@@ -17,6 +17,7 @@ use crate::{
 };
 
 use super::{
+    ACTUATOR_REDUCTION_RATIO,
     encoder::request_zero_offset_capture,
     fault::{has_active_fault, set_gate_driver_enabled, take_motor_disarmed_by_fault},
     persistence::{
@@ -36,6 +37,16 @@ macro_rules! dispatch_set_param {
             _ => {}
         }
     };
+}
+
+#[inline]
+fn output_to_input_shaft(value: f32) -> f32 {
+    value * ACTUATOR_REDUCTION_RATIO
+}
+
+#[inline]
+fn input_to_output_shaft(value: f32) -> f32 {
+    value / ACTUATOR_REDUCTION_RATIO
 }
 
 macro_rules! dispatch_get_param {
@@ -160,12 +171,18 @@ async fn handle_command(
             info!("received runmode {}", *m as u8);
             foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
         }
+        Command::SetParameter(ParameterValue::AngleRef(angle)) => {
+            foc_isr::with_foc(|foc| foc.set_target_angle(output_to_input_shaft(*angle)));
+        }
+        Command::SetParameter(ParameterValue::SpeedRef(velocity)) => {
+            foc_isr::with_foc(|foc| foc.set_target_velocity(output_to_input_shaft(*velocity)));
+        }
+        Command::SetParameter(ParameterValue::SpeedLimit(velocity_limit)) => {
+            foc_isr::with_foc(|foc| foc.set_velocity_limit(output_to_input_shaft(*velocity_limit)));
+        }
         _ => {
             dispatch_set_param!(command,
-                AngleRef => set_target_angle,
-                SpeedRef => set_target_velocity,
                 IqRef => set_target_torque,
-                SpeedLimit => set_velocity_limit,
                 CurrentLimit => set_current_limit,
                 TorqueLimit => set_torque_limit,
                 CurrentKp => set_current_kp,
@@ -191,11 +208,11 @@ async fn handle_command(
             dispatch_get_param!(p,
                 RunMode => encode_run_mode(&foc.mode),
                 IqRef => foc.state.i_ref,
-                Angle => foc.state.angle,
-                AngleRef => foc.target.angle,
-                Speed => foc.state.velocity,
-                SpeedRef => foc.target.velocity,
-                SpeedLimit => foc.velocity_limit.unwrap_or(0.0),
+                Angle => input_to_output_shaft(foc.state.angle),
+                AngleRef => input_to_output_shaft(foc.target.angle),
+                Speed => input_to_output_shaft(foc.state.velocity),
+                SpeedRef => input_to_output_shaft(foc.target.velocity),
+                SpeedLimit => input_to_output_shaft(foc.velocity_limit.unwrap_or(0.0)),
                 TorqueLimit => foc.torque_limit.unwrap_or(0.0),
                 Iq => foc.state.i_q,
                 AngleKp => foc.angle_pid.gains.p,
