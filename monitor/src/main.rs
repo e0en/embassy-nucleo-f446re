@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::prelude::Write;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -30,15 +30,25 @@ fn main() -> eframe::Result {
 
     let (command_sender, command_receiver) = channel::<CommandMessage>();
     let (status_sender, status_receiver) = channel::<ResponseMessage>();
+    let (sequence_control_sender, sequence_control_receiver) = channel::<SequenceControl>();
+    let (sequence_event_sender, sequence_event_receiver) = channel::<SequenceEvent>();
 
     let rx_socket = CanSocket::open("can0").unwrap();
     let tx_socket = CanSocket::open("can0").unwrap();
+    let sequence_command_sender = command_sender.clone();
 
     thread::spawn(move || {
         forward_status(status_sender, rx_socket);
     });
     thread::spawn(move || {
         forward_command(command_receiver, tx_socket);
+    });
+    thread::spawn(move || {
+        forward_sequence(
+            sequence_control_receiver,
+            sequence_event_sender,
+            sequence_command_sender,
+        );
     });
 
     let options = eframe::NativeOptions {
@@ -52,6 +62,8 @@ fn main() -> eframe::Result {
             Ok(Box::<MyApp>::new(MyApp::new(
                 command_sender,
                 status_receiver,
+                sequence_control_sender,
+                sequence_event_receiver,
             )))
         }),
     )
@@ -99,9 +111,104 @@ fn forward_status(status_send: Sender<ResponseMessage>, socket: CanSocket) {
     }
 }
 
+fn forward_sequence(
+    control_recv: Receiver<SequenceControl>,
+    event_send: Sender<SequenceEvent>,
+    command_send: Sender<CommandMessage>,
+) {
+    let mut runtime_sequences: HashMap<u8, RuntimeSequence> = HashMap::new();
+
+    loop {
+        for control in control_recv.try_iter() {
+            match control {
+                SequenceControl::Start { can_id, sequence } => {
+                    runtime_sequences.insert(can_id, RuntimeSequence::from(sequence));
+                    send_sequence_command(
+                        &command_send,
+                        can_id,
+                        Command::SetParameter(ParameterValue::RunMode(sequence.run_mode())),
+                    );
+
+                    if let Some((target, value)) = sequence.initial_command_value() {
+                        send_sequence_command(
+                            &command_send,
+                            can_id,
+                            sequence_parameter(target, value),
+                        );
+                        let _ = event_send.send(SequenceEvent::Updated {
+                            can_id,
+                            target,
+                            value,
+                        });
+                    }
+                }
+                SequenceControl::Stop { can_id } => {
+                    if let Some(runtime) = runtime_sequences.remove(&can_id) {
+                        let target = runtime.target();
+                        send_sequence_command(
+                            &command_send,
+                            can_id,
+                            sequence_parameter(target, 0.0),
+                        );
+                        let _ = event_send.send(SequenceEvent::Updated {
+                            can_id,
+                            target,
+                            value: 0.0,
+                        });
+                        let _ = event_send.send(SequenceEvent::Finished { can_id });
+                    }
+                }
+            }
+        }
+
+        let now = Instant::now();
+        let mut finished_can_ids = Vec::new();
+
+        for (&can_id, runtime) in &mut runtime_sequences {
+            match runtime.tick(now) {
+                RuntimeTick::Idle => {}
+                RuntimeTick::Send { target, value } => {
+                    send_sequence_command(&command_send, can_id, sequence_parameter(target, value));
+                    let _ = event_send.send(SequenceEvent::Updated {
+                        can_id,
+                        target,
+                        value,
+                    });
+                }
+                RuntimeTick::Finished { target } => {
+                    send_sequence_command(&command_send, can_id, sequence_parameter(target, 0.0));
+                    let _ = event_send.send(SequenceEvent::Updated {
+                        can_id,
+                        target,
+                        value: 0.0,
+                    });
+                    let _ = event_send.send(SequenceEvent::Finished { can_id });
+                    finished_can_ids.push(can_id);
+                }
+            }
+        }
+
+        for can_id in finished_can_ids {
+            runtime_sequences.remove(&can_id);
+        }
+
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn send_sequence_command(command_send: &Sender<CommandMessage>, can_id: u8, command: Command) {
+    let _ = command_send.send(CommandMessage {
+        host_can_id: HOST_CAN_ID,
+        motor_can_id: can_id,
+        command,
+    });
+}
+
 struct MyApp {
     command_send: Sender<CommandMessage>,
     status_recv: Receiver<ResponseMessage>,
+    sequence_control_send: Sender<SequenceControl>,
+    sequence_event_recv: Receiver<SequenceEvent>,
     tabs: Vec<MotorTab>,
     selected_tab: usize,
     new_tab_can_id_string: String,
@@ -146,6 +253,8 @@ struct MotorTab {
     chirp_amplitude: f32,
     chirp_duration: f32,
     chirp_target: ChirpTarget,
+    step_value: f32,
+    step_target: ChirpTarget,
 
     run_mode: RunMode,
     plot_type: PlotType,
@@ -155,15 +264,62 @@ struct MotorTab {
     t0: Instant,
     chirp_amplitude_string: String,
     chirp_duration_string: String,
-    active_chirp: Option<ActiveChirp>,
+    step_value_string: String,
+    active_sequence: Option<ActiveSequence>,
 }
 
-struct ActiveChirp {
-    t0: Instant,
-    duration: Duration,
-    amplitude: f32,
+#[derive(Clone, Copy, Debug)]
+enum ActiveSequence {
+    Chirp {
+        target: ChirpTarget,
+        amplitude: f32,
+        duration: Duration,
+    },
+    Step {
+        target: ChirpTarget,
+        value: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SequenceControl {
+    Start {
+        can_id: u8,
+        sequence: ActiveSequence,
+    },
+    Stop {
+        can_id: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SequenceEvent {
+    Updated {
+        can_id: u8,
+        target: ChirpTarget,
+        value: f32,
+    },
+    Finished {
+        can_id: u8,
+    },
+}
+
+struct RuntimeChirp {
     target: ChirpTarget,
+    amplitude: f32,
+    duration: Duration,
+    t0: Instant,
     last_command_at: Option<Instant>,
+}
+
+enum RuntimeSequence {
+    Chirp(RuntimeChirp),
+    Step { target: ChirpTarget },
+}
+
+enum SequenceUiRequest {
+    Start(ActiveSequence),
+    Stop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +357,7 @@ impl MotorTab {
         let damping = 0.0;
         let chirp_amplitude = 5.0;
         let chirp_duration = 30.0;
+        let step_value = 5.0;
 
         Self {
             can_id,
@@ -239,6 +396,8 @@ impl MotorTab {
             chirp_amplitude,
             chirp_duration,
             chirp_target: ChirpTarget::Velocity,
+            step_value,
+            step_target: ChirpTarget::Velocity,
 
             run_mode: RunMode::Impedance,
             plot_type: PlotType::Angle,
@@ -248,7 +407,8 @@ impl MotorTab {
             t0: Instant::now(),
             chirp_amplitude_string: chirp_amplitude.to_string(),
             chirp_duration_string: chirp_duration.to_string(),
-            active_chirp: None,
+            step_value_string: step_value.to_string(),
+            active_sequence: None,
         }
     }
 
@@ -268,33 +428,23 @@ impl MotorTab {
         self.t0 = Instant::now();
     }
 
-    fn start_chirp(&mut self) {
-        self.active_chirp = Some(ActiveChirp {
-            t0: Instant::now(),
-            duration: Duration::from_secs_f32(self.chirp_duration),
-            amplitude: self.chirp_amplitude,
-            target: self.chirp_target,
-            last_command_at: None,
-        });
-    }
-
-    fn stop_chirp(&mut self) {
-        self.active_chirp = None;
-    }
-
     fn chirp_active(&self) -> bool {
-        self.active_chirp.is_some()
+        matches!(self.active_sequence, Some(ActiveSequence::Chirp { .. }))
     }
 
-    fn chirp_run_mode(&self) -> RunMode {
-        match self.chirp_target {
-            ChirpTarget::Angle => RunMode::Angle,
-            ChirpTarget::Velocity => RunMode::Velocity,
-            ChirpTarget::Torque => RunMode::Torque,
-        }
+    fn step_active(&self) -> bool {
+        matches!(self.active_sequence, Some(ActiveSequence::Step { .. }))
     }
 
-    fn set_chirp_value(&mut self, target: ChirpTarget, value: f32) {
+    fn excitation_active(&self) -> bool {
+        self.chirp_active() || self.step_active()
+    }
+
+    fn active_sequence_target(&self) -> Option<ChirpTarget> {
+        self.active_sequence.map(ActiveSequence::target)
+    }
+
+    fn set_sequence_value(&mut self, target: ChirpTarget, value: f32) {
         match target {
             ChirpTarget::Angle => {
                 self.angle = value;
@@ -421,10 +571,17 @@ impl MotorTab {
 }
 
 impl MyApp {
-    fn new(command_send: Sender<CommandMessage>, status_recv: Receiver<ResponseMessage>) -> Self {
+    fn new(
+        command_send: Sender<CommandMessage>,
+        status_recv: Receiver<ResponseMessage>,
+        sequence_control_send: Sender<SequenceControl>,
+        sequence_event_recv: Receiver<SequenceEvent>,
+    ) -> Self {
         let app = Self {
             command_send,
             status_recv,
+            sequence_control_send,
+            sequence_event_recv,
             tabs: vec![MotorTab::new(DEFAULT_MOTOR_CAN_ID)],
             selected_tab: 0,
             new_tab_can_id_string: DEFAULT_MOTOR_CAN_ID.to_string(),
@@ -484,6 +641,11 @@ impl MyApp {
         if self.tabs.len() <= 1 {
             return;
         }
+        if let Some(tab) = self.tabs.get(self.selected_tab)
+            && tab.active_sequence.is_some()
+        {
+            self.stop_sequence(tab.can_id);
+        }
         self.tabs.remove(self.selected_tab);
         if self.selected_tab >= self.tabs.len() {
             self.selected_tab = self.tabs.len() - 1;
@@ -497,12 +659,19 @@ impl MyApp {
         if new_can_id != current_can_id && self.has_tab_for_can_id(new_can_id) {
             return;
         }
+        if self
+            .selected_tab()
+            .is_some_and(|tab| tab.active_sequence.is_some())
+        {
+            self.stop_sequence(current_can_id);
+        }
 
         self.send_command_to(current_can_id, Command::SetCanId(new_can_id));
         if let Some(tab) = self.selected_tab_mut() {
             tab.can_id = new_can_id;
             tab.rename_can_id_string = new_can_id.to_string();
             tab.clear_plot();
+            tab.active_sequence = None;
         }
         self.request_initial_parameters(new_can_id);
     }
@@ -519,53 +688,45 @@ impl MyApp {
         }
     }
 
-    fn update_chirp_commands(&mut self) {
-        let now = Instant::now();
-        let mut queued_commands = Vec::new();
-
-        for tab in &mut self.tabs {
-            let Some(active_chirp) = tab.active_chirp.as_mut() else {
-                continue;
-            };
-
-            let elapsed = now.saturating_duration_since(active_chirp.t0);
-            if elapsed >= active_chirp.duration {
-                let target = active_chirp.target;
-                tab.active_chirp = None;
-                queued_commands.push((tab.can_id, chirp_parameter(target, 0.0)));
-                tab.set_chirp_value(target, 0.0);
-                continue;
+    fn handle_sequence_events(&mut self) {
+        for event in self.sequence_event_recv.try_iter() {
+            match event {
+                SequenceEvent::Updated {
+                    can_id,
+                    target,
+                    value,
+                } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
+                        tab.set_sequence_value(target, value);
+                    }
+                }
+                SequenceEvent::Finished { can_id } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
+                        tab.active_sequence = None;
+                    }
+                }
             }
-
-            if active_chirp
-                .last_command_at
-                .is_some_and(|last| now.saturating_duration_since(last) < CHIRP_COMMAND_INTERVAL)
-            {
-                continue;
-            }
-
-            active_chirp.last_command_at = Some(now);
-            let target = active_chirp.target;
-            let value = chirp_velocity_command(
-                active_chirp.amplitude,
-                elapsed.as_secs_f32(),
-                active_chirp.duration.as_secs_f32(),
-            );
-            queued_commands.push((tab.can_id, chirp_parameter(target, value)));
-            tab.set_chirp_value(target, value);
         }
+    }
 
-        for (can_id, command) in queued_commands {
-            self.send_command_to(can_id, command);
-        }
+    fn start_sequence(&self, can_id: u8, sequence: ActiveSequence) {
+        let _ = self
+            .sequence_control_send
+            .send(SequenceControl::Start { can_id, sequence });
+    }
+
+    fn stop_sequence(&self, can_id: u8) {
+        let _ = self
+            .sequence_control_send
+            .send(SequenceControl::Stop { can_id });
     }
 }
 
 impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_incoming_messages();
+        self.handle_sequence_events();
         self.render_ui(ui);
-        self.update_chirp_commands();
         ui.ctx().request_repaint_after(UI_REPAINT_INTERVAL);
     }
 }
@@ -630,6 +791,7 @@ impl MyApp {
             let mut request_initial_parameters = false;
             let mut rename_to: Option<u8> = None;
             let mut export_requested = false;
+            let mut sequence_request: Option<SequenceUiRequest> = None;
 
             {
                 let tab = &mut self.tabs[selected_index];
@@ -799,7 +961,10 @@ impl MyApp {
 
                 ui.horizontal(|ui| {
                     if ui.button("disable").clicked() {
-                        tab.stop_chirp();
+                        if tab.active_sequence.is_some() {
+                            sequence_request = Some(SequenceUiRequest::Stop);
+                            tab.active_sequence = None;
+                        }
                         queued_commands.push(Command::Stop);
                     }
                     if ui.button("enable").clicked() {
@@ -809,59 +974,68 @@ impl MyApp {
 
                 ui.separator();
                 ui.label("Chirp");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Angle, "Angle");
-                    ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Velocity, "Velocity");
-                    ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Torque, "Torque");
-                });
-                ui.horizontal(|ui| {
-                    let amplitude_label = ui.label("Amplitude");
-                    ui.text_edit_singleline(&mut tab.chirp_amplitude_string)
-                        .labelled_by(amplitude_label.id);
-                    let amplitude_valid = tab
-                        .chirp_amplitude_string
-                        .parse::<f32>()
-                        .map(|value| {
-                            tab.chirp_amplitude = value;
-                            value.is_finite() && value > 0.0
-                        })
-                        .unwrap_or(false);
+                ui.add_enabled_ui(!tab.step_active(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Angle, "Angle");
+                        ui.selectable_value(
+                            &mut tab.chirp_target,
+                            ChirpTarget::Velocity,
+                            "Velocity",
+                        );
+                        ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Torque, "Torque");
+                    });
+                    ui.horizontal(|ui| {
+                        let amplitude_label = ui.label("Amplitude");
+                        ui.text_edit_singleline(&mut tab.chirp_amplitude_string)
+                            .labelled_by(amplitude_label.id);
+                        let amplitude_valid = tab
+                            .chirp_amplitude_string
+                            .parse::<f32>()
+                            .map(|value| {
+                                tab.chirp_amplitude = value;
+                                value.is_finite() && value > 0.0
+                            })
+                            .unwrap_or(false);
 
-                    let duration_label = ui.label("Duration [s]");
-                    ui.text_edit_singleline(&mut tab.chirp_duration_string)
-                        .labelled_by(duration_label.id);
-                    let duration_valid = tab
-                        .chirp_duration_string
-                        .parse::<f32>()
-                        .map(|value| {
-                            tab.chirp_duration = value;
-                            value.is_finite() && value > 0.0
-                        })
-                        .unwrap_or(false);
+                        let duration_label = ui.label("Duration [s]");
+                        ui.text_edit_singleline(&mut tab.chirp_duration_string)
+                            .labelled_by(duration_label.id);
+                        let duration_valid = tab
+                            .chirp_duration_string
+                            .parse::<f32>()
+                            .map(|value| {
+                                tab.chirp_duration = value;
+                                value.is_finite() && value > 0.0
+                            })
+                            .unwrap_or(false);
 
-                    let can_start_chirp = amplitude_valid && duration_valid;
-                    if ui
-                        .add_enabled(
-                            can_start_chirp && !tab.chirp_active(),
-                            egui::Button::new("Start chirp"),
-                        )
-                        .clicked()
-                    {
-                        tab.run_mode = tab.chirp_run_mode();
-                        tab.start_chirp();
-                        queued_commands
-                            .push(Command::SetParameter(ParameterValue::RunMode(tab.run_mode)));
-                    }
+                        let can_start_chirp =
+                            amplitude_valid && duration_valid && !tab.excitation_active();
+                        if ui
+                            .add_enabled(can_start_chirp, egui::Button::new("Start chirp"))
+                            .clicked()
+                        {
+                            let sequence = ActiveSequence::Chirp {
+                                target: tab.chirp_target,
+                                amplitude: tab.chirp_amplitude,
+                                duration: Duration::from_secs_f32(tab.chirp_duration),
+                            };
+                            tab.run_mode = sequence.run_mode();
+                            tab.set_sequence_value(tab.chirp_target, 0.0);
+                            tab.active_sequence = Some(sequence);
+                            sequence_request = Some(SequenceUiRequest::Start(sequence));
+                        }
 
-                    if ui
-                        .add_enabled(tab.chirp_active(), egui::Button::new("Stop chirp"))
-                        .clicked()
-                    {
-                        let target = tab.chirp_target;
-                        tab.stop_chirp();
-                        tab.set_chirp_value(target, 0.0);
-                        queued_commands.push(chirp_parameter(target, 0.0));
-                    }
+                        if ui
+                            .add_enabled(tab.chirp_active(), egui::Button::new("Stop chirp"))
+                            .clicked()
+                        {
+                            let target = tab.active_sequence_target().unwrap_or(tab.chirp_target);
+                            tab.active_sequence = None;
+                            tab.set_sequence_value(target, 0.0);
+                            sequence_request = Some(SequenceUiRequest::Stop);
+                        }
+                    });
                 });
                 ui.small(format!(
                     "{:.1} -> {:.1} Hz logarithmic sweep on {}",
@@ -869,6 +1043,61 @@ impl MyApp {
                     CHIRP_END_FREQ_HZ,
                     tab.chirp_target.label()
                 ));
+
+                ui.separator();
+                ui.label("Step");
+                ui.add_enabled_ui(!tab.chirp_active(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut tab.step_target, ChirpTarget::Angle, "Angle");
+                        ui.selectable_value(
+                            &mut tab.step_target,
+                            ChirpTarget::Velocity,
+                            "Velocity",
+                        );
+                        ui.selectable_value(&mut tab.step_target, ChirpTarget::Torque, "Torque");
+                    });
+                    ui.horizontal(|ui| {
+                        let value_label = ui.label("Value");
+                        ui.text_edit_singleline(&mut tab.step_value_string)
+                            .labelled_by(value_label.id);
+                        let step_valid = tab
+                            .step_value_string
+                            .parse::<f32>()
+                            .map(|value| {
+                                tab.step_value = value;
+                                value.is_finite()
+                            })
+                            .unwrap_or(false);
+
+                        if ui
+                            .add_enabled(
+                                step_valid && !tab.excitation_active(),
+                                egui::Button::new("Send step"),
+                            )
+                            .clicked()
+                        {
+                            let sequence = ActiveSequence::Step {
+                                target: tab.step_target,
+                                value: tab.step_value,
+                            };
+                            tab.run_mode = sequence.run_mode();
+                            tab.set_sequence_value(tab.step_target, tab.step_value);
+                            tab.active_sequence = Some(sequence);
+                            sequence_request = Some(SequenceUiRequest::Start(sequence));
+                        }
+
+                        if ui
+                            .add_enabled(tab.step_active(), egui::Button::new("Clear step"))
+                            .clicked()
+                        {
+                            let target = tab.active_sequence_target().unwrap_or(tab.step_target);
+                            tab.set_sequence_value(target, 0.0);
+                            tab.active_sequence = None;
+                            sequence_request = Some(SequenceUiRequest::Stop);
+                        }
+                    });
+                });
+                ui.small(format!("Send a held step on {}", tab.step_target.label()));
 
                 ui.separator();
                 ui.label("Maintenance");
@@ -965,6 +1194,15 @@ impl MyApp {
                 self.rename_selected_motor(new_can_id);
             }
 
+            if let Some(sequence_request) = sequence_request {
+                match sequence_request {
+                    SequenceUiRequest::Start(sequence) => {
+                        self.start_sequence(current_can_id, sequence)
+                    }
+                    SequenceUiRequest::Stop => self.stop_sequence(current_can_id),
+                }
+            }
+
             if export_requested {
                 self.pending_export_points = self
                     .selected_tab()
@@ -1023,9 +1261,100 @@ impl ChirpTarget {
             ChirpTarget::Torque => "IqRef",
         }
     }
+
+    fn run_mode(self) -> RunMode {
+        match self {
+            ChirpTarget::Angle => RunMode::Angle,
+            ChirpTarget::Velocity => RunMode::Velocity,
+            ChirpTarget::Torque => RunMode::Torque,
+        }
+    }
 }
 
-fn chirp_parameter(target: ChirpTarget, value: f32) -> Command {
+impl ActiveSequence {
+    fn run_mode(self) -> RunMode {
+        self.target().run_mode()
+    }
+
+    fn target(self) -> ChirpTarget {
+        match self {
+            ActiveSequence::Chirp { target, .. } | ActiveSequence::Step { target, .. } => target,
+        }
+    }
+
+    fn initial_command_value(self) -> Option<(ChirpTarget, f32)> {
+        match self {
+            ActiveSequence::Chirp { target, .. } => Some((target, 0.0)),
+            ActiveSequence::Step { target, value } => Some((target, value)),
+        }
+    }
+}
+
+enum RuntimeTick {
+    Idle,
+    Send { target: ChirpTarget, value: f32 },
+    Finished { target: ChirpTarget },
+}
+
+impl From<ActiveSequence> for RuntimeSequence {
+    fn from(sequence: ActiveSequence) -> Self {
+        match sequence {
+            ActiveSequence::Chirp {
+                target,
+                amplitude,
+                duration,
+            } => Self::Chirp(RuntimeChirp {
+                target,
+                amplitude,
+                duration,
+                t0: Instant::now(),
+                last_command_at: None,
+            }),
+            ActiveSequence::Step { target, .. } => Self::Step { target },
+        }
+    }
+}
+
+impl RuntimeSequence {
+    fn target(&self) -> ChirpTarget {
+        match self {
+            RuntimeSequence::Chirp(chirp) => chirp.target,
+            RuntimeSequence::Step { target } => *target,
+        }
+    }
+
+    fn tick(&mut self, now: Instant) -> RuntimeTick {
+        match self {
+            RuntimeSequence::Step { .. } => RuntimeTick::Idle,
+            RuntimeSequence::Chirp(chirp) => {
+                let elapsed = now.saturating_duration_since(chirp.t0);
+                if elapsed >= chirp.duration {
+                    return RuntimeTick::Finished {
+                        target: chirp.target,
+                    };
+                }
+
+                if chirp.last_command_at.is_some_and(|last| {
+                    now.saturating_duration_since(last) < CHIRP_COMMAND_INTERVAL
+                }) {
+                    return RuntimeTick::Idle;
+                }
+
+                chirp.last_command_at = Some(now);
+                RuntimeTick::Send {
+                    target: chirp.target,
+                    value: chirp_velocity_command(
+                        chirp.amplitude,
+                        elapsed.as_secs_f32(),
+                        chirp.duration.as_secs_f32(),
+                    ),
+                }
+            }
+        }
+    }
+}
+
+fn sequence_parameter(target: ChirpTarget, value: f32) -> Command {
     let parameter = match target {
         ChirpTarget::Angle => ParameterValue::AngleRef(value),
         ChirpTarget::Velocity => ParameterValue::SpeedRef(value),
