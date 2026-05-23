@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::prelude::Write;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{f32, thread};
 
 use can_message::message::{
@@ -213,7 +213,7 @@ struct MyApp {
     selected_tab: usize,
     new_tab_can_id_string: String,
     file_dialog: egui_file_dialog::FileDialog,
-    pending_export_points: Option<Vec<egui_plot::PlotPoint>>,
+    pending_export: Option<PendingExport>,
 }
 
 struct MotorTab {
@@ -266,6 +266,8 @@ struct MotorTab {
     chirp_duration_string: String,
     step_value_string: String,
     active_sequence: Option<ActiveSequence>,
+    active_capture: Option<SequenceCapture>,
+    last_capture: Option<SequenceCapture>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -301,6 +303,43 @@ enum SequenceEvent {
     },
     Finished {
         can_id: u8,
+    },
+}
+
+enum PendingExport {
+    Plot(Vec<egui_plot::PlotPoint>),
+    Sequence(SequenceCapture),
+}
+
+#[derive(Clone)]
+struct SequenceCapture {
+    sequence: ActiveSequence,
+    rows: Vec<SequenceCaptureRow>,
+}
+
+#[derive(Clone, Copy)]
+enum SequenceCaptureRow {
+    Command {
+        timestamp_ms: u128,
+        target: ChirpTarget,
+        value: f32,
+    },
+    Status {
+        timestamp_ms: u128,
+        angle: f32,
+        velocity: f32,
+        torque: f32,
+        temperature: f32,
+    },
+    Current {
+        timestamp_ms: u128,
+        i_q: f32,
+        i_d: f32,
+    },
+    DebugValue {
+        timestamp_ms: u128,
+        kind: DebugValueKind,
+        value: f32,
     },
 }
 
@@ -409,6 +448,8 @@ impl MotorTab {
             chirp_duration_string: chirp_duration.to_string(),
             step_value_string: step_value.to_string(),
             active_sequence: None,
+            active_capture: None,
+            last_capture: None,
         }
     }
 
@@ -568,6 +609,75 @@ impl MotorTab {
             },
         }
     }
+
+    fn start_capture(&mut self, sequence: ActiveSequence) {
+        self.active_capture = Some(SequenceCapture {
+            sequence,
+            rows: Vec::new(),
+        });
+        self.last_capture = None;
+    }
+
+    fn finish_capture(&mut self) {
+        if let Some(capture) = self.active_capture.take() {
+            self.last_capture = Some(capture);
+        }
+    }
+
+    fn record_sequence_command(&mut self, timestamp_ms: u128, target: ChirpTarget, value: f32) {
+        if let Some(capture) = &mut self.active_capture {
+            capture.rows.push(SequenceCaptureRow::Command {
+                timestamp_ms,
+                target,
+                value,
+            });
+        }
+    }
+
+    fn record_feedback(&mut self, response: &ResponseBody, timestamp_ms: u128) {
+        let Some(capture) = &mut self.active_capture else {
+            return;
+        };
+
+        let row = match response {
+            ResponseBody::MotorStatus(x) => SequenceCaptureRow::Status {
+                timestamp_ms,
+                angle: x.angle,
+                velocity: x.velocity,
+                torque: x.torque,
+                temperature: x.temperature,
+            },
+            ResponseBody::MotorCurrent(x) => SequenceCaptureRow::Current {
+                timestamp_ms,
+                i_q: x.i_q,
+                i_d: x.i_d,
+            },
+            ResponseBody::DebugValue(x) => SequenceCaptureRow::DebugValue {
+                timestamp_ms,
+                kind: x.kind,
+                value: x.value,
+            },
+            ResponseBody::ParameterValue(_) => return,
+        };
+        capture.rows.push(row);
+    }
+
+    fn has_sequence_capture(&self) -> bool {
+        self.active_capture
+            .as_ref()
+            .is_some_and(|capture| !capture.rows.is_empty())
+            || self
+                .last_capture
+                .as_ref()
+                .is_some_and(|capture| !capture.rows.is_empty())
+    }
+
+    fn sequence_capture(&self) -> Option<SequenceCapture> {
+        self.active_capture
+            .as_ref()
+            .or(self.last_capture.as_ref())
+            .cloned()
+    }
 }
 
 impl MyApp {
@@ -586,7 +696,7 @@ impl MyApp {
             selected_tab: 0,
             new_tab_can_id_string: DEFAULT_MOTOR_CAN_ID.to_string(),
             file_dialog: egui_file_dialog::FileDialog::new(),
-            pending_export_points: None,
+            pending_export: None,
         };
         app.request_initial_parameters(DEFAULT_MOTOR_CAN_ID);
         app
@@ -683,6 +793,9 @@ impl MyApp {
                 .iter_mut()
                 .find(|tab| tab.can_id == message.motor_can_id)
             {
+                if tab.active_capture.is_some() {
+                    tab.record_feedback(&message.body, current_timestamp_ms());
+                }
                 tab.apply_response(&message.body);
             }
         }
@@ -698,11 +811,13 @@ impl MyApp {
                 } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
                         tab.set_sequence_value(target, value);
+                        tab.record_sequence_command(current_timestamp_ms(), target, value);
                     }
                 }
                 SequenceEvent::Finished { can_id } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
                         tab.active_sequence = None;
+                        tab.finish_capture();
                     }
                 }
             }
@@ -791,6 +906,7 @@ impl MyApp {
             let mut request_initial_parameters = false;
             let mut rename_to: Option<u8> = None;
             let mut export_requested = false;
+            let mut sequence_export_requested = false;
             let mut sequence_request: Option<SequenceUiRequest> = None;
 
             {
@@ -1023,6 +1139,7 @@ impl MyApp {
                             tab.run_mode = sequence.run_mode();
                             tab.set_sequence_value(tab.chirp_target, 0.0);
                             tab.active_sequence = Some(sequence);
+                            tab.start_capture(sequence);
                             sequence_request = Some(SequenceUiRequest::Start(sequence));
                         }
 
@@ -1083,6 +1200,7 @@ impl MyApp {
                             tab.run_mode = sequence.run_mode();
                             tab.set_sequence_value(tab.step_target, tab.step_value);
                             tab.active_sequence = Some(sequence);
+                            tab.start_capture(sequence);
                             sequence_request = Some(SequenceUiRequest::Start(sequence));
                         }
 
@@ -1157,6 +1275,21 @@ impl MyApp {
                     export_requested = true;
                 }
 
+                let sequence_export_label = if tab.active_capture.is_some() {
+                    "Export active test capture"
+                } else {
+                    "Export last test capture"
+                };
+                if ui
+                    .add_enabled(
+                        tab.has_sequence_capture(),
+                        egui::Button::new(sequence_export_label),
+                    )
+                    .clicked()
+                {
+                    sequence_export_requested = true;
+                }
+
                 let points_1: Vec<_> = tab.plot_points_1.iter().copied().collect();
                 let points_2: Vec<_> = tab.plot_points_2.iter().copied().collect();
                 egui_plot::Plot::new(format!("plot-{}", tab.can_id)).show(ui, |plot_ui| {
@@ -1204,9 +1337,17 @@ impl MyApp {
             }
 
             if export_requested {
-                self.pending_export_points = self
+                self.pending_export = self
                     .selected_tab()
-                    .map(|tab| tab.plot_points_1.iter().copied().collect::<Vec<_>>());
+                    .map(|tab| PendingExport::Plot(tab.plot_points_1.iter().copied().collect()));
+                self.file_dialog = egui_file_dialog::FileDialog::new();
+                self.file_dialog.save_file();
+            }
+
+            if sequence_export_requested {
+                self.pending_export = self
+                    .selected_tab()
+                    .and_then(|tab| tab.sequence_capture().map(PendingExport::Sequence));
                 self.file_dialog = egui_file_dialog::FileDialog::new();
                 self.file_dialog.save_file();
             }
@@ -1217,12 +1358,19 @@ impl MyApp {
                 .picked()
                 .map(|path| path.to_path_buf());
             if let Some(path) = picked_path
-                && let Some(points) = self.pending_export_points.take()
+                && let Some(export) = self.pending_export.take()
                 && let Ok(mut file) = File::create(path)
             {
-                for point in &points {
-                    let line = format!("{},{}\n", point.x, point.y);
-                    let _ = file.write_all(line.as_bytes());
+                match export {
+                    PendingExport::Plot(points) => {
+                        for point in &points {
+                            let line = format!("{},{}\n", point.x, point.y);
+                            let _ = file.write_all(line.as_bytes());
+                        }
+                    }
+                    PendingExport::Sequence(capture) => {
+                        let _ = write_sequence_capture_csv(&mut file, &capture);
+                    }
                 }
             }
         });
@@ -1288,6 +1436,15 @@ impl ActiveSequence {
             ActiveSequence::Step { target, value } => Some((target, value)),
         }
     }
+
+    fn csv_fields(self) -> (&'static str, &'static str, f32) {
+        match self {
+            ActiveSequence::Chirp {
+                target, amplitude, ..
+            } => ("chirp", target.label(), amplitude),
+            ActiveSequence::Step { target, value } => ("step", target.label(), value),
+        }
+    }
 }
 
 enum RuntimeTick {
@@ -1319,7 +1476,7 @@ impl RuntimeSequence {
     fn target(&self) -> ChirpTarget {
         match self {
             RuntimeSequence::Chirp(chirp) => chirp.target,
-            RuntimeSequence::Step { target } => *target,
+            RuntimeSequence::Step { target, .. } => *target,
         }
     }
 
@@ -1376,6 +1533,76 @@ fn chirp_velocity_command(amplitude: f32, elapsed_secs: f32, duration_secs: f32)
     let phase = 2.0 * f32::consts::PI * CHIRP_START_FREQ_HZ * duration_secs / sweep_ratio.ln()
         * (sweep_ratio.powf(exponent) - 1.0);
     amplitude * phase.sin()
+}
+
+fn write_sequence_capture_csv(file: &mut File, capture: &SequenceCapture) -> std::io::Result<()> {
+    file.write_all(
+        b"sequence_kind,sequence_target,sequence_value,timestamp_ms,row_kind,command_target,command_value,angle,velocity,torque,temperature,i_q,i_d,debug_kind,debug_value\n",
+    )?;
+
+    for row in &capture.rows {
+        let line = row.to_csv_line(capture.sequence);
+        file.write_all(line.as_bytes())?;
+    }
+
+    Ok(())
+}
+
+impl SequenceCaptureRow {
+    fn to_csv_line(self, sequence: ActiveSequence) -> String {
+        let (sequence_kind, sequence_target, sequence_value) = sequence.csv_fields();
+        match self {
+            SequenceCaptureRow::Command {
+                timestamp_ms,
+                target,
+                value,
+            } => format!(
+                "{sequence_kind},{sequence_target},{sequence_value},{timestamp_ms},command,{},{},,,,,,,,\n",
+                target.label(),
+                value
+            ),
+            SequenceCaptureRow::Status {
+                timestamp_ms,
+                angle,
+                velocity,
+                torque,
+                temperature,
+            } => format!(
+                "{sequence_kind},{sequence_target},{sequence_value},{timestamp_ms},status,,,{angle},{velocity},{torque},{temperature},,,,\n"
+            ),
+            SequenceCaptureRow::Current {
+                timestamp_ms,
+                i_q,
+                i_d,
+            } => format!(
+                "{sequence_kind},{sequence_target},{sequence_value},{timestamp_ms},current,,,,,,,,{i_q},{i_d},,\n"
+            ),
+            SequenceCaptureRow::DebugValue {
+                timestamp_ms,
+                kind,
+                value,
+            } => format!(
+                "{sequence_kind},{sequence_target},{sequence_value},{timestamp_ms},debug,,,,,,,,{},{}\n",
+                debug_value_kind_label(kind),
+                value
+            ),
+        }
+    }
+}
+
+fn current_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn debug_value_kind_label(kind: DebugValueKind) -> &'static str {
+    match kind {
+        DebugValueKind::SpeedError => "speed_error",
+        DebugValueKind::IqRef => "iq_ref",
+        DebugValueKind::VelocityIntegral => "velocity_integral",
+    }
 }
 
 // Helper functions for CAN frame conversions
