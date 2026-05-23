@@ -29,6 +29,7 @@ fn main() -> eframe::Result {
     env_logger::init();
 
     let (command_sender, command_receiver) = channel::<CommandMessage>();
+    let (command_event_sender, command_event_receiver) = channel::<CommandEvent>();
     let (status_sender, status_receiver) = channel::<ResponseMessage>();
     let (sequence_control_sender, sequence_control_receiver) = channel::<SequenceControl>();
     let (sequence_event_sender, sequence_event_receiver) = channel::<SequenceEvent>();
@@ -41,7 +42,7 @@ fn main() -> eframe::Result {
         forward_status(status_sender, rx_socket);
     });
     thread::spawn(move || {
-        forward_command(command_receiver, tx_socket);
+        forward_command(command_receiver, command_event_sender, tx_socket);
     });
     thread::spawn(move || {
         forward_sequence(
@@ -61,6 +62,7 @@ fn main() -> eframe::Result {
         Box::new(|_| {
             Ok(Box::<MyApp>::new(MyApp::new(
                 command_sender,
+                command_event_receiver,
                 status_receiver,
                 sequence_control_sender,
                 sequence_event_receiver,
@@ -69,15 +71,22 @@ fn main() -> eframe::Result {
     )
 }
 
-fn forward_command(command_recv: Receiver<CommandMessage>, socket: CanSocket) {
+fn forward_command(
+    command_recv: Receiver<CommandMessage>,
+    command_event_send: Sender<CommandEvent>,
+    socket: CanSocket,
+) {
     loop {
         for mut command_msg in command_recv.try_iter() {
             command_msg.host_can_id = HOST_CAN_ID;
+            let command_event = command_event_from_message(&command_msg);
             if let Ok(can_msg) = CanMessage::try_from(command_msg) {
                 match can_message_to_can_frame(&can_msg) {
                     Ok(frame) => {
                         if let Err(e) = socket.write_frame(&frame) {
                             println!("Failed to send CAN frame: {}", e);
+                        } else if let Some(command_event) = command_event {
+                            let _ = command_event_send.send(command_event);
                         }
                     }
                     Err(e) => {
@@ -204,8 +213,28 @@ fn send_sequence_command(command_send: &Sender<CommandMessage>, can_id: u8, comm
     });
 }
 
+fn command_event_from_message(command_msg: &CommandMessage) -> Option<CommandEvent> {
+    let target_value = match &command_msg.command {
+        Command::SetParameter(ParameterValue::AngleRef(value)) => {
+            Some((ChirpTarget::Angle, *value))
+        }
+        Command::SetParameter(ParameterValue::SpeedRef(value)) => {
+            Some((ChirpTarget::Velocity, *value))
+        }
+        Command::SetParameter(ParameterValue::IqRef(value)) => Some((ChirpTarget::Torque, *value)),
+        _ => None,
+    }?;
+
+    Some(CommandEvent::RefSent {
+        can_id: command_msg.motor_can_id,
+        target: target_value.0,
+        value: target_value.1,
+    })
+}
+
 struct MyApp {
     command_send: Sender<CommandMessage>,
+    command_event_recv: Receiver<CommandEvent>,
     status_recv: Receiver<ResponseMessage>,
     sequence_control_send: Sender<SequenceControl>,
     sequence_event_recv: Receiver<SequenceEvent>,
@@ -240,6 +269,9 @@ struct MotorTab {
     velocity: f32,
     iq: f32,
     vq: f32,
+    sent_angle_ref: f32,
+    sent_velocity_ref: f32,
+    sent_iq_ref: f32,
 
     angle_kp: f32,
     speed_kp: f32,
@@ -309,6 +341,15 @@ enum SequenceEvent {
 enum PendingExport {
     Plot(Vec<egui_plot::PlotPoint>),
     Sequence(SequenceCapture),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CommandEvent {
+    RefSent {
+        can_id: u8,
+        target: ChirpTarget,
+        value: f32,
+    },
 }
 
 #[derive(Clone)]
@@ -422,6 +463,9 @@ impl MotorTab {
             velocity,
             iq,
             vq,
+            sent_angle_ref: angle,
+            sent_velocity_ref: velocity,
+            sent_iq_ref: iq,
 
             angle_kp,
             speed_kp,
@@ -527,16 +571,16 @@ impl MotorTab {
                 {
                     return;
                 }
-                let y = match self.plot_type {
-                    PlotType::Angle => x.angle as f64,
-                    PlotType::Velocity => x.velocity as f64,
-                    PlotType::Torque => x.torque as f64,
+                let (feedback, reference) = match self.plot_type {
+                    PlotType::Angle => (x.angle as f64, self.sent_angle_ref as f64),
+                    PlotType::Velocity => (x.velocity as f64, self.sent_velocity_ref as f64),
+                    PlotType::Torque => (x.torque as f64, self.sent_iq_ref as f64),
                     PlotType::Current
                     | PlotType::SpeedError
                     | PlotType::IRef
                     | PlotType::VelocityIntegral => return,
                 };
-                self.push_plot_points(y, None);
+                self.push_plot_points(feedback, Some(reference));
             }
             ResponseBody::MotorCurrent(x) => {
                 if !self.is_plotting || self.plot_type != PlotType::Current {
@@ -678,17 +722,27 @@ impl MotorTab {
             .or(self.last_capture.as_ref())
             .cloned()
     }
+
+    fn set_sent_reference(&mut self, target: ChirpTarget, value: f32) {
+        match target {
+            ChirpTarget::Angle => self.sent_angle_ref = value,
+            ChirpTarget::Velocity => self.sent_velocity_ref = value,
+            ChirpTarget::Torque => self.sent_iq_ref = value,
+        }
+    }
 }
 
 impl MyApp {
     fn new(
         command_send: Sender<CommandMessage>,
+        command_event_recv: Receiver<CommandEvent>,
         status_recv: Receiver<ResponseMessage>,
         sequence_control_send: Sender<SequenceControl>,
         sequence_event_recv: Receiver<SequenceEvent>,
     ) -> Self {
         let app = Self {
             command_send,
+            command_event_recv,
             status_recv,
             sequence_control_send,
             sequence_event_recv,
@@ -801,6 +855,22 @@ impl MyApp {
         }
     }
 
+    fn handle_command_events(&mut self) {
+        for event in self.command_event_recv.try_iter() {
+            match event {
+                CommandEvent::RefSent {
+                    can_id,
+                    target,
+                    value,
+                } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
+                        tab.set_sent_reference(target, value);
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_sequence_events(&mut self) {
         for event in self.sequence_event_recv.try_iter() {
             match event {
@@ -839,6 +909,7 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.handle_command_events();
         self.handle_incoming_messages();
         self.handle_sequence_events();
         self.render_ui(ui);
@@ -1292,21 +1363,22 @@ impl MyApp {
 
                 let points_1: Vec<_> = tab.plot_points_1.iter().copied().collect();
                 let points_2: Vec<_> = tab.plot_points_2.iter().copied().collect();
+                let (line_1_name, line_2_name) = tab.plot_type.plot_line_names();
                 egui_plot::Plot::new(format!("plot-{}", tab.can_id)).show(ui, |plot_ui| {
                     let line_1 =
                         egui_plot::Line::new("y1", egui_plot::PlotPoints::Owned(points_1.clone()))
-                            .name("y1")
+                            .name(line_1_name)
                             .style(egui_plot::LineStyle::Solid)
                             .color(egui::Color32::RED)
                             .width(2.0);
                     plot_ui.line(line_1);
 
-                    if tab.plot_type == PlotType::Current {
+                    if let Some(line_2_name) = line_2_name {
                         let line_2 = egui_plot::Line::new(
                             "y2",
                             egui_plot::PlotPoints::Owned(points_2.clone()),
                         )
-                        .name("y2")
+                        .name(line_2_name)
                         .style(egui_plot::LineStyle::Solid)
                         .color(egui::Color32::GREEN)
                         .width(2.0);
@@ -1415,6 +1487,20 @@ impl ChirpTarget {
             ChirpTarget::Angle => RunMode::Angle,
             ChirpTarget::Velocity => RunMode::Velocity,
             ChirpTarget::Torque => RunMode::Torque,
+        }
+    }
+}
+
+impl PlotType {
+    fn plot_line_names(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            PlotType::Angle => ("Angle", Some("AngleRef")),
+            PlotType::Velocity => ("Velocity", Some("SpeedRef")),
+            PlotType::Torque => ("Torque", Some("IqRef")),
+            PlotType::Current => ("Iq", Some("Id")),
+            PlotType::SpeedError => ("SpeedError", None),
+            PlotType::IRef => ("IqRef", None),
+            PlotType::VelocityIntegral => ("VelocityIntegral", None),
         }
     }
 }
