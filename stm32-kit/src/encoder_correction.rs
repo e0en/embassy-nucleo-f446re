@@ -84,23 +84,32 @@ impl AngleTracker {
         self.full_turns as f32 * TAU + self.residual_angle
     }
 
+    pub fn is_uninitialized(&self) -> bool {
+        self.previous_wrapped_angle.is_none()
+    }
+
+    pub fn seed(&mut self, wrapped_angle: f32, full_turns: i32, now: Instant) -> EncoderReading {
+        let wrapped_angle = wrap_0_tau(wrapped_angle);
+        self.previous_wrapped_angle = Some(wrapped_angle);
+        self.previous_time = now;
+        self.full_turns = full_turns;
+        self.residual_angle = wrapped_angle;
+        self.observer_angle = wrapped_angle;
+        let _ = self.observer.update(self.observer_angle, 0.0);
+
+        EncoderReading {
+            phase: wrapped_angle,
+            full_rotations: self.full_turns,
+            cumulative_angle: self.cumulative_angle(),
+            velocity: 0.0,
+            dt: 0.0,
+        }
+    }
+
     pub fn update(&mut self, wrapped_angle: f32, now: Instant) -> EncoderReading {
         let wrapped_angle = wrap_0_tau(wrapped_angle);
         match self.previous_wrapped_angle {
-            None => {
-                self.previous_wrapped_angle = Some(wrapped_angle);
-                self.previous_time = now;
-                self.full_turns = 0;
-                self.residual_angle = wrapped_angle;
-                self.observer_angle = wrapped_angle;
-                EncoderReading {
-                    phase: wrapped_angle,
-                    full_rotations: self.full_turns,
-                    cumulative_angle: self.cumulative_angle(),
-                    velocity: 0.0,
-                    dt: 0.0,
-                }
-            }
+            None => self.seed(wrapped_angle, 0, now),
             Some(previous_wrapped_angle) => {
                 let dt_duration = now.checked_duration_since(self.previous_time);
                 let dt = dt_duration
@@ -332,5 +341,19 @@ mod tests {
             (last_angle as f64 - expected_angle).abs() < 0.05,
             "angle drifted: measured={last_angle}, expected={expected_angle}"
         );
+    }
+
+    #[test]
+    fn angle_tracker_seed_restores_startup_turn_count() {
+        let mut tracker = AngleTracker::new(20.0);
+        let now = Instant::from_micros(0);
+        let wrapped_angle = PI;
+
+        let seeded = tracker.seed(wrapped_angle, 9, now);
+
+        assert_eq!(seeded.full_rotations, 9);
+        assert!((seeded.cumulative_angle - (9.0 * TAU + wrapped_angle)).abs() < 1e-6);
+        assert_eq!(seeded.velocity, 0.0);
+        assert_eq!(seeded.dt, 0.0);
     }
 }

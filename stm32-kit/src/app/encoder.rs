@@ -186,7 +186,13 @@ pub(crate) async fn encoder_task(
         match dual_encoder.read_pair_async().await {
             Ok(dual_reading) => {
                 let zeroed_angle = correction.correct_wrapped_angle(dual_reading.primary.phase);
-                let mut encoder_reading = tracker.update(zeroed_angle, Instant::now());
+                let now = Instant::now();
+                let mut encoder_reading = if tracker.is_uninitialized() {
+                    let startup_turns = dual_encoder.last_rev_count_estimate().unwrap_or(0);
+                    tracker.seed(zeroed_angle, startup_turns, now)
+                } else {
+                    tracker.update(zeroed_angle, now)
+                };
                 encoder_reading.phase = zeroed_angle;
                 write_sensor_snapshot(&encoder_reading);
             }
