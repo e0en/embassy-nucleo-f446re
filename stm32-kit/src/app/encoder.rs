@@ -19,6 +19,7 @@ use super::VELOCITY_OBSERVER_BANDWIDTH;
 
 struct SensorSnapshotBuffer {
     phase: AtomicU32,
+    secondary_phase: AtomicU32,
     full_rotations: AtomicI32,
     cumulative_angle: AtomicU32,
     velocity: AtomicU32,
@@ -29,6 +30,7 @@ impl SensorSnapshotBuffer {
     const fn new() -> Self {
         Self {
             phase: AtomicU32::new(0),
+            secondary_phase: AtomicU32::new(0),
             full_rotations: AtomicI32::new(0),
             cumulative_angle: AtomicU32::new(0),
             velocity: AtomicU32::new(0),
@@ -43,13 +45,12 @@ static ACTIVE_SENSOR_SNAPSHOT: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy)]
 enum EncoderTaskCommand {
-    CaptureZeroOffset,
+    SetSecondaryZeroOffset(f32),
 }
 
 #[derive(Clone, Copy)]
 enum EncoderTaskResponse {
-    Captured(f32, f32),
-    CaptureFailed,
+    SecondaryZeroOffsetSet,
 }
 
 static ENCODER_TASK_COMMAND_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskCommand, 1> =
@@ -57,13 +58,17 @@ static ENCODER_TASK_COMMAND_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskComm
 static ENCODER_TASK_RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskResponse, 1> =
     Channel::new();
 
-fn write_sensor_snapshot(encoder_reading: &EncoderReading) {
+fn write_sensor_snapshot(encoder_reading: &EncoderReading, secondary_phase: f32) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
 
     snapshot.phase.store(
         u32::from_le_bytes(encoder_reading.phase.to_le_bytes()),
+        Ordering::Relaxed,
+    );
+    snapshot.secondary_phase.store(
+        u32::from_le_bytes(secondary_phase.to_le_bytes()),
         Ordering::Relaxed,
     );
     snapshot
@@ -87,75 +92,33 @@ fn write_sensor_snapshot(encoder_reading: &EncoderReading) {
     ACTIVE_SENSOR_SNAPSHOT.store(next_index as u8, Ordering::Release);
 }
 
-#[derive(defmt::Format)]
-enum ZeroOffsetWriteError {
-    Primary(as5047p::Error),
-    Secondary(as5047p::Error),
-}
-
-async fn write_zero_offsets(
-    dual_encoder: &mut DualEncoder<As5047P<'static>, As5047P<'static>>,
-) -> Result<(f32, f32), ZeroOffsetWriteError> {
-    dual_encoder
-        .primary_mut()
-        .set_current_angle_as_zero()
-        .await
-        .map_err(ZeroOffsetWriteError::Primary)?;
-    dual_encoder
-        .secondary_mut()
-        .set_current_angle_as_zero()
-        .await
-        .map_err(ZeroOffsetWriteError::Secondary)?;
-    Ok((
-        dual_encoder.primary_mut().zero_offset(),
-        dual_encoder.secondary_mut().zero_offset(),
-    ))
-}
-
 async fn handle_encoder_task_command(
     command: EncoderTaskCommand,
     dual_encoder: &mut DualEncoder<As5047P<'static>, As5047P<'static>>,
     response_sender: &Sender<'static, ThreadModeRawMutex, EncoderTaskResponse, 1>,
 ) -> bool {
     match command {
-        EncoderTaskCommand::CaptureZeroOffset => match write_zero_offsets(dual_encoder).await {
-            Ok((primary_zero_offset, secondary_zero_offset)) => {
-                response_sender
-                    .send(EncoderTaskResponse::Captured(
-                        primary_zero_offset,
-                        secondary_zero_offset,
-                    ))
-                    .await;
-                true
-            }
-            Err(ZeroOffsetWriteError::Primary(e)) => {
-                error!("Failed to set ENC1 zero offset: {:?}", e);
-                response_sender
-                    .send(EncoderTaskResponse::CaptureFailed)
-                    .await;
-                false
-            }
-            Err(ZeroOffsetWriteError::Secondary(e)) => {
-                error!("Failed to set ENC2 zero offset: {:?}", e);
-                response_sender
-                    .send(EncoderTaskResponse::CaptureFailed)
-                    .await;
-                false
-            }
-        },
+        EncoderTaskCommand::SetSecondaryZeroOffset(secondary_zero_offset) => {
+            dual_encoder
+                .secondary_mut()
+                .set_zero_offset(secondary_zero_offset);
+            response_sender
+                .send(EncoderTaskResponse::SecondaryZeroOffsetSet)
+                .await;
+            true
+        }
     }
 }
 
-pub(crate) async fn request_zero_offset_capture() -> Option<(f32, f32)> {
+pub(crate) async fn apply_secondary_zero_offset(secondary_zero_offset: f32) -> bool {
     ENCODER_TASK_COMMAND_CHANNEL
         .sender()
-        .send(EncoderTaskCommand::CaptureZeroOffset)
+        .send(EncoderTaskCommand::SetSecondaryZeroOffset(
+            secondary_zero_offset,
+        ))
         .await;
     match ENCODER_TASK_RESPONSE_CHANNEL.receiver().receive().await {
-        EncoderTaskResponse::Captured(primary_zero_offset, secondary_zero_offset) => {
-            Some((primary_zero_offset, secondary_zero_offset))
-        }
-        EncoderTaskResponse::CaptureFailed => None,
+        EncoderTaskResponse::SecondaryZeroOffsetSet => true,
     }
 }
 
@@ -194,7 +157,7 @@ pub(crate) async fn encoder_task(
                     tracker.update(zeroed_angle, now)
                 };
                 encoder_reading.phase = zeroed_angle;
-                write_sensor_snapshot(&encoder_reading);
+                write_sensor_snapshot(&encoder_reading, dual_reading.secondary_phase);
             }
             Err(DualEncoderReadError::Primary(as5047p::Error::CommandFrame)) => {
                 if dual_encoder
@@ -262,4 +225,26 @@ pub(crate) fn read_sensor() -> EncoderReading {
         velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
         dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
     }
+}
+
+pub(crate) fn read_sensor_pair() -> (EncoderReading, f32) {
+    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
+    let snapshot = &SENSOR_SNAPSHOTS[active_index];
+    let raw_phase = snapshot.phase.load(Ordering::Relaxed);
+    let raw_secondary_phase = snapshot.secondary_phase.load(Ordering::Relaxed);
+    let full_rotations = snapshot.full_rotations.load(Ordering::Relaxed);
+    let raw_cumulative_angle = snapshot.cumulative_angle.load(Ordering::Relaxed);
+    let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
+    let raw_dt = snapshot.dt.load(Ordering::Relaxed);
+
+    (
+        EncoderReading {
+            phase: f32::from_le_bytes(raw_phase.to_le_bytes()),
+            full_rotations,
+            cumulative_angle: f32::from_le_bytes(raw_cumulative_angle.to_le_bytes()),
+            velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
+            dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
+        },
+        f32::from_le_bytes(raw_secondary_phase.to_le_bytes()),
+    )
 }

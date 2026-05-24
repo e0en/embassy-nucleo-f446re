@@ -91,10 +91,6 @@ async fn main(spawner: Spawner) {
 
     let mut p_flash = Flash::new_blocking(p.FLASH);
     let stored_config = flash_config::read_config(&mut p_flash);
-    let primary_zero_offset = stored_config
-        .as_ref()
-        .map(|config| config.primary_zero_offset)
-        .unwrap_or(0.0);
     let secondary_zero_offset = stored_config
         .as_ref()
         .map(|config| config.secondary_zero_offset)
@@ -138,12 +134,7 @@ async fn main(spawner: Spawner) {
         timer.get_frequency()
     );
 
-    let mut sensor = As5047P::new(
-        &SPI,
-        enc1_cs_out,
-        VELOCITY_OBSERVER_BANDWIDTH,
-        primary_zero_offset,
-    );
+    let mut sensor = As5047P::new(&SPI, enc1_cs_out, VELOCITY_OBSERVER_BANDWIDTH, 0.0);
     match sensor.initialize().await {
         Ok(diagnostics) => info!("ENC1 diagnostics: {:?}", diagnostics),
         Err(e) => {

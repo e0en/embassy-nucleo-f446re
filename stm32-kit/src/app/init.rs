@@ -24,7 +24,8 @@ use super::{
     ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD, ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS, CURRENT_PI_FREQUENCY,
     CURRENT_SAFETY_MARGIN, FocControllerType, IMPEDANCE_TUNING_MAX_CURRENT,
     PHASE_MAPPING_TOLERANCE, PSU_VOLTAGE, VELOCITY_PI_FREQUENCY, VOLTAGE_RAMP_RATE,
-    encoder::read_sensor, persistence::GATE_DRIVER,
+    encoder::{apply_secondary_zero_offset, read_sensor},
+    persistence::GATE_DRIVER,
 };
 
 fn create_foc_controller(use_current_sensing: bool) -> FocControllerType {
@@ -302,6 +303,7 @@ pub(crate) async fn init_foc(
     if let Some(config) = &stored_config {
         flash_config::apply_to_foc(&mut foc, config);
         set_runtime_correction(config.get_encoder_correction());
+        foc_isr::set_output_zero_offset(config.output_zero_offset);
         info!(
             "Loaded calibration: mapping=({},{},{}), bias_angle={}",
             config.current_mapping.0,
@@ -310,6 +312,7 @@ pub(crate) async fn init_foc(
             config.bias_angle
         );
     } else {
+        let mut secondary_zero_offset = 0.0;
         let align_voltage = match run_motor_calibration(
             &mut foc,
             &mut p_adc,
@@ -332,6 +335,18 @@ pub(crate) async fn init_foc(
             Ok(correction) => {
                 set_runtime_correction(correction);
                 info!("Encoder LUT calibration complete");
+            }
+            Err(e) => warn!("{}", e),
+        }
+
+        match calibration::calibrate_secondary_zero_offset(&mut driver, &foc, align_voltage).await {
+            Ok(calibrated_secondary_zero_offset) => {
+                if apply_secondary_zero_offset(calibrated_secondary_zero_offset).await {
+                    secondary_zero_offset = calibrated_secondary_zero_offset;
+                    info!("Secondary encoder zero offset = {}", secondary_zero_offset);
+                } else {
+                    warn!("Failed to apply calibrated secondary zero offset");
+                }
             }
             Err(e) => warn!("{}", e),
         }
@@ -362,14 +377,18 @@ pub(crate) async fn init_foc(
         info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 
         let mut config = flash_config::from_foc(&foc, can_id);
-        config.primary_zero_offset = 0.0;
-        config.secondary_zero_offset = 0.0;
+        config.output_zero_offset = 0.0;
+        config.secondary_zero_offset = secondary_zero_offset;
         config.set_encoder_correction(runtime_snapshot());
         if let Err(e) = flash_config::write_config(p_flash, &mut config) {
             warn!("Failed to save calibration to flash: {:?}", e);
         } else {
             info!("Calibration saved to flash");
         }
+    }
+
+    if stored_config.is_none() {
+        foc_isr::set_output_zero_offset(0.0);
     }
 
     foc.set_run_mode(RunMode::Torque);

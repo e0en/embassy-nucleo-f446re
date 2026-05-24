@@ -13,16 +13,15 @@ use can_message::message::{
 
 use crate::{
     can::{convert_response_message, parse_command_frame},
-    foc_isr,
+    foc_isr, read_sensor,
 };
 
 use super::{
     ACTUATOR_REDUCTION_RATIO,
-    encoder::request_zero_offset_capture,
     fault::{has_active_fault, set_gate_driver_enabled, take_motor_disarmed_by_fault},
     persistence::{
-        CAN_ID, CAN_PROPERTIES, save_can_id_to_flash, save_runtime_config,
-        save_zero_offsets_to_flash,
+        CAN_ID, CAN_PROPERTIES, save_can_id_to_flash, save_output_zero_offset_to_flash,
+        save_runtime_config,
     },
 };
 
@@ -37,11 +36,6 @@ macro_rules! dispatch_set_param {
             _ => {}
         }
     };
-}
-
-#[inline]
-fn output_to_input_shaft(value: f32) -> f32 {
-    value * ACTUATOR_REDUCTION_RATIO
 }
 
 #[inline]
@@ -114,24 +108,17 @@ pub(crate) async fn command_task() {
             }
             Command::SetZeroPosition => {
                 info!("SetZeroPosition command received");
-                if let Some((primary_zero_offset, secondary_zero_offset)) =
-                    request_zero_offset_capture().await
-                {
-                    save_zero_offsets_to_flash(primary_zero_offset, secondary_zero_offset).await;
-                    foc_isr::with_foc(|foc| {
-                        foc.reset();
-                        foc.set_target_angle(0.0);
-                        foc.state.angle = 0.0;
-                        foc.state.angular_change = 0.0;
-                        foc.state.velocity = 0.0;
-                        foc.state.angle_error = 0.0;
-                        foc.state.angle_integral = 0.0;
-                        foc.state.velocity_error = 0.0;
-                        foc.state.velocity_integral = 0.0;
-                    });
-                } else {
-                    warn!("SetZeroPosition failed in encoder task");
-                }
+                let current_input_angle = read_sensor().cumulative_angle;
+                let current_output_angle = input_to_output_shaft(current_input_angle);
+                foc_isr::set_output_zero_offset(current_output_angle);
+                save_output_zero_offset_to_flash(current_output_angle).await;
+                let _ = foc_isr::with_foc(|foc| {
+                    foc.set_target_angle(current_input_angle);
+                    foc.state.angle_error = 0.0;
+                    foc.state.angle_integral = 0.0;
+                    foc.state.velocity_error = 0.0;
+                    foc.state.velocity_integral = 0.0;
+                });
             }
             Command::RunMotorTuning => {
                 info!("RunMotorTuning command received, clearing config and resetting");
@@ -172,13 +159,15 @@ async fn handle_command(
             foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
         }
         Command::SetParameter(ParameterValue::AngleRef(angle)) => {
-            foc_isr::with_foc(|foc| foc.set_target_angle(output_to_input_shaft(*angle)));
+            foc_isr::with_foc(|foc| foc.set_target_angle(foc_isr::user_to_input_angle(*angle)));
         }
         Command::SetParameter(ParameterValue::SpeedRef(velocity)) => {
-            foc_isr::with_foc(|foc| foc.set_target_velocity(output_to_input_shaft(*velocity)));
+            foc_isr::with_foc(|foc| foc.set_target_velocity(*velocity * ACTUATOR_REDUCTION_RATIO));
         }
         Command::SetParameter(ParameterValue::SpeedLimit(velocity_limit)) => {
-            foc_isr::with_foc(|foc| foc.set_velocity_limit(output_to_input_shaft(*velocity_limit)));
+            foc_isr::with_foc(|foc| {
+                foc.set_velocity_limit(*velocity_limit * ACTUATOR_REDUCTION_RATIO)
+            });
         }
         _ => {
             dispatch_set_param!(command,
@@ -208,8 +197,8 @@ async fn handle_command(
             dispatch_get_param!(p,
                 RunMode => encode_run_mode(&foc.mode),
                 IqRef => foc.state.i_ref,
-                Angle => input_to_output_shaft(foc.state.angle),
-                AngleRef => input_to_output_shaft(foc.target.angle),
+                Angle => foc_isr::input_to_user_angle(foc.state.angle),
+                AngleRef => foc_isr::input_to_user_angle(foc.target.angle),
                 Speed => input_to_output_shaft(foc.state.velocity),
                 SpeedRef => input_to_output_shaft(foc.target.velocity),
                 SpeedLimit => input_to_output_shaft(foc.velocity_limit.unwrap_or(0.0)),

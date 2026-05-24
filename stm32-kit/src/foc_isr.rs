@@ -4,7 +4,7 @@
 //! synchronized with PWM updates for deterministic timing.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use embassy_stm32::pac;
@@ -42,10 +42,21 @@ static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(crate::DEFAULT_HOST_CAN_ID
 static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
 
 static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);
+static OUTPUT_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
 fn input_to_output_shaft(value: f32) -> f32 {
     value / ACTUATOR_REDUCTION_RATIO
+}
+
+#[inline(always)]
+fn input_to_user_output_shaft(value: f32) -> f32 {
+    input_to_output_shaft(value) - output_zero_offset()
+}
+
+#[inline(always)]
+fn user_output_to_input_shaft(value: f32) -> f32 {
+    (value + output_zero_offset()) * ACTUATOR_REDUCTION_RATIO
 }
 
 pub struct FocContext {
@@ -95,6 +106,22 @@ pub fn set_feedback_host_can_id(host_can_id: u8) {
 
 pub fn get_loop_counter() -> u16 {
     LOOP_COUNTER.swap(0, Ordering::Relaxed)
+}
+
+pub fn set_output_zero_offset(offset: f32) {
+    OUTPUT_ZERO_OFFSET.store(u32::from_le_bytes(offset.to_le_bytes()), Ordering::Relaxed);
+}
+
+pub fn output_zero_offset() -> f32 {
+    f32::from_le_bytes(OUTPUT_ZERO_OFFSET.load(Ordering::Relaxed).to_le_bytes())
+}
+
+pub fn input_to_user_angle(value: f32) -> f32 {
+    input_to_user_output_shaft(value)
+}
+
+pub fn user_to_input_angle(value: f32) -> f32 {
+    user_output_to_input_shaft(value)
 }
 
 pub fn with_foc<F, R>(f: F) -> Option<R>
@@ -197,7 +224,7 @@ fn send_feedback(state: &FocState) {
 
     let body = match feedback_type {
         0 => ResponseBody::MotorStatus(MotorStatus {
-            angle: input_to_output_shaft(state.angle),
+            angle: input_to_user_output_shaft(state.angle),
             velocity: input_to_output_shaft(state.velocity),
             torque: state.i_q,
             temperature: 0.0,

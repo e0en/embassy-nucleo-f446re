@@ -60,17 +60,11 @@ impl<'d> As5047P<'d> {
         }
     }
 
-    pub async fn set_current_angle_as_zero(&mut self) -> Result<(), Error> {
-        let raw_angle = self.read_raw_angle_unoffset().await?;
-        self.zero_offset_raw = raw_angle;
+    pub fn set_zero_offset(&mut self, zero_offset: f32) {
+        self.zero_offset_raw = angle_to_raw(zero_offset);
         self.previous_raw_angle = None;
         self.previous_angle = 0.0;
         self.full_rotations = 0;
-        Ok(())
-    }
-
-    pub fn zero_offset(&self) -> f32 {
-        raw_to_angle(self.zero_offset_raw)
     }
 
     pub async fn initialize(&mut self) -> Result<Diagnostics, Error> {

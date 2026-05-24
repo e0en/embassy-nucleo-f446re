@@ -8,6 +8,7 @@ use foc::{
 
 use crate::{
     adc::{self, AdcSelector},
+    app::{ACTUATOR_REDUCTION_RATIO_MAGNITUDE, encoder::read_sensor_pair},
     bldc_driver::PwmDriver,
     cordic::{atan2, sincos},
     drv8316::{self, CsaGain},
@@ -234,6 +235,37 @@ where
 
     driver.run(DutyCycle3Phase::zero());
     build_lut_from_samples(&merged_samples).ok_or("Encoder LUT build failed")
+}
+
+pub async fn calibrate_secondary_zero_offset<TIM, Fsincos>(
+    driver: &mut PwmDriver<'_, TIM>,
+    foc: &FocController<Fsincos>,
+    align_voltage: f32,
+) -> Result<f32, &'static str>
+where
+    TIM: AdvancedInstance4Channel,
+    Fsincos: Fn(f32) -> (f32, f32),
+{
+    let start_duty = foc
+        .get_direct_vq_duty_cycle(align_voltage, ENCODER_CAL_LOCK_ANGLE)
+        .map_err(|_| "Secondary encoder calibration lock failed")?;
+    driver.run(start_duty);
+    Timer::after_millis(SETTLE_TIME_MS).await;
+
+    let reduction_ratio = ACTUATOR_REDUCTION_RATIO_MAGNITUDE as f32;
+    Timer::after_millis(ENCODER_CAL_SETTLE_MS).await;
+
+    let (primary, secondary_phase) = read_sensor_pair();
+    let primary_rev = primary
+        .full_rotations
+        .rem_euclid(ACTUATOR_REDUCTION_RATIO_MAGNITUDE) as f32;
+    let expected_output_angle =
+        -(primary.phase + primary_rev * core::f32::consts::TAU) / reduction_ratio;
+    let expected_secondary_phase = wrap_0_tau(expected_output_angle * (reduction_ratio + 1.0));
+    let offset = wrap_0_tau(secondary_phase - expected_secondary_phase);
+
+    driver.run(DutyCycle3Phase::zero());
+    Ok(offset)
 }
 
 async fn collect_encoder_samples<TIM, Fsincos>(

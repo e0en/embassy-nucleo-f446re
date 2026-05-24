@@ -27,7 +27,7 @@ pub(crate) static CAN_ID: AtomicU8 = AtomicU8::new(0);
 
 const CONFIG_SAVED_MESSAGE: &str = "Config saved to flash";
 const CAN_ID_SAVED_MESSAGE: &str = "CAN ID saved to flash";
-const ZERO_OFFSETS_SAVED_MESSAGE: &str = "Zero offsets saved to flash";
+const OUTPUT_ZERO_OFFSET_SAVED_MESSAGE: &str = "Output zero offset saved to flash";
 
 async fn with_flash<R>(
     f: impl FnOnce(&mut Flash<'static, embassy_stm32::flash::Blocking>) -> R,
@@ -67,7 +67,7 @@ pub(crate) async fn save_runtime_config() {
             |stored_config| {
                 let mut runtime_config = config;
                 runtime_config.can_id = stored_config.can_id;
-                runtime_config.primary_zero_offset = stored_config.primary_zero_offset;
+                runtime_config.output_zero_offset = stored_config.output_zero_offset;
                 runtime_config.secondary_zero_offset = stored_config.secondary_zero_offset;
                 *stored_config = runtime_config;
             },
@@ -99,16 +99,12 @@ pub(crate) async fn save_can_id_to_flash(new_can_id: u8) {
     .await;
 }
 
-pub(crate) async fn save_zero_offsets_to_flash(
-    primary_zero_offset: f32,
-    secondary_zero_offset: f32,
-) {
+pub(crate) async fn save_output_zero_offset_to_flash(output_zero_offset: f32) {
     update_config(
         |config| {
-            config.primary_zero_offset = primary_zero_offset;
-            config.secondary_zero_offset = secondary_zero_offset;
+            config.output_zero_offset = output_zero_offset;
         },
-        ZERO_OFFSETS_SAVED_MESSAGE,
+        OUTPUT_ZERO_OFFSET_SAVED_MESSAGE,
     )
     .await;
 }

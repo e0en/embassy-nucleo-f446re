@@ -12,7 +12,7 @@ use crate::encoder_correction::{EncoderCorrection, LUT_SIZE};
 /// Magic number to identify valid config: "MOTC" in ASCII
 const CONFIG_MAGIC: u32 = 0x4D4F5443;
 /// Current config version for future migrations
-const CONFIG_VERSION: u8 = 6;
+const CONFIG_VERSION: u8 = 7;
 /// Flash offset for config page (last 2KB of 128KB)
 const CONFIG_OFFSET: u32 = 0x1F800;
 /// Size of config page
@@ -91,8 +91,8 @@ pub struct ConfigData {
     /// Measured Kv rating in rad/s per volt (0.0 = not measured)
     pub kv_rating: f32,
 
-    /// Primary encoder zero offset in wrapped mechanical radians
-    pub primary_zero_offset: f32,
+    /// Output-shaft zero offset used for user-facing angle commands and feedback.
+    pub output_zero_offset: f32,
     /// Secondary encoder zero offset in wrapped mechanical radians
     pub secondary_zero_offset: f32,
 
@@ -131,7 +131,7 @@ impl ConfigData {
             pole_pair_count: 0,
             phase_resistance: 0.0,
             kv_rating: 0.0,
-            primary_zero_offset: 0.0,
+            output_zero_offset: 0.0,
             secondary_zero_offset: 0.0,
             encoder_lut_valid: 0,
             encoder_error_lut: [0.0; LUT_SIZE],
