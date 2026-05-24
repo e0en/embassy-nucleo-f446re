@@ -41,14 +41,24 @@ impl PIDController {
     }
 
     pub fn update(&mut self, error: f32, dt_seconds: f32) -> f32 {
-        self.integral += 0.5 * self.gains.i * (error + self.last_error) * dt_seconds;
-        self.integral = self.integral.min(self.max_output).max(-self.max_output);
-
         let d_term = if dt_seconds > 0.0 {
             self.gains.d * (error - self.last_error) / dt_seconds
         } else {
             0.0
         };
+
+        let candidate_integral = (self.integral
+            + 0.5 * self.gains.i * (error + self.last_error) * dt_seconds)
+            .min(self.max_output)
+            .max(-self.max_output);
+
+        let unclamped_output = self.gains.p * error + candidate_integral + d_term;
+        let drives_further_into_positive_sat = unclamped_output > self.max_output && error > 0.0;
+        let drives_further_into_negative_sat = unclamped_output < -self.max_output && error < 0.0;
+
+        if !(drives_further_into_positive_sat || drives_further_into_negative_sat) {
+            self.integral = candidate_integral;
+        }
 
         let mut output = self.gains.p * error + self.integral + d_term;
         output = output.min(self.max_output).max(-self.max_output);
@@ -184,6 +194,45 @@ mod tests {
 
         assert!(controller.last_output <= 10.0);
         assert!(controller.integral <= 10.0);
+    }
+
+    #[test]
+    fn integral_does_not_wind_up_further_into_positive_saturation() {
+        let pid = PID {
+            p: 3.0,
+            i: 10.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 5.0, None);
+        controller.integral = 2.0;
+        controller.last_error = 1.0;
+
+        let output = controller.update(1.0, 0.1);
+
+        assert!(approx_eq(output, 5.0, 0.001));
+        assert!(approx_eq(controller.integral, 2.0, 0.001));
+    }
+
+    #[test]
+    fn integral_unwinds_when_error_opposes_positive_saturation() {
+        let pid = PID {
+            p: 1.0,
+            i: 10.0,
+            d: 0.0,
+        };
+        let mut controller = PIDController::new(pid, 5.0, None);
+        controller.integral = 5.0;
+        controller.last_error = 1.0;
+
+        let output = controller.update(-1.0, 0.1);
+
+        assert!(approx_eq(output, 4.0, 0.001));
+        assert!(approx_eq(controller.integral, 5.0, 0.001));
+
+        let output = controller.update(-1.0, 0.1);
+
+        assert!(approx_eq(output, 3.0, 0.001));
+        assert!(approx_eq(controller.integral, 4.0, 0.001));
     }
 
     #[test]
