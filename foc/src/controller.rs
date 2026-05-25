@@ -154,6 +154,26 @@ impl<Fsincos> FocController<Fsincos>
 where
     Fsincos: Fn(f32) -> (f32, f32),
 {
+    #[inline]
+    pub fn user_to_motor_frame(&self, value: f32) -> f32 {
+        value * self.sensor_direction.sign()
+    }
+
+    #[inline]
+    pub fn motor_to_user_frame(&self, value: f32) -> f32 {
+        value * self.sensor_direction.sign()
+    }
+
+    #[inline]
+    pub fn user_frame_i_ref(&self) -> f32 {
+        self.motor_to_user_frame(self.state.i_ref)
+    }
+
+    #[inline]
+    pub fn user_frame_i_q(&self) -> f32 {
+        self.motor_to_user_frame(self.state.i_q)
+    }
+
     pub fn new(
         motor: MotorSetup,
         current_pid_gains: PID,
@@ -657,7 +677,7 @@ where
             RunMode::Voltage => self.target.voltage,
         };
 
-        i_ref *= self.sensor_direction.sign();
+        i_ref = self.user_to_motor_frame(i_ref);
 
         if let Some(c) = self.current_limit {
             i_ref = i_ref.min(c).max(-c);
@@ -774,7 +794,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{FocController, MotorSetup, OutputLimit, PID, fmodf};
-    use crate::controller::RunMode;
+    use crate::controller::{Direction, RunMode};
     use crate::current::PhaseCurrent;
     use crate::encoder::EncoderReading;
 
@@ -910,6 +930,19 @@ mod tests {
         assert_eq!(duty.t1, 0.5);
         assert_eq!(duty.t2, 0.5);
         assert_eq!(duty.t3, 0.5);
+    }
+
+    #[test]
+    fn user_frame_currents_follow_sensor_direction() {
+        let mut controller = build_controller();
+        controller.sensor_direction = Direction::CounterClockWise;
+        controller.state.i_ref = -2.0;
+        controller.state.i_q = -1.5;
+
+        assert_eq!(controller.user_frame_i_ref(), 2.0);
+        assert_eq!(controller.user_frame_i_q(), 1.5);
+        assert_eq!(controller.user_to_motor_frame(3.0), -3.0);
+        assert_eq!(controller.motor_to_user_frame(-4.0), 4.0);
     }
 
     #[test]

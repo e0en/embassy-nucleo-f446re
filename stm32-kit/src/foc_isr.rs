@@ -21,6 +21,8 @@ use crate::app::ACTUATOR_REDUCTION_RATIO;
 use crate::drv8316::{self, CsaGain};
 use crate::{RESPONSE_CHANNEL, read_sensor};
 
+type FocSincos = fn(f32) -> (f32, f32);
+
 /// Maximum PWM compare value (11-bit: 2047)
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
 const MAX_DUTY: u32 = MAX_COMPARE_VALUE + 1;
@@ -60,14 +62,14 @@ fn user_output_to_input_shaft(value: f32) -> f32 {
 }
 
 pub struct FocContext {
-    pub foc: FocController<fn(f32) -> (f32, f32)>,
+    pub foc: FocController<FocSincos>,
     pub csa_gain: CsaGain,
     pub use_current_sensing: bool,
 }
 
 /// Must be called after sensor alignment and calibration
 pub fn initialize_foc_context(
-    foc: FocController<fn(f32) -> (f32, f32)>,
+    foc: FocController<FocSincos>,
     csa_gain: CsaGain,
     use_current_sensing: bool,
 ) {
@@ -126,7 +128,7 @@ pub fn user_to_input_angle(value: f32) -> f32 {
 
 pub fn with_foc<F, R>(f: F) -> Option<R>
 where
-    F: FnOnce(&mut FocController<fn(f32) -> (f32, f32)>) -> R,
+    F: FnOnce(&mut FocController<FocSincos>) -> R,
 {
     critical_section::with(|cs| {
         if let Some(ref mut ctx) = *FOC_CONTEXT.borrow(cs).borrow_mut() {
@@ -188,7 +190,7 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
 
                 if counter >= period {
                     FEEDBACK_COUNTER.store(0, Ordering::Relaxed);
-                    send_feedback(&ctx.foc.state);
+                    send_feedback(&ctx.foc);
                 } else {
                     FEEDBACK_COUNTER.store(counter + 1, Ordering::Relaxed);
                 }
@@ -213,11 +215,12 @@ fn set_pwm_duty(duty: DutyCycle3Phase) {
 }
 
 #[inline(always)]
-fn send_feedback(state: &FocState) {
+fn send_feedback(foc: &FocController<FocSincos>) {
     if !FEEDBACK_HOST_CAN_ID_SET.load(Ordering::Relaxed) {
         return;
     }
 
+    let state = &foc.state;
     let feedback_type = FEEDBACK_TYPE.load(Ordering::Relaxed);
     let host_can_id = FEEDBACK_HOST_CAN_ID.load(Ordering::Relaxed);
     let sender = RESPONSE_CHANNEL.sender();
@@ -226,11 +229,11 @@ fn send_feedback(state: &FocState) {
         0 => ResponseBody::MotorStatus(MotorStatus {
             angle: input_to_user_output_shaft(state.angle),
             velocity: input_to_output_shaft(state.velocity),
-            torque: state.i_q,
+            torque: foc.user_frame_i_q(),
             temperature: 0.0,
         }),
         1 => ResponseBody::MotorCurrent(MotorCurrent {
-            i_q: state.i_q,
+            i_q: foc.user_frame_i_q(),
             i_d: state.i_d,
         }),
         2 => ResponseBody::DebugValue(DebugValue {
@@ -239,7 +242,7 @@ fn send_feedback(state: &FocState) {
         }),
         3 => ResponseBody::DebugValue(DebugValue {
             kind: DebugValueKind::IqRef,
-            value: state.i_ref,
+            value: foc.user_frame_i_ref(),
         }),
         _ => ResponseBody::DebugValue(DebugValue {
             kind: DebugValueKind::VelocityIntegral,
