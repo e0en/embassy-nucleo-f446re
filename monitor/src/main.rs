@@ -356,6 +356,7 @@ struct MotorTab {
     cal_release_timeout_ms_string: String,
     cal_release_step_rad_string: String,
     cal_release_max_rad_string: String,
+    cal_contact_threshold_g_string: String,
 
     angle: f32,
     velocity: f32,
@@ -394,6 +395,7 @@ struct MotorTab {
     cal_release_timeout_ms: usize,
     cal_release_step_rad: f32,
     cal_release_max_rad: f32,
+    cal_contact_threshold_g: f32,
     chirp_amplitude: f32,
     chirp_duration: f32,
     chirp_target: ChirpTarget,
@@ -522,9 +524,11 @@ struct TorqueCalibration {
     release_timeout: Duration,
     release_step_rad: f32,
     release_max_rad: f32,
+    contact_threshold_g: f32,
     release_start_angle: f32,
     release_target_angle: f32,
     release_direction: f32,
+    approach_target_angle: f32,
     phase: TorqueCalibrationPhase,
     rows: Vec<TorqueCalibrationRow>,
     samples: Vec<f32>,
@@ -541,6 +545,11 @@ enum TorqueCalibrationPhase {
     TareSampling,
     ReleaseCommand,
     WaitingForRelease {
+        timeout_at: Instant,
+        last_step_at: Instant,
+    },
+    ApproachCommand,
+    WaitingForContact {
         timeout_at: Instant,
         last_step_at: Instant,
     },
@@ -662,6 +671,7 @@ impl MotorTab {
         let cal_release_timeout_ms = 30000;
         let cal_release_step_rad = 0.02;
         let cal_release_max_rad = 0.5;
+        let cal_contact_threshold_g = 30.0;
         let chirp_amplitude = 5.0;
         let chirp_duration = 30.0;
         let step_value = 5.0;
@@ -705,6 +715,7 @@ impl MotorTab {
             cal_release_timeout_ms_string: cal_release_timeout_ms.to_string(),
             cal_release_step_rad_string: cal_release_step_rad.to_string(),
             cal_release_max_rad_string: cal_release_max_rad.to_string(),
+            cal_contact_threshold_g_string: cal_contact_threshold_g.to_string(),
 
             angle,
             velocity,
@@ -743,6 +754,7 @@ impl MotorTab {
             cal_release_timeout_ms,
             cal_release_step_rad,
             cal_release_max_rad,
+            cal_contact_threshold_g,
             chirp_amplitude,
             chirp_duration,
             chirp_target: ChirpTarget::Velocity,
@@ -1299,7 +1311,7 @@ impl MyApp {
                         .map(|grams| grams.abs() <= calibration.release_threshold_g)
                         .unwrap_or(false);
                     if released || now >= timeout_at {
-                        calibration.phase = TorqueCalibrationPhase::CommandStep;
+                        calibration.phase = TorqueCalibrationPhase::ApproachCommand;
                     } else if now.saturating_duration_since(last_step_at)
                         >= calibration.min_settle_duration
                     {
@@ -1319,6 +1331,43 @@ impl MyApp {
                             )),
                         ));
                         calibration.phase = TorqueCalibrationPhase::WaitingForRelease {
+                            timeout_at,
+                            last_step_at: now,
+                        };
+                    }
+                }
+                TorqueCalibrationPhase::ApproachCommand => {
+                    calibration.approach_target_angle = calibration.release_target_angle;
+                    calibration.phase = TorqueCalibrationPhase::WaitingForContact {
+                        timeout_at: now + calibration.release_timeout,
+                        last_step_at: now,
+                    };
+                }
+                TorqueCalibrationPhase::WaitingForContact {
+                    timeout_at,
+                    last_step_at,
+                } => {
+                    let contacted = latest_loadcell_grams
+                        .map(|grams| grams.abs() >= calibration.contact_threshold_g)
+                        .unwrap_or(false);
+                    if contacted || now >= timeout_at {
+                        calibration.phase = TorqueCalibrationPhase::CommandStep;
+                    } else if now.saturating_duration_since(last_step_at)
+                        >= calibration.min_settle_duration
+                    {
+                        let next = calibration.approach_target_angle
+                            - calibration.release_direction * calibration.release_step_rad.abs();
+                        let offset = next - calibration.release_start_angle;
+                        if offset.abs() <= calibration.release_max_rad.abs() {
+                            calibration.approach_target_angle = next;
+                            commands.push((
+                                tab.can_id,
+                                Command::SetParameter(ParameterValue::AngleRef(
+                                    calibration.approach_target_angle,
+                                )),
+                            ));
+                        }
+                        calibration.phase = TorqueCalibrationPhase::WaitingForContact {
                             timeout_at,
                             last_step_at: now,
                         };
@@ -1436,9 +1485,11 @@ impl MyApp {
             release_timeout: Duration::from_millis(tab.cal_release_timeout_ms as u64),
             release_step_rad: tab.cal_release_step_rad,
             release_max_rad: tab.cal_release_max_rad,
+            contact_threshold_g: tab.cal_contact_threshold_g,
             release_start_angle: release_angle,
             release_target_angle: release_angle,
             release_direction: 1.0,
+            approach_target_angle: release_angle,
             phase: TorqueCalibrationPhase::TareCommand,
             rows: Vec::new(),
             samples: Vec::new(),
@@ -1890,6 +1941,12 @@ impl MyApp {
                             &mut tab.cal_release_max_rad,
                             &mut tab.cal_release_max_rad_string,
                         );
+                        motion_field(
+                            ui,
+                            "Contact threshold [g]",
+                            &mut tab.cal_contact_threshold_g,
+                            &mut tab.cal_contact_threshold_g_string,
+                        );
                     });
                 let calibration_steps = torque_calibration_steps(tab);
                 let calibration_active = tab.active_torque_calibration.is_some();
@@ -2317,6 +2374,8 @@ impl TorqueCalibrationPhase {
             TorqueCalibrationPhase::TareSampling => "tare sampling",
             TorqueCalibrationPhase::ReleaseCommand => "release command",
             TorqueCalibrationPhase::WaitingForRelease { .. } => "releasing",
+            TorqueCalibrationPhase::ApproachCommand => "approach command",
+            TorqueCalibrationPhase::WaitingForContact { .. } => "approaching",
             TorqueCalibrationPhase::CommandStep => "command",
             TorqueCalibrationPhase::Settling { .. } => "settling",
             TorqueCalibrationPhase::Sampling => "sampling",
@@ -2342,7 +2401,8 @@ fn torque_calibration_steps(tab: &MotorTab) -> Option<Vec<TorqueCalibrationStep>
         && tab.cal_outlier_sigma.is_finite()
         && tab.cal_release_threshold_g.is_finite()
         && tab.cal_release_step_rad.is_finite()
-        && tab.cal_release_max_rad.is_finite())
+        && tab.cal_release_max_rad.is_finite()
+        && tab.cal_contact_threshold_g.is_finite())
         || tab.cal_iq_start >= 0.0
         || tab.cal_iq_end >= 0.0
         || tab.cal_iq_step >= 0.0
@@ -2357,6 +2417,7 @@ fn torque_calibration_steps(tab: &MotorTab) -> Option<Vec<TorqueCalibrationStep>
         || tab.cal_release_timeout_ms == 0
         || tab.cal_release_step_rad <= 0.0
         || tab.cal_release_max_rad <= 0.0
+        || tab.cal_contact_threshold_g <= tab.cal_release_threshold_g
     {
         return None;
     }
