@@ -445,6 +445,7 @@ fn u16_to_f32(x: u16, x_min: f32, x_max: f32) -> f32 {
 }
 
 pub enum Command {
+    MotionControl(MotionControl),
     Stop,
     Enable,
     SetZeroPosition,
@@ -458,6 +459,15 @@ pub enum Command {
     Recalibrate,
     SaveConfig,
     RunMotorTuning,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct MotionControl {
+    pub angle: f32,
+    pub velocity: f32,
+    pub torque: f32,
+    pub kp: f32,
+    pub kd: f32,
 }
 
 #[derive(Debug)]
@@ -489,6 +499,7 @@ impl TryFrom<CanMessage> for CommandMessage {
         }
 
         let command = match command_id {
+            0x01 => Command::MotionControl(MotionControl::from_can_frame(message.id, data)),
             0x03 => Command::Enable,
             0x04 => Command::Stop,
             0x06 => {
@@ -529,6 +540,7 @@ impl TryFrom<CanMessage> for CommandMessage {
 
             _ => return Err(CommandError::WrongCommand),
         };
+        let host_can_id = if command_id == 0x01 { 0 } else { host_can_id };
         Ok(CommandMessage {
             motor_can_id,
             host_can_id,
@@ -544,6 +556,16 @@ impl TryFrom<CommandMessage> for CanMessage {
         let mut command_content: u8 = 0;
         let mut data = [0x00u8; 8];
         match val.command {
+            Command::MotionControl(x) => {
+                let torque = f32_to_u16(x.torque, MOTION_TORQUE_MIN, MOTION_TORQUE_MAX);
+                let id = (0x01_u32 << 24) | ((torque as u32) << 8) | (val.motor_can_id as u32);
+                let data: [u8; 8] = x.into();
+                return Ok(CanMessage {
+                    id,
+                    data,
+                    length: 8,
+                });
+            }
             Command::Enable => {
                 command_id = 0x03;
             }
@@ -606,6 +628,68 @@ impl TryFrom<CommandMessage> for CanMessage {
         })
     }
 }
+
+impl MotionControl {
+    fn from_can_frame(id: u32, data: [u8; 8]) -> Self {
+        let torque = u16_to_f32(
+            ((id >> 8) & 0xFFFF) as u16,
+            MOTION_TORQUE_MIN,
+            MOTION_TORQUE_MAX,
+        );
+
+        let mut u16_buffer = [0x00u8; 2];
+        u16_buffer.copy_from_slice(&data[0..2]);
+        let angle = u16_to_f32(
+            u16::from_le_bytes(u16_buffer),
+            MOTION_ANGLE_MIN,
+            MOTION_ANGLE_MAX,
+        );
+        u16_buffer.copy_from_slice(&data[2..4]);
+        let velocity = u16_to_f32(
+            u16::from_le_bytes(u16_buffer),
+            MOTION_VELOCITY_MIN,
+            MOTION_VELOCITY_MAX,
+        );
+        u16_buffer.copy_from_slice(&data[4..6]);
+        let kp = u16_to_f32(u16::from_le_bytes(u16_buffer), MOTION_KP_MIN, MOTION_KP_MAX);
+        u16_buffer.copy_from_slice(&data[6..8]);
+        let kd = u16_to_f32(u16::from_le_bytes(u16_buffer), MOTION_KD_MIN, MOTION_KD_MAX);
+
+        Self {
+            angle,
+            velocity,
+            torque,
+            kp,
+            kd,
+        }
+    }
+}
+
+impl From<MotionControl> for [u8; 8] {
+    fn from(val: MotionControl) -> [u8; 8] {
+        let mut data = [0x00u8; 8];
+        let angle = f32_to_u16(val.angle, MOTION_ANGLE_MIN, MOTION_ANGLE_MAX);
+        data[0..2].copy_from_slice(&angle.to_le_bytes());
+        let velocity = f32_to_u16(val.velocity, MOTION_VELOCITY_MIN, MOTION_VELOCITY_MAX);
+        data[2..4].copy_from_slice(&velocity.to_le_bytes());
+        let kp = f32_to_u16(val.kp, MOTION_KP_MIN, MOTION_KP_MAX);
+        data[4..6].copy_from_slice(&kp.to_le_bytes());
+        let kd = f32_to_u16(val.kd, MOTION_KD_MIN, MOTION_KD_MAX);
+        data[6..8].copy_from_slice(&kd.to_le_bytes());
+        data
+    }
+}
+
+const MOTION_ANGLE_MIN: f32 = -4.0 * core::f32::consts::PI;
+const MOTION_ANGLE_MAX: f32 = 4.0 * core::f32::consts::PI;
+const MOTION_VELOCITY_MIN: f32 = -50.0;
+const MOTION_VELOCITY_MAX: f32 = 50.0;
+const MOTION_TORQUE_MIN: f32 = -5.0;
+const MOTION_TORQUE_MAX: f32 = 5.0;
+const MOTION_KP_MIN: f32 = 0.0;
+const MOTION_KP_MAX: f32 = 500.0;
+const MOTION_KD_MIN: f32 = 0.0;
+const MOTION_KD_MAX: f32 = 5.0;
 
 #[cfg(test)]
 mod tests {
@@ -748,6 +832,39 @@ mod tests {
         assert_eq!(decoded.motor_can_id, 0x0F);
         assert_eq!(decoded.host_can_id, 0x02);
         assert!(matches!(decoded.command, Command::Enable));
+    }
+
+    #[test]
+    fn command_message_motion_control_roundtrip() {
+        let motion = MotionControl {
+            angle: 1.0,
+            velocity: -2.0,
+            torque: 0.5,
+            kp: 120.0,
+            kd: 1.5,
+        };
+        let msg = CommandMessage {
+            motor_can_id: 0x0F,
+            host_can_id: 0x02,
+            command: Command::MotionControl(motion),
+        };
+
+        let can_msg = CanMessage::try_from(msg).unwrap();
+        assert_eq!(can_msg.id >> 24, 0x01);
+        assert_eq!(can_msg.id & 0xFF, 0x0F);
+
+        let decoded = CommandMessage::try_from(can_msg).unwrap();
+        assert_eq!(decoded.motor_can_id, 0x0F);
+        assert_eq!(decoded.host_can_id, 0);
+        if let Command::MotionControl(decoded_motion) = decoded.command {
+            assert!(approx_eq(decoded_motion.angle, motion.angle, 0.001));
+            assert!(approx_eq(decoded_motion.velocity, motion.velocity, 0.002));
+            assert!(approx_eq(decoded_motion.torque, motion.torque, 0.001));
+            assert!(approx_eq(decoded_motion.kp, motion.kp, 0.01));
+            assert!(approx_eq(decoded_motion.kd, motion.kd, 0.001));
+        } else {
+            panic!("Wrong command");
+        }
     }
 
     #[test]

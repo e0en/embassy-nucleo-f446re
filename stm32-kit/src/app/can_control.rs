@@ -8,7 +8,8 @@ use embassy_sync::{
 use embedded_can::Id;
 
 use can_message::message::{
-    Command, CommandMessage, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
+    Command, CommandMessage, MotionControl, ParameterIndex, ParameterValue, ResponseBody,
+    ResponseMessage,
 };
 
 use crate::{
@@ -51,6 +52,11 @@ fn torque_nm_to_iq(torque_nm: f32) -> f32 {
 #[inline]
 fn iq_to_torque_nm(iq: f32) -> f32 {
     iq * gm3506::IQ_TO_TORQUE_NM
+}
+
+#[inline]
+fn output_gain_to_internal_iq_gain(gain: f32) -> f32 {
+    gain / (ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM)
 }
 
 macro_rules! dispatch_get_param {
@@ -164,6 +170,9 @@ async fn handle_command(
         Command::Stop => {
             foc_isr::with_foc(|foc| foc.stop());
         }
+        Command::MotionControl(x) => {
+            apply_motion_control(*x);
+        }
         Command::SetParameter(ParameterValue::RunMode(m)) => {
             info!("received runmode {}", *m as u8);
             foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
@@ -238,6 +247,17 @@ async fn handle_command(
                 .await;
         }
     }
+}
+
+fn apply_motion_control(command: MotionControl) {
+    foc_isr::with_foc(|foc| {
+        foc.set_run_mode(foc::controller::RunMode::Impedance);
+        foc.set_target_angle(foc_isr::user_to_input_angle(command.angle));
+        foc.set_target_velocity(command.velocity * ACTUATOR_REDUCTION_RATIO);
+        foc.set_target_torque(torque_nm_to_iq(command.torque));
+        foc.set_spring(output_gain_to_internal_iq_gain(command.kp));
+        foc.set_damping(output_gain_to_internal_iq_gain(command.kd));
+    });
 }
 
 #[task]

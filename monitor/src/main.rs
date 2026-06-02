@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{f32, thread};
 
 use can_message::message::{
-    CanMessage, Command, CommandMessage, DebugValueKind, FeedbackType, ParameterIndex,
-    ParameterValue, ResponseBody, ResponseMessage, RunMode,
+    CanMessage, Command, CommandMessage, DebugValueKind, FeedbackType, MotionControl,
+    ParameterIndex, ParameterValue, ResponseBody, ResponseMessage, RunMode,
 };
 use eframe::egui;
 use socketcan::socket::{CanSocket, Socket};
@@ -214,6 +214,15 @@ fn send_sequence_command(command_send: &Sender<CommandMessage>, can_id: u8, comm
 }
 
 fn command_event_from_message(command_msg: &CommandMessage) -> Option<CommandEvent> {
+    if let Command::MotionControl(command) = &command_msg.command {
+        return Some(CommandEvent::MotionSent {
+            can_id: command_msg.motor_can_id,
+            angle: command.angle,
+            velocity: command.velocity,
+            torque: command.torque,
+        });
+    }
+
     let target_value = match &command_msg.command {
         Command::SetParameter(ParameterValue::AngleRef(value)) => {
             Some((ChirpTarget::Angle, *value))
@@ -266,6 +275,11 @@ struct MotorTab {
 
     spring_string: String,
     damping_string: String,
+    motion_angle_string: String,
+    motion_velocity_string: String,
+    motion_torque_string: String,
+    motion_kp_string: String,
+    motion_kd_string: String,
 
     angle: f32,
     velocity: f32,
@@ -284,6 +298,11 @@ struct MotorTab {
 
     spring: f32,
     damping: f32,
+    motion_angle: f32,
+    motion_velocity: f32,
+    motion_torque: f32,
+    motion_kp: f32,
+    motion_kd: f32,
     chirp_amplitude: f32,
     chirp_duration: f32,
     chirp_target: ChirpTarget,
@@ -351,6 +370,12 @@ enum CommandEvent {
         can_id: u8,
         target: ChirpTarget,
         value: f32,
+    },
+    MotionSent {
+        can_id: u8,
+        angle: f32,
+        velocity: f32,
+        torque: f32,
     },
 }
 
@@ -437,6 +462,11 @@ impl MotorTab {
 
         let spring = 0.0;
         let damping = 0.0;
+        let motion_angle = 0.0;
+        let motion_velocity = 0.0;
+        let motion_torque = 0.0;
+        let motion_kp = 0.0;
+        let motion_kd = 0.0;
         let chirp_amplitude = 5.0;
         let chirp_duration = 30.0;
         let step_value = 5.0;
@@ -460,6 +490,11 @@ impl MotorTab {
 
             spring_string: spring.to_string(),
             damping_string: damping.to_string(),
+            motion_angle_string: motion_angle.to_string(),
+            motion_velocity_string: motion_velocity.to_string(),
+            motion_torque_string: motion_torque.to_string(),
+            motion_kp_string: motion_kp.to_string(),
+            motion_kd_string: motion_kd.to_string(),
 
             angle,
             velocity,
@@ -478,6 +513,11 @@ impl MotorTab {
 
             spring,
             damping,
+            motion_angle,
+            motion_velocity,
+            motion_torque,
+            motion_kp,
+            motion_kd,
             chirp_amplitude,
             chirp_duration,
             chirp_target: ChirpTarget::Velocity,
@@ -869,6 +909,18 @@ impl MyApp {
                         tab.set_sent_reference(target, value);
                     }
                 }
+                CommandEvent::MotionSent {
+                    can_id,
+                    angle,
+                    velocity,
+                    torque,
+                } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
+                        tab.sent_angle_ref = angle;
+                        tab.sent_velocity_ref = velocity;
+                        tab.sent_torque_ref = torque;
+                    }
+                }
             }
         }
     }
@@ -1147,6 +1199,65 @@ impl MyApp {
                             ParameterValue::Damping,
                         );
                     });
+
+                ui.separator();
+                ui.label("Motion Control");
+                egui::Grid::new(format!("motion-{}", tab.can_id))
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .show(ui, |ui| {
+                        motion_field(
+                            ui,
+                            "Position [rad]",
+                            &mut tab.motion_angle,
+                            &mut tab.motion_angle_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Velocity [rad/s]",
+                            &mut tab.motion_velocity,
+                            &mut tab.motion_velocity_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Torque [Nm]",
+                            &mut tab.motion_torque,
+                            &mut tab.motion_torque_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Kp [Nm/rad]",
+                            &mut tab.motion_kp,
+                            &mut tab.motion_kp_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Kd [Nm/(rad/s)]",
+                            &mut tab.motion_kd,
+                            &mut tab.motion_kd_string,
+                        );
+                    });
+                let motion_valid = [
+                    tab.motion_angle,
+                    tab.motion_velocity,
+                    tab.motion_torque,
+                    tab.motion_kp,
+                    tab.motion_kd,
+                ]
+                .iter()
+                .all(|value| value.is_finite());
+                if ui
+                    .add_enabled(motion_valid, egui::Button::new("Send motion"))
+                    .clicked()
+                {
+                    queued_commands.push(Command::MotionControl(MotionControl {
+                        angle: tab.motion_angle,
+                        velocity: tab.motion_velocity,
+                        torque: tab.motion_torque,
+                        kp: tab.motion_kp,
+                        kd: tab.motion_kd,
+                    }));
+                }
 
                 ui.horizontal(|ui| {
                     if ui.button("disable").clicked() {
@@ -1464,6 +1575,15 @@ fn param_row(
     let is_valid = text.parse::<f32>().map(|n| *value = n).is_ok();
     if ui.add_enabled(is_valid, egui::Button::new("Set")).clicked() {
         queued_commands.push(Command::SetParameter(make_param(*value)));
+    }
+    ui.end_row();
+}
+
+fn motion_field(ui: &mut egui::Ui, label: &str, value: &mut f32, text: &mut String) {
+    let name_label = ui.label(label);
+    ui.text_edit_singleline(text).labelled_by(name_label.id);
+    if let Ok(parsed) = text.parse::<f32>() {
+        *value = parsed;
     }
     ui.end_row();
 }
