@@ -13,7 +13,7 @@ use can_message::message::{
 
 use crate::{
     can::{convert_response_message, parse_command_frame},
-    foc_isr, read_sensor,
+    foc_isr, gm3506, read_sensor,
 };
 
 use super::{
@@ -41,6 +41,16 @@ macro_rules! dispatch_set_param {
 #[inline]
 fn input_to_output_shaft(value: f32) -> f32 {
     value / ACTUATOR_REDUCTION_RATIO
+}
+
+#[inline]
+fn torque_nm_to_iq(torque_nm: f32) -> f32 {
+    torque_nm / gm3506::IQ_TO_TORQUE_NM
+}
+
+#[inline]
+fn iq_to_torque_nm(iq: f32) -> f32 {
+    iq * gm3506::IQ_TO_TORQUE_NM
 }
 
 macro_rules! dispatch_get_param {
@@ -169,16 +179,19 @@ async fn handle_command(
                 foc.set_velocity_limit(*velocity_limit * ACTUATOR_REDUCTION_RATIO)
             });
         }
+        Command::SetParameter(ParameterValue::TorqueRef(torque_nm)) => {
+            foc_isr::with_foc(|foc| foc.set_target_torque(torque_nm_to_iq(*torque_nm)));
+        }
+        Command::SetParameter(ParameterValue::TorqueLimit(torque_nm)) => {
+            foc_isr::with_foc(|foc| foc.set_torque_limit(torque_nm_to_iq(*torque_nm)));
+        }
         _ => {
             dispatch_set_param!(command,
-                IqRef => set_target_torque,
                 CurrentLimit => set_current_limit,
-                TorqueLimit => set_torque_limit,
                 CurrentKp => set_current_kp,
                 CurrentKi => set_current_ki,
                 SpeedKp => set_velocity_kp,
                 SpeedKi => set_velocity_ki,
-                Iq => set_target_torque,
                 AngleKp => set_angle_kp,
                 Spring => set_spring,
                 Damping => set_damping,
@@ -196,14 +209,14 @@ async fn handle_command(
         let pv = foc_isr::with_foc(|foc| {
             dispatch_get_param!(p,
                 RunMode => encode_run_mode(&foc.mode),
-                IqRef => foc.user_frame_i_ref(),
+                TorqueRef => iq_to_torque_nm(foc.user_frame_i_ref()),
                 Angle => foc_isr::input_to_user_angle(foc.state.angle),
                 AngleRef => foc_isr::input_to_user_angle(foc.target.angle),
                 Speed => input_to_output_shaft(foc.state.velocity),
                 SpeedRef => input_to_output_shaft(foc.target.velocity),
                 SpeedLimit => input_to_output_shaft(foc.velocity_limit.unwrap_or(0.0)),
-                TorqueLimit => foc.torque_limit.unwrap_or(0.0),
-                Iq => foc.user_frame_i_q(),
+                TorqueLimit => iq_to_torque_nm(foc.torque_limit.unwrap_or(0.0)),
+                Torque => iq_to_torque_nm(foc.user_frame_i_q()),
                 AngleKp => foc.angle_pid.gains.p,
                 SpeedKp => foc.velocity_pid.gains.p,
                 SpeedKi => foc.velocity_pid.gains.i,

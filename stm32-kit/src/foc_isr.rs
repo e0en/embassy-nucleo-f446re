@@ -19,7 +19,7 @@ use foc::pwm_output::DutyCycle3Phase;
 
 use crate::app::ACTUATOR_REDUCTION_RATIO;
 use crate::drv8316::{self, CsaGain};
-use crate::{RESPONSE_CHANNEL, read_sensor};
+use crate::{RESPONSE_CHANNEL, gm3506, read_sensor};
 
 type FocSincos = fn(f32) -> (f32, f32);
 
@@ -49,6 +49,11 @@ static OUTPUT_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
 #[inline(always)]
 fn input_to_output_shaft(value: f32) -> f32 {
     value / ACTUATOR_REDUCTION_RATIO
+}
+
+#[inline(always)]
+fn iq_to_torque_nm(iq: f32) -> f32 {
+    iq * gm3506::IQ_TO_TORQUE_NM
 }
 
 #[inline(always)]
@@ -91,7 +96,7 @@ pub fn set_feedback_type(typ: FeedbackType) {
         FeedbackType::Status => 0,
         FeedbackType::Current => 1,
         FeedbackType::SpeedError => 2,
-        FeedbackType::IqRef => 3,
+        FeedbackType::TorqueRef => 3,
         FeedbackType::VelocityIntegral => 4,
     };
     FEEDBACK_TYPE.store(val, Ordering::Relaxed);
@@ -229,7 +234,7 @@ fn send_feedback(foc: &FocController<FocSincos>) {
         0 => ResponseBody::MotorStatus(MotorStatus {
             angle: input_to_user_output_shaft(state.angle),
             velocity: input_to_output_shaft(state.velocity),
-            torque: foc.user_frame_i_q(),
+            torque: iq_to_torque_nm(foc.user_frame_i_q()),
             temperature: 0.0,
         }),
         1 => ResponseBody::MotorCurrent(MotorCurrent {
@@ -241,8 +246,8 @@ fn send_feedback(foc: &FocController<FocSincos>) {
             value: state.velocity_error,
         }),
         3 => ResponseBody::DebugValue(DebugValue {
-            kind: DebugValueKind::IqRef,
-            value: foc.user_frame_i_ref(),
+            kind: DebugValueKind::TorqueRef,
+            value: iq_to_torque_nm(foc.user_frame_i_ref()),
         }),
         _ => ResponseBody::DebugValue(DebugValue {
             kind: DebugValueKind::VelocityIntegral,

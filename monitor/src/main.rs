@@ -221,7 +221,9 @@ fn command_event_from_message(command_msg: &CommandMessage) -> Option<CommandEve
         Command::SetParameter(ParameterValue::SpeedRef(value)) => {
             Some((ChirpTarget::Velocity, *value))
         }
-        Command::SetParameter(ParameterValue::IqRef(value)) => Some((ChirpTarget::Torque, *value)),
+        Command::SetParameter(ParameterValue::TorqueRef(value)) => {
+            Some((ChirpTarget::Torque, *value))
+        }
         _ => None,
     }?;
 
@@ -252,7 +254,7 @@ struct MotorTab {
 
     angle_string: String,
     velocity_string: String,
-    iq_string: String,
+    torque_string: String,
     vq_string: String,
 
     angle_kp_string: String,
@@ -267,11 +269,11 @@ struct MotorTab {
 
     angle: f32,
     velocity: f32,
-    iq: f32,
+    torque: f32,
     vq: f32,
     sent_angle_ref: f32,
     sent_velocity_ref: f32,
-    sent_iq_ref: f32,
+    sent_torque_ref: f32,
 
     angle_kp: f32,
     speed_kp: f32,
@@ -416,7 +418,7 @@ enum PlotType {
     Torque,
     Current,
     SpeedError,
-    IRef,
+    TorqueRef,
     VelocityIntegral,
 }
 
@@ -424,7 +426,7 @@ impl MotorTab {
     fn new(can_id: u8) -> Self {
         let angle = 0.0;
         let velocity = 0.0;
-        let iq = 0.0;
+        let torque = 0.0;
         let vq = 0.0;
 
         let angle_kp = 0.0;
@@ -446,7 +448,7 @@ impl MotorTab {
 
             angle_string: angle.to_string(),
             velocity_string: velocity.to_string(),
-            iq_string: iq.to_string(),
+            torque_string: torque.to_string(),
             vq_string: vq.to_string(),
 
             angle_kp_string: angle_kp.to_string(),
@@ -461,11 +463,11 @@ impl MotorTab {
 
             angle,
             velocity,
-            iq,
+            torque,
             vq,
             sent_angle_ref: angle,
             sent_velocity_ref: velocity,
-            sent_iq_ref: iq,
+            sent_torque_ref: torque,
 
             angle_kp,
             speed_kp,
@@ -501,7 +503,7 @@ impl MotorTab {
         match self.plot_type {
             PlotType::Current => FeedbackType::Current,
             PlotType::SpeedError => FeedbackType::SpeedError,
-            PlotType::IRef => FeedbackType::IqRef,
+            PlotType::TorqueRef => FeedbackType::TorqueRef,
             PlotType::VelocityIntegral => FeedbackType::VelocityIntegral,
             PlotType::Angle | PlotType::Velocity | PlotType::Torque => FeedbackType::Status,
         }
@@ -540,8 +542,8 @@ impl MotorTab {
                 self.velocity_string = value.to_string();
             }
             ChirpTarget::Torque => {
-                self.iq = value;
-                self.iq_string = value.to_string();
+                self.torque = value;
+                self.torque_string = value.to_string();
             }
         }
     }
@@ -565,7 +567,7 @@ impl MotorTab {
                         self.plot_type,
                         PlotType::Current
                             | PlotType::SpeedError
-                            | PlotType::IRef
+                            | PlotType::TorqueRef
                             | PlotType::VelocityIntegral
                     )
                 {
@@ -574,10 +576,10 @@ impl MotorTab {
                 let (feedback, reference) = match self.plot_type {
                     PlotType::Angle => (x.angle as f64, self.sent_angle_ref as f64),
                     PlotType::Velocity => (x.velocity as f64, self.sent_velocity_ref as f64),
-                    PlotType::Torque => (x.torque as f64, self.sent_iq_ref as f64),
+                    PlotType::Torque => (x.torque as f64, self.sent_torque_ref as f64),
                     PlotType::Current
                     | PlotType::SpeedError
-                    | PlotType::IRef
+                    | PlotType::TorqueRef
                     | PlotType::VelocityIntegral => return,
                 };
                 self.push_plot_points(feedback, Some(reference));
@@ -594,7 +596,7 @@ impl MotorTab {
                 }
                 let expected_kind = match self.plot_type {
                     PlotType::SpeedError => Some(DebugValueKind::SpeedError),
-                    PlotType::IRef => Some(DebugValueKind::IqRef),
+                    PlotType::TorqueRef => Some(DebugValueKind::TorqueRef),
                     PlotType::VelocityIntegral => Some(DebugValueKind::VelocityIntegral),
                     _ => None,
                 };
@@ -613,9 +615,9 @@ impl MotorTab {
                     self.velocity = *x;
                     self.velocity_string = x.to_string();
                 }
-                ParameterValue::IqRef(x) => {
-                    self.iq = *x;
-                    self.iq_string = x.to_string();
+                ParameterValue::TorqueRef(x) => {
+                    self.torque = *x;
+                    self.torque_string = x.to_string();
                 }
                 ParameterValue::AngleKp(x) => {
                     self.angle_kp = *x;
@@ -727,7 +729,7 @@ impl MotorTab {
         match target {
             ChirpTarget::Angle => self.sent_angle_ref = value,
             ChirpTarget::Velocity => self.sent_velocity_ref = value,
-            ChirpTarget::Torque => self.sent_iq_ref = value,
+            ChirpTarget::Torque => self.sent_torque_ref = value,
         }
     }
 }
@@ -1074,11 +1076,11 @@ impl MyApp {
                         );
                         param_row(
                             ui,
-                            "I_q Ref",
-                            &mut tab.iq,
-                            &mut tab.iq_string,
+                            "Torque Ref [Nm]",
+                            &mut tab.torque,
+                            &mut tab.torque_string,
                             &mut queued_commands,
-                            ParameterValue::IqRef,
+                            ParameterValue::TorqueRef,
                         );
                         param_row(
                             ui,
@@ -1317,7 +1319,7 @@ impl MyApp {
                     ui.selectable_value(&mut tab.plot_type, PlotType::Torque, "Torque");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Current, "Current");
                     ui.selectable_value(&mut tab.plot_type, PlotType::SpeedError, "Speed Error");
-                    ui.selectable_value(&mut tab.plot_type, PlotType::IRef, "I Ref");
+                    ui.selectable_value(&mut tab.plot_type, PlotType::TorqueRef, "Torque Ref");
                     ui.selectable_value(
                         &mut tab.plot_type,
                         PlotType::VelocityIntegral,
@@ -1478,7 +1480,7 @@ impl ChirpTarget {
         match self {
             ChirpTarget::Angle => "AngleRef",
             ChirpTarget::Velocity => "SpeedRef",
-            ChirpTarget::Torque => "IqRef",
+            ChirpTarget::Torque => "TorqueRef",
         }
     }
 
@@ -1496,10 +1498,10 @@ impl PlotType {
         match self {
             PlotType::Angle => ("Angle", Some("AngleRef")),
             PlotType::Velocity => ("Velocity", Some("SpeedRef")),
-            PlotType::Torque => ("Torque", Some("IqRef")),
+            PlotType::Torque => ("Torque", Some("TorqueRef")),
             PlotType::Current => ("Iq", Some("Id")),
             PlotType::SpeedError => ("SpeedError", None),
-            PlotType::IRef => ("IqRef", None),
+            PlotType::TorqueRef => ("TorqueRef", None),
             PlotType::VelocityIntegral => ("VelocityIntegral", None),
         }
     }
@@ -1601,7 +1603,7 @@ fn sequence_parameter(target: ChirpTarget, value: f32) -> Command {
     let parameter = match target {
         ChirpTarget::Angle => ParameterValue::AngleRef(value),
         ChirpTarget::Velocity => ParameterValue::SpeedRef(value),
-        ChirpTarget::Torque => ParameterValue::IqRef(value),
+        ChirpTarget::Torque => ParameterValue::TorqueRef(value),
     };
     Command::SetParameter(parameter)
 }
@@ -1686,7 +1688,7 @@ fn current_timestamp_ms() -> u128 {
 fn debug_value_kind_label(kind: DebugValueKind) -> &'static str {
     match kind {
         DebugValueKind::SpeedError => "speed_error",
-        DebugValueKind::IqRef => "iq_ref",
+        DebugValueKind::TorqueRef => "torque_ref",
         DebugValueKind::VelocityIntegral => "velocity_integral",
     }
 }

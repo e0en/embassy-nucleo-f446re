@@ -49,7 +49,7 @@ pub enum ResponseBody {
 #[derive(Copy, Clone)]
 pub enum ParameterIndex {
     RunMode = 0x7005,
-    IqRef = 0x7006,
+    TorqueRef = 0x7006,
     SpeedRef = 0x700A,
     TorqueLimit = 0x700B,
     CurrentKp = 0x7010,
@@ -59,7 +59,7 @@ pub enum ParameterIndex {
     SpeedLimit = 0x7017,
     CurrentLimit = 0x7018,
     Angle = 0x7019,
-    Iq = 0x701A,
+    Torque = 0x701A,
     Speed = 0x701B,
     AngleKp = 0x701E,
     SpeedKp = 0x701F,
@@ -75,7 +75,7 @@ impl TryFrom<u16> for ParameterIndex {
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
             0x7005 => Ok(Self::RunMode),
-            0x7006 => Ok(Self::IqRef),
+            0x7006 => Ok(Self::TorqueRef),
             0x700A => Ok(Self::SpeedRef),
             0x700B => Ok(Self::TorqueLimit),
             0x7010 => Ok(Self::CurrentKp),
@@ -85,7 +85,7 @@ impl TryFrom<u16> for ParameterIndex {
             0x7017 => Ok(Self::SpeedLimit),
             0x7018 => Ok(Self::CurrentLimit),
             0x7019 => Ok(Self::Angle),
-            0x701A => Ok(Self::Iq),
+            0x701A => Ok(Self::Torque),
             0x701B => Ok(Self::Speed),
             0x701E => Ok(Self::AngleKp),
             0x701F => Ok(Self::SpeedKp),
@@ -101,7 +101,7 @@ impl TryFrom<u16> for ParameterIndex {
 #[derive(Copy, Clone)]
 pub enum ParameterValue {
     RunMode(RunMode),
-    IqRef(f32),
+    TorqueRef(f32),
     SpeedRef(f32),
     TorqueLimit(f32),
     CurrentKp(f32),
@@ -111,7 +111,7 @@ pub enum ParameterValue {
     SpeedLimit(f32),
     CurrentLimit(f32),
     Angle(f32),
-    Iq(f32),
+    Torque(f32),
     Speed(f32),
     AngleKp(f32),
     SpeedKp(f32),
@@ -136,7 +136,7 @@ impl TryFrom<[u8; 8]> for ParameterValue {
                 let mode = RunMode::try_from(data[4])?;
                 Self::RunMode(mode)
             }
-            ParameterIndex::IqRef => Self::IqRef(value),
+            ParameterIndex::TorqueRef => Self::TorqueRef(value),
             ParameterIndex::SpeedRef => Self::SpeedRef(value),
             ParameterIndex::TorqueLimit => Self::TorqueLimit(value),
             ParameterIndex::CurrentKp => Self::CurrentKp(value),
@@ -146,7 +146,7 @@ impl TryFrom<[u8; 8]> for ParameterValue {
             ParameterIndex::SpeedLimit => Self::SpeedLimit(value),
             ParameterIndex::CurrentLimit => Self::CurrentLimit(value),
             ParameterIndex::Angle => Self::Angle(value),
-            ParameterIndex::Iq => Self::Iq(value),
+            ParameterIndex::Torque => Self::Torque(value),
             ParameterIndex::Speed => Self::Speed(value),
             ParameterIndex::AngleKp => Self::AngleKp(value),
             ParameterIndex::SpeedKp => Self::SpeedKp(value),
@@ -164,7 +164,7 @@ impl From<ParameterValue> for [u8; 8] {
         let mut data = [0x00u8; 8];
         let address = match val {
             ParameterValue::RunMode(_) => ParameterIndex::RunMode,
-            ParameterValue::IqRef(_) => ParameterIndex::IqRef,
+            ParameterValue::TorqueRef(_) => ParameterIndex::TorqueRef,
             ParameterValue::SpeedRef(_) => ParameterIndex::SpeedRef,
             ParameterValue::TorqueLimit(_) => ParameterIndex::TorqueLimit,
             ParameterValue::CurrentKp(_) => ParameterIndex::CurrentKp,
@@ -174,7 +174,7 @@ impl From<ParameterValue> for [u8; 8] {
             ParameterValue::SpeedLimit(_) => ParameterIndex::SpeedLimit,
             ParameterValue::CurrentLimit(_) => ParameterIndex::CurrentLimit,
             ParameterValue::Angle(_) => ParameterIndex::Angle,
-            ParameterValue::Iq(_) => ParameterIndex::Iq,
+            ParameterValue::Torque(_) => ParameterIndex::Torque,
             ParameterValue::Speed(_) => ParameterIndex::Speed,
             ParameterValue::AngleKp(_) => ParameterIndex::AngleKp,
             ParameterValue::SpeedKp(_) => ParameterIndex::SpeedKp,
@@ -188,7 +188,7 @@ impl From<ParameterValue> for [u8; 8] {
 
         match val {
             ParameterValue::RunMode(x) => data[4] = x as u8,
-            ParameterValue::IqRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::TorqueRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::SpeedRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::TorqueLimit(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::CurrentKp(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
@@ -198,7 +198,7 @@ impl From<ParameterValue> for [u8; 8] {
             ParameterValue::SpeedLimit(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::CurrentLimit(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::Angle(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
-            ParameterValue::Iq(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::Torque(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::Speed(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::AngleKp(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::SpeedKp(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
@@ -228,7 +228,7 @@ pub enum FeedbackType {
     Status = 0x00,
     Current = 0x01,
     SpeedError = 0x02,
-    IqRef = 0x03,
+    TorqueRef = 0x03,
     VelocityIntegral = 0x04,
 }
 
@@ -239,7 +239,7 @@ impl TryFrom<u8> for FeedbackType {
             0x00 => Ok(Self::Status),
             0x01 => Ok(Self::Current),
             0x02 => Ok(Self::SpeedError),
-            0x03 => Ok(Self::IqRef),
+            0x03 => Ok(Self::TorqueRef),
             0x04 => Ok(Self::VelocityIntegral),
             _ => Err(()),
         }
@@ -249,7 +249,7 @@ impl TryFrom<u8> for FeedbackType {
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum DebugValueKind {
     SpeedError,
-    IqRef,
+    TorqueRef,
     VelocityIntegral,
 }
 
@@ -263,7 +263,7 @@ impl DebugValue {
     fn response_type(&self) -> u32 {
         match self.kind {
             DebugValueKind::SpeedError => 0x18,
-            DebugValueKind::IqRef => 0x19,
+            DebugValueKind::TorqueRef => 0x19,
             DebugValueKind::VelocityIntegral => 0x1A,
         }
     }
@@ -392,7 +392,7 @@ impl TryFrom<CanMessage> for ResponseMessage {
                 ..DebugValue::from(val.data)
             }),
             0x19 => ResponseBody::DebugValue(DebugValue {
-                kind: DebugValueKind::IqRef,
+                kind: DebugValueKind::TorqueRef,
                 ..DebugValue::from(val.data)
             }),
             0x1A => ResponseBody::DebugValue(DebugValue {
@@ -662,12 +662,12 @@ mod tests {
 
     #[test]
     fn parameter_value_f32_roundtrip() {
-        let pv = ParameterValue::IqRef(core::f32::consts::PI);
+        let pv = ParameterValue::TorqueRef(core::f32::consts::PI);
 
         let bytes: [u8; 8] = pv.into();
         let decoded = ParameterValue::try_from(bytes).unwrap();
 
-        if let ParameterValue::IqRef(v) = decoded {
+        if let ParameterValue::TorqueRef(v) = decoded {
             assert!(approx_eq(v, core::f32::consts::PI, 0.0001));
         } else {
             panic!("Wrong variant");
