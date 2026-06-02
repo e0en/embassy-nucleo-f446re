@@ -164,7 +164,23 @@ async fn handle_command(
                 if take_motor_disarmed_by_fault() {
                     set_gate_driver_enabled(true).await;
                 }
-                foc_isr::with_foc(|foc| foc.enable());
+                foc_isr::with_foc(|foc| {
+                    match foc.mode {
+                        foc::controller::RunMode::Angle | foc::controller::RunMode::Impedance => {
+                            foc.set_target_angle(foc.state.angle);
+                            foc.set_target_velocity(0.0);
+                        }
+                        foc::controller::RunMode::Velocity => {
+                            foc.set_target_velocity(0.0);
+                        }
+                        foc::controller::RunMode::Torque => {}
+                        foc::controller::RunMode::Voltage => {
+                            foc.set_target_voltage(0.0);
+                        }
+                    }
+                    foc.set_target_torque(0.0);
+                    foc.enable();
+                });
             }
         }
         Command::Stop => {
