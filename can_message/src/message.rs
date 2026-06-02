@@ -68,6 +68,7 @@ pub enum ParameterIndex {
     Spring = 0x7021,
     Damping = 0x7022,
     VqRef = 0x7023,
+    CurrentRef = 0x7024,
 }
 
 impl TryFrom<u16> for ParameterIndex {
@@ -93,6 +94,7 @@ impl TryFrom<u16> for ParameterIndex {
             0x7021 => Ok(Self::Spring),
             0x7022 => Ok(Self::Damping),
             0x7023 => Ok(Self::VqRef),
+            0x7024 => Ok(Self::CurrentRef),
             _ => Err(()),
         }
     }
@@ -119,6 +121,7 @@ pub enum ParameterValue {
     Spring(f32),
     Damping(f32),
     VqRef(f32),
+    CurrentRef(f32),
 }
 
 impl TryFrom<[u8; 8]> for ParameterValue {
@@ -155,6 +158,7 @@ impl TryFrom<[u8; 8]> for ParameterValue {
             ParameterIndex::Spring => Self::Spring(value),
             ParameterIndex::Damping => Self::Damping(value),
             ParameterIndex::VqRef => Self::VqRef(value),
+            ParameterIndex::CurrentRef => Self::CurrentRef(value),
         })
     }
 }
@@ -183,6 +187,7 @@ impl From<ParameterValue> for [u8; 8] {
             ParameterValue::Spring(_) => ParameterIndex::Spring,
             ParameterValue::Damping(_) => ParameterIndex::Damping,
             ParameterValue::VqRef(_) => ParameterIndex::VqRef,
+            ParameterValue::CurrentRef(_) => ParameterIndex::CurrentRef,
         };
         data[0..2].copy_from_slice(&(address as u16).to_le_bytes());
 
@@ -207,6 +212,7 @@ impl From<ParameterValue> for [u8; 8] {
             ParameterValue::Spring(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::Damping(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
             ParameterValue::VqRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
+            ParameterValue::CurrentRef(x) => data[4..8].copy_from_slice(&x.to_le_bytes()),
         };
         data
     }
@@ -753,6 +759,20 @@ mod tests {
 
         if let ParameterValue::TorqueRef(v) = decoded {
             assert!(approx_eq(v, core::f32::consts::PI, 0.0001));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn parameter_value_current_ref_roundtrip() {
+        let pv = ParameterValue::CurrentRef(-1.25);
+
+        let bytes: [u8; 8] = pv.into();
+        let decoded = ParameterValue::try_from(bytes).unwrap();
+
+        if let ParameterValue::CurrentRef(v) = decoded {
+            assert!(approx_eq(v, -1.25, 0.0001));
         } else {
             panic!("Wrong variant");
         }

@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::prelude::Write;
+use std::io::{BufRead, BufReader, prelude::Write};
+use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +25,9 @@ const CHIRP_START_FREQ_HZ: f32 = 0.2;
 const CHIRP_END_FREQ_HZ: f32 = 10.0;
 const HOST_CAN_ID: u8 = 0x00;
 const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
+const LOADCELL_MONITOR_COMMAND: &str =
+    "Developer/esp32-c3-nau7802/pc-client/target/release/pc-client";
+const GRAM_FORCE_TO_NEWTON: f32 = 0.009_806_65;
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -33,6 +37,7 @@ fn main() -> eframe::Result {
     let (status_sender, status_receiver) = channel::<ResponseMessage>();
     let (sequence_control_sender, sequence_control_receiver) = channel::<SequenceControl>();
     let (sequence_event_sender, sequence_event_receiver) = channel::<SequenceEvent>();
+    let (loadcell_sender, loadcell_receiver) = channel::<LoadCellEvent>();
 
     let rx_socket = CanSocket::open("can0").unwrap();
     let tx_socket = CanSocket::open("can0").unwrap();
@@ -51,6 +56,9 @@ fn main() -> eframe::Result {
             sequence_command_sender,
         );
     });
+    thread::spawn(move || {
+        forward_loadcell(loadcell_sender);
+    });
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT]),
@@ -66,6 +74,7 @@ fn main() -> eframe::Result {
                 status_receiver,
                 sequence_control_sender,
                 sequence_event_receiver,
+                loadcell_receiver,
             )))
         }),
     )
@@ -205,6 +214,48 @@ fn forward_sequence(
     }
 }
 
+fn forward_loadcell(event_send: Sender<LoadCellEvent>) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    let command_path = std::path::Path::new(&home).join(LOADCELL_MONITOR_COMMAND);
+    let mut child = match ProcessCommand::new(command_path)
+        .arg("monitor")
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = event_send.send(LoadCellEvent::Error(format!("loadcell monitor: {e}")));
+            return;
+        }
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        let _ = event_send.send(LoadCellEvent::Error(
+            "loadcell monitor stdout unavailable".to_owned(),
+        ));
+        return;
+    };
+
+    for line in BufReader::new(stdout).lines() {
+        match line {
+            Ok(line) => match line.trim().parse::<f32>() {
+                Ok(grams) => {
+                    let _ = event_send.send(LoadCellEvent::Reading { grams });
+                }
+                Err(_) => {
+                    let _ = event_send.send(LoadCellEvent::Error(format!(
+                        "loadcell parse error: {line}"
+                    )));
+                }
+            },
+            Err(e) => {
+                let _ = event_send.send(LoadCellEvent::Error(format!("loadcell read: {e}")));
+                break;
+            }
+        }
+    }
+}
+
 fn send_sequence_command(command_send: &Sender<CommandMessage>, can_id: u8, command: Command) {
     let _ = command_send.send(CommandMessage {
         host_can_id: HOST_CAN_ID,
@@ -249,11 +300,21 @@ struct MyApp {
     status_recv: Receiver<ResponseMessage>,
     sequence_control_send: Sender<SequenceControl>,
     sequence_event_recv: Receiver<SequenceEvent>,
+    loadcell_recv: Receiver<LoadCellEvent>,
+    latest_loadcell_grams: Option<f32>,
+    loadcell_sequence: u64,
+    loadcell_status: String,
     tabs: Vec<MotorTab>,
     selected_tab: usize,
     new_tab_can_id_string: String,
     file_dialog: egui_file_dialog::FileDialog,
     pending_export: Option<PendingExport>,
+}
+
+#[derive(Clone, Debug)]
+enum LoadCellEvent {
+    Reading { grams: f32 },
+    Error(String),
 }
 
 struct MotorTab {
@@ -280,6 +341,12 @@ struct MotorTab {
     motion_torque_string: String,
     motion_kp_string: String,
     motion_kd_string: String,
+    cal_iq_start_string: String,
+    cal_iq_end_string: String,
+    cal_iq_step_string: String,
+    cal_settle_ms_string: String,
+    cal_sample_count_string: String,
+    cal_arm_mm_string: String,
 
     angle: f32,
     velocity: f32,
@@ -303,6 +370,12 @@ struct MotorTab {
     motion_torque: f32,
     motion_kp: f32,
     motion_kd: f32,
+    cal_iq_start: f32,
+    cal_iq_end: f32,
+    cal_iq_step: f32,
+    cal_settle_ms: usize,
+    cal_sample_count: usize,
+    cal_arm_mm: f32,
     chirp_amplitude: f32,
     chirp_duration: f32,
     chirp_target: ChirpTarget,
@@ -321,6 +394,8 @@ struct MotorTab {
     active_sequence: Option<ActiveSequence>,
     active_capture: Option<SequenceCapture>,
     last_capture: Option<SequenceCapture>,
+    active_torque_calibration: Option<TorqueCalibration>,
+    last_torque_calibration: Option<TorqueCalibrationResult>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -362,6 +437,7 @@ enum SequenceEvent {
 enum PendingExport {
     Plot(Vec<egui_plot::PlotPoint>),
     Sequence(SequenceCapture),
+    TorqueCalibration(TorqueCalibrationResult),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -383,6 +459,41 @@ enum CommandEvent {
 struct SequenceCapture {
     sequence: ActiveSequence,
     rows: Vec<SequenceCaptureRow>,
+}
+
+#[derive(Clone)]
+struct TorqueCalibrationResult {
+    arm_mm: f32,
+    rows: Vec<TorqueCalibrationRow>,
+}
+
+#[derive(Clone, Copy)]
+struct TorqueCalibrationRow {
+    iq_ref: f32,
+    loadcell_mean_g: f32,
+    loadcell_std_g: f32,
+    sample_count: usize,
+    torque_nm: f32,
+}
+
+#[derive(Clone)]
+struct TorqueCalibration {
+    points: Vec<f32>,
+    point_index: usize,
+    settle_duration: Duration,
+    sample_count: usize,
+    arm_mm: f32,
+    phase: TorqueCalibrationPhase,
+    rows: Vec<TorqueCalibrationRow>,
+    samples: Vec<f32>,
+    last_loadcell_sequence: u64,
+}
+
+#[derive(Clone, Copy)]
+enum TorqueCalibrationPhase {
+    CommandPoint,
+    Settling { until: Instant },
+    Sampling,
 }
 
 #[derive(Clone, Copy)]
@@ -467,6 +578,12 @@ impl MotorTab {
         let motion_torque = 0.0;
         let motion_kp = 0.0;
         let motion_kd = 0.0;
+        let cal_iq_start = -0.1;
+        let cal_iq_end = -2.0;
+        let cal_iq_step = -0.1;
+        let cal_settle_ms = 500;
+        let cal_sample_count = 10;
+        let cal_arm_mm = 100.0;
         let chirp_amplitude = 5.0;
         let chirp_duration = 30.0;
         let step_value = 5.0;
@@ -495,6 +612,12 @@ impl MotorTab {
             motion_torque_string: motion_torque.to_string(),
             motion_kp_string: motion_kp.to_string(),
             motion_kd_string: motion_kd.to_string(),
+            cal_iq_start_string: cal_iq_start.to_string(),
+            cal_iq_end_string: cal_iq_end.to_string(),
+            cal_iq_step_string: cal_iq_step.to_string(),
+            cal_settle_ms_string: cal_settle_ms.to_string(),
+            cal_sample_count_string: cal_sample_count.to_string(),
+            cal_arm_mm_string: cal_arm_mm.to_string(),
 
             angle,
             velocity,
@@ -518,6 +641,12 @@ impl MotorTab {
             motion_torque,
             motion_kp,
             motion_kd,
+            cal_iq_start,
+            cal_iq_end,
+            cal_iq_step,
+            cal_settle_ms,
+            cal_sample_count,
+            cal_arm_mm,
             chirp_amplitude,
             chirp_duration,
             chirp_target: ChirpTarget::Velocity,
@@ -536,6 +665,8 @@ impl MotorTab {
             active_sequence: None,
             active_capture: None,
             last_capture: None,
+            active_torque_calibration: None,
+            last_torque_calibration: None,
         }
     }
 
@@ -765,6 +896,26 @@ impl MotorTab {
             .cloned()
     }
 
+    fn has_torque_calibration(&self) -> bool {
+        self.active_torque_calibration
+            .as_ref()
+            .is_some_and(|calibration| !calibration.rows.is_empty())
+            || self
+                .last_torque_calibration
+                .as_ref()
+                .is_some_and(|calibration| !calibration.rows.is_empty())
+    }
+
+    fn torque_calibration(&self) -> Option<TorqueCalibrationResult> {
+        if let Some(calibration) = &self.active_torque_calibration {
+            return Some(TorqueCalibrationResult {
+                arm_mm: calibration.arm_mm,
+                rows: calibration.rows.clone(),
+            });
+        }
+        self.last_torque_calibration.clone()
+    }
+
     fn set_sent_reference(&mut self, target: ChirpTarget, value: f32) {
         match target {
             ChirpTarget::Angle => self.sent_angle_ref = value,
@@ -781,6 +932,7 @@ impl MyApp {
         status_recv: Receiver<ResponseMessage>,
         sequence_control_send: Sender<SequenceControl>,
         sequence_event_recv: Receiver<SequenceEvent>,
+        loadcell_recv: Receiver<LoadCellEvent>,
     ) -> Self {
         let app = Self {
             command_send,
@@ -788,6 +940,10 @@ impl MyApp {
             status_recv,
             sequence_control_send,
             sequence_event_recv,
+            loadcell_recv,
+            latest_loadcell_grams: None,
+            loadcell_sequence: 0,
+            loadcell_status: "waiting for loadcell".to_owned(),
             tabs: vec![MotorTab::new(DEFAULT_MOTOR_CAN_ID)],
             selected_tab: 0,
             new_tab_can_id_string: DEFAULT_MOTOR_CAN_ID.to_string(),
@@ -968,6 +1124,141 @@ impl MyApp {
         }
     }
 
+    fn handle_loadcell_events(&mut self) {
+        for event in self.loadcell_recv.try_iter() {
+            match event {
+                LoadCellEvent::Reading { grams } => {
+                    self.latest_loadcell_grams = Some(grams);
+                    self.loadcell_sequence = self.loadcell_sequence.wrapping_add(1);
+                    self.loadcell_status = format!("{grams:.2} g");
+                }
+                LoadCellEvent::Error(message) => {
+                    self.loadcell_status = message;
+                }
+            }
+        }
+    }
+
+    fn tick_torque_calibrations(&mut self) {
+        let now = Instant::now();
+        let latest_loadcell_grams = self.latest_loadcell_grams;
+        let loadcell_sequence = self.loadcell_sequence;
+        let mut commands = Vec::new();
+
+        for tab in &mut self.tabs {
+            let Some(calibration) = &mut tab.active_torque_calibration else {
+                continue;
+            };
+
+            match calibration.phase {
+                TorqueCalibrationPhase::CommandPoint => {
+                    if let Some(&iq_ref) = calibration.points.get(calibration.point_index) {
+                        commands.push((
+                            tab.can_id,
+                            Command::SetParameter(ParameterValue::CurrentRef(iq_ref)),
+                        ));
+                        calibration.phase = TorqueCalibrationPhase::Settling {
+                            until: now + calibration.settle_duration,
+                        };
+                    } else {
+                        commands.push((
+                            tab.can_id,
+                            Command::SetParameter(ParameterValue::CurrentRef(0.0)),
+                        ));
+                        commands.push((tab.can_id, Command::Stop));
+                        tab.last_torque_calibration = Some(TorqueCalibrationResult {
+                            arm_mm: calibration.arm_mm,
+                            rows: calibration.rows.clone(),
+                        });
+                        tab.active_torque_calibration = None;
+                    }
+                }
+                TorqueCalibrationPhase::Settling { until } => {
+                    if now >= until {
+                        calibration.samples.clear();
+                        calibration.last_loadcell_sequence = loadcell_sequence;
+                        calibration.phase = TorqueCalibrationPhase::Sampling;
+                    }
+                }
+                TorqueCalibrationPhase::Sampling => {
+                    if calibration.last_loadcell_sequence != loadcell_sequence
+                        && let Some(grams) = latest_loadcell_grams
+                    {
+                        calibration.samples.push(grams);
+                        calibration.last_loadcell_sequence = loadcell_sequence;
+                    }
+
+                    if calibration.samples.len() >= calibration.sample_count {
+                        let iq_ref = calibration.points[calibration.point_index];
+                        let mean = mean(&calibration.samples);
+                        let std = stddev(&calibration.samples, mean);
+                        calibration.rows.push(TorqueCalibrationRow {
+                            iq_ref,
+                            loadcell_mean_g: mean,
+                            loadcell_std_g: std,
+                            sample_count: calibration.samples.len(),
+                            torque_nm: grams_to_torque_nm(mean, calibration.arm_mm),
+                        });
+                        calibration.point_index += 1;
+                        calibration.phase = TorqueCalibrationPhase::CommandPoint;
+                    }
+                }
+            }
+        }
+
+        for (can_id, command) in commands {
+            self.send_command_to(can_id, command);
+        }
+    }
+
+    fn start_torque_calibration(&mut self, can_id: u8) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) else {
+            return;
+        };
+        let Some(points) = torque_calibration_points(tab) else {
+            return;
+        };
+
+        tab.last_torque_calibration = None;
+        tab.active_torque_calibration = Some(TorqueCalibration {
+            points,
+            point_index: 0,
+            settle_duration: Duration::from_millis(tab.cal_settle_ms as u64),
+            sample_count: tab.cal_sample_count,
+            arm_mm: tab.cal_arm_mm,
+            phase: TorqueCalibrationPhase::CommandPoint,
+            rows: Vec::new(),
+            samples: Vec::new(),
+            last_loadcell_sequence: self.loadcell_sequence,
+        });
+
+        self.send_command_to(
+            can_id,
+            Command::SetParameter(ParameterValue::RunMode(RunMode::Torque)),
+        );
+        self.send_command_to(
+            can_id,
+            Command::SetParameter(ParameterValue::CurrentRef(0.0)),
+        );
+        self.send_command_to(can_id, Command::Enable);
+    }
+
+    fn stop_torque_calibration(&mut self, can_id: u8) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
+            if let Some(calibration) = tab.active_torque_calibration.take() {
+                tab.last_torque_calibration = Some(TorqueCalibrationResult {
+                    arm_mm: calibration.arm_mm,
+                    rows: calibration.rows,
+                });
+            }
+        }
+        self.send_command_to(
+            can_id,
+            Command::SetParameter(ParameterValue::CurrentRef(0.0)),
+        );
+        self.send_command_to(can_id, Command::Stop);
+    }
+
     fn start_sequence(&self, can_id: u8, sequence: ActiveSequence) {
         let _ = self
             .sequence_control_send
@@ -986,6 +1277,8 @@ impl eframe::App for MyApp {
         self.handle_command_events();
         self.handle_incoming_messages();
         self.handle_sequence_events();
+        self.handle_loadcell_events();
+        self.tick_torque_calibrations();
         self.render_ui(ui);
         ui.ctx().request_repaint_after(UI_REPAINT_INTERVAL);
     }
@@ -1052,7 +1345,10 @@ impl MyApp {
             let mut rename_to: Option<u8> = None;
             let mut export_requested = false;
             let mut sequence_export_requested = false;
+            let mut calibration_export_requested = false;
             let mut sequence_request: Option<SequenceUiRequest> = None;
+            let mut start_calibration = false;
+            let mut stop_calibration = false;
 
             {
                 let tab = &mut self.tabs[selected_index];
@@ -1277,6 +1573,102 @@ impl MyApp {
                         kp: tab.motion_kp,
                         kd: tab.motion_kd,
                     }));
+                }
+
+                ui.separator();
+                ui.label("Current-Torque Calibration");
+                ui.horizontal(|ui| {
+                    ui.label("Loadcell");
+                    ui.monospace(&self.loadcell_status);
+                });
+                egui::Grid::new(format!("torque-cal-{}", tab.can_id))
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .show(ui, |ui| {
+                        motion_field(
+                            ui,
+                            "Iq start",
+                            &mut tab.cal_iq_start,
+                            &mut tab.cal_iq_start_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Iq end",
+                            &mut tab.cal_iq_end,
+                            &mut tab.cal_iq_end_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Iq step",
+                            &mut tab.cal_iq_step,
+                            &mut tab.cal_iq_step_string,
+                        );
+                        integer_field(
+                            ui,
+                            "Settle [ms]",
+                            &mut tab.cal_settle_ms,
+                            &mut tab.cal_settle_ms_string,
+                        );
+                        integer_field(
+                            ui,
+                            "Samples",
+                            &mut tab.cal_sample_count,
+                            &mut tab.cal_sample_count_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Arm [mm]",
+                            &mut tab.cal_arm_mm,
+                            &mut tab.cal_arm_mm_string,
+                        );
+                    });
+                let calibration_points = torque_calibration_points(tab);
+                let calibration_active = tab.active_torque_calibration.is_some();
+                let calibration_ready =
+                    calibration_points.is_some() && self.latest_loadcell_grams.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            calibration_ready && !calibration_active,
+                            egui::Button::new("Start calibration"),
+                        )
+                        .clicked()
+                    {
+                        start_calibration = true;
+                    }
+                    if ui
+                        .add_enabled(calibration_active, egui::Button::new("Stop calibration"))
+                        .clicked()
+                    {
+                        stop_calibration = true;
+                    }
+                    if let Some(points) = &calibration_points {
+                        ui.small(format!("{} negative points", points.len()));
+                    } else {
+                        ui.small("Iq start/end/step must generate only negative points");
+                    }
+                });
+                if let Some(calibration) = &tab.active_torque_calibration {
+                    ui.small(format!(
+                        "point {}/{} rows {}",
+                        calibration.point_index + 1,
+                        calibration.points.len(),
+                        calibration.rows.len()
+                    ));
+                }
+                let calibration_export_label = if tab.active_torque_calibration.is_some() {
+                    "Export active calibration"
+                } else {
+                    "Export last calibration"
+                };
+                if ui
+                    .add_enabled(
+                        tab.has_torque_calibration(),
+                        egui::Button::new(calibration_export_label),
+                    )
+                    .clicked()
+                {
+                    calibration_export_requested = true;
                 }
 
                 ui.horizontal(|ui| {
@@ -1541,6 +1933,14 @@ impl MyApp {
                 }
             }
 
+            if start_calibration {
+                self.start_torque_calibration(current_can_id);
+            }
+
+            if stop_calibration {
+                self.stop_torque_calibration(current_can_id);
+            }
+
             if export_requested {
                 self.pending_export = self
                     .selected_tab()
@@ -1553,6 +1953,15 @@ impl MyApp {
                 self.pending_export = self
                     .selected_tab()
                     .and_then(|tab| tab.sequence_capture().map(PendingExport::Sequence));
+                self.file_dialog = egui_file_dialog::FileDialog::new();
+                self.file_dialog.save_file();
+            }
+
+            if calibration_export_requested {
+                self.pending_export = self.selected_tab().and_then(|tab| {
+                    tab.torque_calibration()
+                        .map(PendingExport::TorqueCalibration)
+                });
                 self.file_dialog = egui_file_dialog::FileDialog::new();
                 self.file_dialog.save_file();
             }
@@ -1575,6 +1984,9 @@ impl MyApp {
                     }
                     PendingExport::Sequence(capture) => {
                         let _ = write_sequence_capture_csv(&mut file, &capture);
+                    }
+                    PendingExport::TorqueCalibration(result) => {
+                        let _ = write_torque_calibration_csv(&mut file, &result);
                     }
                 }
             }
@@ -1606,6 +2018,65 @@ fn motion_field(ui: &mut egui::Ui, label: &str, value: &mut f32, text: &mut Stri
         *value = parsed;
     }
     ui.end_row();
+}
+
+fn integer_field(ui: &mut egui::Ui, label: &str, value: &mut usize, text: &mut String) {
+    let name_label = ui.label(label);
+    ui.text_edit_singleline(text).labelled_by(name_label.id);
+    if let Ok(parsed) = text.parse::<usize>() {
+        *value = parsed;
+    }
+    ui.end_row();
+}
+
+fn torque_calibration_points(tab: &MotorTab) -> Option<Vec<f32>> {
+    if !(tab.cal_iq_start.is_finite()
+        && tab.cal_iq_end.is_finite()
+        && tab.cal_iq_step.is_finite()
+        && tab.cal_arm_mm.is_finite())
+        || tab.cal_iq_start >= 0.0
+        || tab.cal_iq_end >= 0.0
+        || tab.cal_iq_step >= 0.0
+        || tab.cal_sample_count == 0
+        || tab.cal_arm_mm <= 0.0
+    {
+        return None;
+    }
+
+    let mut points = Vec::new();
+    let mut iq_ref = tab.cal_iq_start;
+    while iq_ref >= tab.cal_iq_end - 1e-6 {
+        if iq_ref >= 0.0 {
+            return None;
+        }
+        points.push(iq_ref);
+        iq_ref += tab.cal_iq_step;
+        if points.len() > 256 {
+            return None;
+        }
+    }
+
+    (!points.is_empty()).then_some(points)
+}
+
+fn mean(values: &[f32]) -> f32 {
+    values.iter().sum::<f32>() / values.len() as f32
+}
+
+fn stddev(values: &[f32], mean: f32) -> f32 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let variance = values
+        .iter()
+        .map(|value| (*value - mean).powi(2))
+        .sum::<f32>()
+        / (values.len() - 1) as f32;
+    variance.sqrt()
+}
+
+fn grams_to_torque_nm(grams: f32, arm_mm: f32) -> f32 {
+    grams * GRAM_FORCE_TO_NEWTON * arm_mm / 1000.0
 }
 
 fn push_point(buffer: &mut VecDeque<egui_plot::PlotPoint>, point: egui_plot::PlotPoint) {
@@ -1770,6 +2241,32 @@ fn write_sequence_capture_csv(file: &mut File, capture: &SequenceCapture) -> std
 
     for row in &capture.rows {
         let line = row.to_csv_line(capture.sequence);
+        file.write_all(line.as_bytes())?;
+    }
+
+    Ok(())
+}
+
+fn write_torque_calibration_csv(
+    file: &mut File,
+    result: &TorqueCalibrationResult,
+) -> std::io::Result<()> {
+    file.write_all(
+        b"iq_ref,loadcell_mean_g,loadcell_std_g,sample_count,arm_mm,torque_nm,nm_per_abs_iq\n",
+    )?;
+
+    for row in &result.rows {
+        let nm_per_abs_iq = row.torque_nm / row.iq_ref.abs();
+        let line = format!(
+            "{},{},{},{},{},{},{}\n",
+            row.iq_ref,
+            row.loadcell_mean_g,
+            row.loadcell_std_g,
+            row.sample_count,
+            result.arm_mm,
+            row.torque_nm,
+            nm_per_abs_iq
+        );
         file.write_all(line.as_bytes())?;
     }
 

@@ -210,6 +210,9 @@ async fn handle_command(
         Command::SetParameter(ParameterValue::TorqueLimit(torque_nm)) => {
             foc_isr::with_foc(|foc| foc.set_torque_limit(torque_nm_to_iq(*torque_nm)));
         }
+        Command::SetParameter(ParameterValue::CurrentRef(iq_ref)) => {
+            foc_isr::with_foc(|foc| foc.set_target_torque(*iq_ref));
+        }
         _ => {
             dispatch_set_param!(command,
                 CurrentLimit => set_current_limit,
@@ -252,6 +255,7 @@ async fn handle_command(
                 Spring => foc.target.spring,
                 Damping => foc.target.damping,
                 VqRef => foc.target.voltage,
+                CurrentRef => foc.user_frame_i_ref(),
             )
         });
         if let Some(pv) = pv {
