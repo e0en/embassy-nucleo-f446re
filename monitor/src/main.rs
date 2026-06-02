@@ -347,6 +347,11 @@ struct MotorTab {
     cal_settle_ms_string: String,
     cal_sample_count_string: String,
     cal_arm_mm_string: String,
+    cal_repeat_count_string: String,
+    cal_stability_std_g_string: String,
+    cal_stability_samples_string: String,
+    cal_stability_timeout_ms_string: String,
+    cal_outlier_sigma_string: String,
 
     angle: f32,
     velocity: f32,
@@ -376,6 +381,11 @@ struct MotorTab {
     cal_settle_ms: usize,
     cal_sample_count: usize,
     cal_arm_mm: f32,
+    cal_repeat_count: usize,
+    cal_stability_std_g: f32,
+    cal_stability_samples: usize,
+    cal_stability_timeout_ms: usize,
+    cal_outlier_sigma: f32,
     chirp_amplitude: f32,
     chirp_duration: f32,
     chirp_target: ChirpTarget,
@@ -464,36 +474,75 @@ struct SequenceCapture {
 #[derive(Clone)]
 struct TorqueCalibrationResult {
     arm_mm: f32,
+    tare_g: f32,
+    fit_zero_slope_nm_per_iq: Option<f32>,
+    fit_affine_slope_nm_per_iq: Option<f32>,
+    fit_affine_intercept_nm: Option<f32>,
+    fit_zero_rmse_nm: Option<f32>,
+    fit_affine_rmse_nm: Option<f32>,
+    fit_zero_r2: Option<f32>,
+    fit_affine_r2: Option<f32>,
     rows: Vec<TorqueCalibrationRow>,
 }
 
 #[derive(Clone, Copy)]
 struct TorqueCalibrationRow {
     iq_ref: f32,
-    loadcell_mean_g: f32,
-    loadcell_std_g: f32,
+    repeat: usize,
+    direction: CalibrationDirection,
+    raw_mean_g: f32,
+    tare_corrected_mean_g: f32,
+    std_g: f32,
+    rejected_samples: usize,
     sample_count: usize,
     torque_nm: f32,
 }
 
 #[derive(Clone)]
 struct TorqueCalibration {
-    points: Vec<f32>,
-    point_index: usize,
-    settle_duration: Duration,
+    steps: Vec<TorqueCalibrationStep>,
+    step_index: usize,
+    min_settle_duration: Duration,
     sample_count: usize,
     arm_mm: f32,
+    tare_g: f32,
+    stability_std_g: f32,
+    stability_samples: usize,
+    stability_timeout: Duration,
+    outlier_sigma: f32,
     phase: TorqueCalibrationPhase,
     rows: Vec<TorqueCalibrationRow>,
     samples: Vec<f32>,
+    stability_window: VecDeque<f32>,
     last_loadcell_sequence: u64,
 }
 
 #[derive(Clone, Copy)]
 enum TorqueCalibrationPhase {
-    CommandPoint,
-    Settling { until: Instant },
+    TareCommand,
+    TareSettling {
+        until: Instant,
+    },
+    TareSampling,
+    CommandStep,
+    Settling {
+        min_until: Instant,
+        timeout_at: Instant,
+    },
     Sampling,
+}
+
+#[derive(Clone, Copy)]
+struct TorqueCalibrationStep {
+    iq_ref: f32,
+    repeat: usize,
+    direction: CalibrationDirection,
+}
+
+#[derive(Clone, Copy)]
+enum CalibrationDirection {
+    Descending,
+    Ascending,
 }
 
 #[derive(Clone, Copy)]
@@ -584,6 +633,11 @@ impl MotorTab {
         let cal_settle_ms = 500;
         let cal_sample_count = 10;
         let cal_arm_mm = 100.0;
+        let cal_repeat_count = 3;
+        let cal_stability_std_g = 2.0;
+        let cal_stability_samples = 10;
+        let cal_stability_timeout_ms = 3000;
+        let cal_outlier_sigma = 3.0;
         let chirp_amplitude = 5.0;
         let chirp_duration = 30.0;
         let step_value = 5.0;
@@ -618,6 +672,11 @@ impl MotorTab {
             cal_settle_ms_string: cal_settle_ms.to_string(),
             cal_sample_count_string: cal_sample_count.to_string(),
             cal_arm_mm_string: cal_arm_mm.to_string(),
+            cal_repeat_count_string: cal_repeat_count.to_string(),
+            cal_stability_std_g_string: cal_stability_std_g.to_string(),
+            cal_stability_samples_string: cal_stability_samples.to_string(),
+            cal_stability_timeout_ms_string: cal_stability_timeout_ms.to_string(),
+            cal_outlier_sigma_string: cal_outlier_sigma.to_string(),
 
             angle,
             velocity,
@@ -647,6 +706,11 @@ impl MotorTab {
             cal_settle_ms,
             cal_sample_count,
             cal_arm_mm,
+            cal_repeat_count,
+            cal_stability_std_g,
+            cal_stability_samples,
+            cal_stability_timeout_ms,
+            cal_outlier_sigma,
             chirp_amplitude,
             chirp_duration,
             chirp_target: ChirpTarget::Velocity,
@@ -908,10 +972,7 @@ impl MotorTab {
 
     fn torque_calibration(&self) -> Option<TorqueCalibrationResult> {
         if let Some(calibration) = &self.active_torque_calibration {
-            return Some(TorqueCalibrationResult {
-                arm_mm: calibration.arm_mm,
-                rows: calibration.rows.clone(),
-            });
+            return Some(torque_calibration_result(calibration));
         }
         self.last_torque_calibration.clone()
     }
@@ -1151,14 +1212,46 @@ impl MyApp {
             };
 
             match calibration.phase {
-                TorqueCalibrationPhase::CommandPoint => {
-                    if let Some(&iq_ref) = calibration.points.get(calibration.point_index) {
+                TorqueCalibrationPhase::TareCommand => {
+                    commands.push((
+                        tab.can_id,
+                        Command::SetParameter(ParameterValue::CurrentRef(0.0)),
+                    ));
+                    calibration.phase = TorqueCalibrationPhase::TareSettling {
+                        until: now + calibration.min_settle_duration,
+                    };
+                }
+                TorqueCalibrationPhase::TareSettling { until } => {
+                    if now >= until {
+                        calibration.samples.clear();
+                        calibration.last_loadcell_sequence = loadcell_sequence;
+                        calibration.phase = TorqueCalibrationPhase::TareSampling;
+                    }
+                }
+                TorqueCalibrationPhase::TareSampling => {
+                    if calibration.last_loadcell_sequence != loadcell_sequence
+                        && let Some(grams) = latest_loadcell_grams
+                    {
+                        calibration.samples.push(grams);
+                        calibration.last_loadcell_sequence = loadcell_sequence;
+                    }
+
+                    if calibration.samples.len() >= calibration.sample_count {
+                        calibration.tare_g = mean(&calibration.samples);
+                        calibration.samples.clear();
+                        calibration.phase = TorqueCalibrationPhase::CommandStep;
+                    }
+                }
+                TorqueCalibrationPhase::CommandStep => {
+                    if let Some(step) = calibration.steps.get(calibration.step_index).copied() {
                         commands.push((
                             tab.can_id,
-                            Command::SetParameter(ParameterValue::CurrentRef(iq_ref)),
+                            Command::SetParameter(ParameterValue::CurrentRef(step.iq_ref)),
                         ));
+                        calibration.stability_window.clear();
                         calibration.phase = TorqueCalibrationPhase::Settling {
-                            until: now + calibration.settle_duration,
+                            min_until: now + calibration.min_settle_duration,
+                            timeout_at: now + calibration.stability_timeout,
                         };
                     } else {
                         commands.push((
@@ -1166,15 +1259,26 @@ impl MyApp {
                             Command::SetParameter(ParameterValue::CurrentRef(0.0)),
                         ));
                         commands.push((tab.can_id, Command::Stop));
-                        tab.last_torque_calibration = Some(TorqueCalibrationResult {
-                            arm_mm: calibration.arm_mm,
-                            rows: calibration.rows.clone(),
-                        });
+                        tab.last_torque_calibration = Some(torque_calibration_result(calibration));
                         tab.active_torque_calibration = None;
                     }
                 }
-                TorqueCalibrationPhase::Settling { until } => {
-                    if now >= until {
+                TorqueCalibrationPhase::Settling {
+                    min_until,
+                    timeout_at,
+                } => {
+                    if calibration.last_loadcell_sequence != loadcell_sequence
+                        && let Some(grams) = latest_loadcell_grams
+                    {
+                        push_sample(&mut calibration.stability_window, grams);
+                        calibration.last_loadcell_sequence = loadcell_sequence;
+                    }
+
+                    let stable = calibration.stability_window.len()
+                        >= calibration.stability_samples
+                        && stddev_deque(&calibration.stability_window)
+                            <= calibration.stability_std_g;
+                    if now >= min_until && (stable || now >= timeout_at) {
                         calibration.samples.clear();
                         calibration.last_loadcell_sequence = loadcell_sequence;
                         calibration.phase = TorqueCalibrationPhase::Sampling;
@@ -1189,18 +1293,28 @@ impl MyApp {
                     }
 
                     if calibration.samples.len() >= calibration.sample_count {
-                        let iq_ref = calibration.points[calibration.point_index];
-                        let mean = mean(&calibration.samples);
-                        let std = stddev(&calibration.samples, mean);
+                        let step = calibration.steps[calibration.step_index];
+                        let filtered =
+                            reject_outliers(&calibration.samples, calibration.outlier_sigma);
+                        let raw_mean = mean(&calibration.samples);
+                        let corrected_mean = mean(&filtered) - calibration.tare_g;
+                        let std = stddev(&filtered, mean(&filtered));
                         calibration.rows.push(TorqueCalibrationRow {
-                            iq_ref,
-                            loadcell_mean_g: mean,
-                            loadcell_std_g: std,
-                            sample_count: calibration.samples.len(),
-                            torque_nm: grams_to_torque_nm(mean, calibration.arm_mm),
+                            iq_ref: step.iq_ref,
+                            repeat: step.repeat,
+                            direction: step.direction,
+                            raw_mean_g: raw_mean,
+                            tare_corrected_mean_g: corrected_mean,
+                            std_g: std,
+                            rejected_samples: calibration
+                                .samples
+                                .len()
+                                .saturating_sub(filtered.len()),
+                            sample_count: filtered.len(),
+                            torque_nm: grams_to_torque_nm(corrected_mean, calibration.arm_mm),
                         });
-                        calibration.point_index += 1;
-                        calibration.phase = TorqueCalibrationPhase::CommandPoint;
+                        calibration.step_index += 1;
+                        calibration.phase = TorqueCalibrationPhase::CommandStep;
                     }
                 }
             }
@@ -1215,20 +1329,26 @@ impl MyApp {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) else {
             return;
         };
-        let Some(points) = torque_calibration_points(tab) else {
+        let Some(steps) = torque_calibration_steps(tab) else {
             return;
         };
 
         tab.last_torque_calibration = None;
         tab.active_torque_calibration = Some(TorqueCalibration {
-            points,
-            point_index: 0,
-            settle_duration: Duration::from_millis(tab.cal_settle_ms as u64),
+            steps,
+            step_index: 0,
+            min_settle_duration: Duration::from_millis(tab.cal_settle_ms as u64),
             sample_count: tab.cal_sample_count,
             arm_mm: tab.cal_arm_mm,
-            phase: TorqueCalibrationPhase::CommandPoint,
+            tare_g: 0.0,
+            stability_std_g: tab.cal_stability_std_g,
+            stability_samples: tab.cal_stability_samples,
+            stability_timeout: Duration::from_millis(tab.cal_stability_timeout_ms as u64),
+            outlier_sigma: tab.cal_outlier_sigma,
+            phase: TorqueCalibrationPhase::TareCommand,
             rows: Vec::new(),
             samples: Vec::new(),
+            stability_window: VecDeque::with_capacity(tab.cal_stability_samples),
             last_loadcell_sequence: self.loadcell_sequence,
         });
 
@@ -1246,10 +1366,7 @@ impl MyApp {
     fn stop_torque_calibration(&mut self, can_id: u8) {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.can_id == can_id) {
             if let Some(calibration) = tab.active_torque_calibration.take() {
-                tab.last_torque_calibration = Some(TorqueCalibrationResult {
-                    arm_mm: calibration.arm_mm,
-                    rows: calibration.rows,
-                });
+                tab.last_torque_calibration = Some(torque_calibration_result(&calibration));
             }
         }
         self.send_command_to(
@@ -1621,11 +1738,41 @@ impl MyApp {
                             &mut tab.cal_arm_mm,
                             &mut tab.cal_arm_mm_string,
                         );
+                        integer_field(
+                            ui,
+                            "Repeats",
+                            &mut tab.cal_repeat_count,
+                            &mut tab.cal_repeat_count_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Stable std [g]",
+                            &mut tab.cal_stability_std_g,
+                            &mut tab.cal_stability_std_g_string,
+                        );
+                        integer_field(
+                            ui,
+                            "Stable samples",
+                            &mut tab.cal_stability_samples,
+                            &mut tab.cal_stability_samples_string,
+                        );
+                        integer_field(
+                            ui,
+                            "Stable timeout [ms]",
+                            &mut tab.cal_stability_timeout_ms,
+                            &mut tab.cal_stability_timeout_ms_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Outlier sigma",
+                            &mut tab.cal_outlier_sigma,
+                            &mut tab.cal_outlier_sigma_string,
+                        );
                     });
-                let calibration_points = torque_calibration_points(tab);
+                let calibration_steps = torque_calibration_steps(tab);
                 let calibration_active = tab.active_torque_calibration.is_some();
                 let calibration_ready =
-                    calibration_points.is_some() && self.latest_loadcell_grams.is_some();
+                    calibration_steps.is_some() && self.latest_loadcell_grams.is_some();
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -1642,18 +1789,29 @@ impl MyApp {
                     {
                         stop_calibration = true;
                     }
-                    if let Some(points) = &calibration_points {
-                        ui.small(format!("{} negative points", points.len()));
+                    if let Some(steps) = &calibration_steps {
+                        ui.small(format!("{} negative steps", steps.len()));
                     } else {
                         ui.small("Iq start/end/step must generate only negative points");
                     }
                 });
                 if let Some(calibration) = &tab.active_torque_calibration {
                     ui.small(format!(
-                        "point {}/{} rows {}",
-                        calibration.point_index + 1,
-                        calibration.points.len(),
-                        calibration.rows.len()
+                        "{} step {}/{} rows {} tare {:.2} g",
+                        calibration.phase.label(),
+                        calibration.step_index + 1,
+                        calibration.steps.len(),
+                        calibration.rows.len(),
+                        calibration.tare_g
+                    ));
+                }
+                if let Some(result) = tab.torque_calibration()
+                    && let Some(k) = result.fit_zero_slope_nm_per_iq
+                {
+                    ui.small(format!(
+                        "fit: T = {:.4} * |Iq| Nm, RMSE {:.4} Nm",
+                        k,
+                        result.fit_zero_rmse_nm.unwrap_or(0.0)
                     ));
                 }
                 let calibration_export_label = if tab.active_torque_calibration.is_some() {
@@ -2029,16 +2187,45 @@ fn integer_field(ui: &mut egui::Ui, label: &str, value: &mut usize, text: &mut S
     ui.end_row();
 }
 
-fn torque_calibration_points(tab: &MotorTab) -> Option<Vec<f32>> {
+impl TorqueCalibrationPhase {
+    fn label(self) -> &'static str {
+        match self {
+            TorqueCalibrationPhase::TareCommand => "tare command",
+            TorqueCalibrationPhase::TareSettling { .. } => "tare settle",
+            TorqueCalibrationPhase::TareSampling => "tare sampling",
+            TorqueCalibrationPhase::CommandStep => "command",
+            TorqueCalibrationPhase::Settling { .. } => "settling",
+            TorqueCalibrationPhase::Sampling => "sampling",
+        }
+    }
+}
+
+impl CalibrationDirection {
+    fn label(self) -> &'static str {
+        match self {
+            CalibrationDirection::Descending => "descending",
+            CalibrationDirection::Ascending => "ascending",
+        }
+    }
+}
+
+fn torque_calibration_steps(tab: &MotorTab) -> Option<Vec<TorqueCalibrationStep>> {
     if !(tab.cal_iq_start.is_finite()
         && tab.cal_iq_end.is_finite()
         && tab.cal_iq_step.is_finite()
-        && tab.cal_arm_mm.is_finite())
+        && tab.cal_arm_mm.is_finite()
+        && tab.cal_stability_std_g.is_finite()
+        && tab.cal_outlier_sigma.is_finite())
         || tab.cal_iq_start >= 0.0
         || tab.cal_iq_end >= 0.0
         || tab.cal_iq_step >= 0.0
         || tab.cal_sample_count == 0
+        || tab.cal_repeat_count == 0
         || tab.cal_arm_mm <= 0.0
+        || tab.cal_stability_std_g < 0.0
+        || tab.cal_stability_samples == 0
+        || tab.cal_stability_timeout_ms == 0
+        || tab.cal_outlier_sigma <= 0.0
     {
         return None;
     }
@@ -2056,10 +2243,35 @@ fn torque_calibration_points(tab: &MotorTab) -> Option<Vec<f32>> {
         }
     }
 
-    (!points.is_empty()).then_some(points)
+    if points.is_empty() {
+        return None;
+    }
+
+    let mut steps = Vec::new();
+    for repeat in 0..tab.cal_repeat_count {
+        for &iq_ref in &points {
+            steps.push(TorqueCalibrationStep {
+                iq_ref,
+                repeat,
+                direction: CalibrationDirection::Descending,
+            });
+        }
+        for &iq_ref in points.iter().rev() {
+            steps.push(TorqueCalibrationStep {
+                iq_ref,
+                repeat,
+                direction: CalibrationDirection::Ascending,
+            });
+        }
+    }
+
+    Some(steps)
 }
 
 fn mean(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
     values.iter().sum::<f32>() / values.len() as f32
 }
 
@@ -2075,8 +2287,145 @@ fn stddev(values: &[f32], mean: f32) -> f32 {
     variance.sqrt()
 }
 
+fn stddev_deque(values: &VecDeque<f32>) -> f32 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f32>() / values.len() as f32;
+    let variance = values
+        .iter()
+        .map(|value| (*value - mean).powi(2))
+        .sum::<f32>()
+        / (values.len() - 1) as f32;
+    variance.sqrt()
+}
+
+fn push_sample(values: &mut VecDeque<f32>, value: f32) {
+    if values.len() == values.capacity() {
+        values.pop_front();
+    }
+    values.push_back(value);
+}
+
+fn reject_outliers(values: &[f32], sigma: f32) -> Vec<f32> {
+    if values.len() < 3 {
+        return values.to_vec();
+    }
+    let mean = mean(values);
+    let std = stddev(values, mean);
+    if std <= f32::EPSILON {
+        return values.to_vec();
+    }
+    let filtered: Vec<f32> = values
+        .iter()
+        .copied()
+        .filter(|value| (*value - mean).abs() <= sigma * std)
+        .collect();
+    if filtered.is_empty() {
+        values.to_vec()
+    } else {
+        filtered
+    }
+}
+
 fn grams_to_torque_nm(grams: f32, arm_mm: f32) -> f32 {
     grams * GRAM_FORCE_TO_NEWTON * arm_mm / 1000.0
+}
+
+fn torque_calibration_result(calibration: &TorqueCalibration) -> TorqueCalibrationResult {
+    let (zero_slope, zero_rmse, zero_r2) = zero_intercept_fit(&calibration.rows);
+    let (affine_slope, affine_intercept, affine_rmse, affine_r2) = affine_fit(&calibration.rows);
+    TorqueCalibrationResult {
+        arm_mm: calibration.arm_mm,
+        tare_g: calibration.tare_g,
+        fit_zero_slope_nm_per_iq: zero_slope,
+        fit_affine_slope_nm_per_iq: affine_slope,
+        fit_affine_intercept_nm: affine_intercept,
+        fit_zero_rmse_nm: zero_rmse,
+        fit_affine_rmse_nm: affine_rmse,
+        fit_zero_r2: zero_r2,
+        fit_affine_r2: affine_r2,
+        rows: calibration.rows.clone(),
+    }
+}
+
+fn zero_intercept_fit(rows: &[TorqueCalibrationRow]) -> (Option<f32>, Option<f32>, Option<f32>) {
+    if rows.is_empty() {
+        return (None, None, None);
+    }
+
+    let denom = rows.iter().map(|row| row.iq_ref.abs().powi(2)).sum::<f32>();
+    if denom <= f32::EPSILON {
+        return (None, None, None);
+    }
+
+    let slope = rows
+        .iter()
+        .map(|row| row.iq_ref.abs() * row.torque_nm)
+        .sum::<f32>()
+        / denom;
+    let rmse = fit_rmse(rows, slope, 0.0);
+    let r2 = fit_r2(rows, slope, 0.0);
+    (Some(slope), Some(rmse), Some(r2))
+}
+
+fn affine_fit(
+    rows: &[TorqueCalibrationRow],
+) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
+    if rows.len() < 2 {
+        return (None, None, None, None);
+    }
+
+    let mean_x = rows.iter().map(|row| row.iq_ref.abs()).sum::<f32>() / rows.len() as f32;
+    let mean_y = rows.iter().map(|row| row.torque_nm).sum::<f32>() / rows.len() as f32;
+    let denom = rows
+        .iter()
+        .map(|row| (row.iq_ref.abs() - mean_x).powi(2))
+        .sum::<f32>();
+    if denom <= f32::EPSILON {
+        return (None, None, None, None);
+    }
+
+    let slope = rows
+        .iter()
+        .map(|row| (row.iq_ref.abs() - mean_x) * (row.torque_nm - mean_y))
+        .sum::<f32>()
+        / denom;
+    let intercept = mean_y - slope * mean_x;
+    let rmse = fit_rmse(rows, slope, intercept);
+    let r2 = fit_r2(rows, slope, intercept);
+    (Some(slope), Some(intercept), Some(rmse), Some(r2))
+}
+
+fn fit_rmse(rows: &[TorqueCalibrationRow], slope: f32, intercept: f32) -> f32 {
+    let mse = rows
+        .iter()
+        .map(|row| {
+            let predicted = slope * row.iq_ref.abs() + intercept;
+            (row.torque_nm - predicted).powi(2)
+        })
+        .sum::<f32>()
+        / rows.len() as f32;
+    mse.sqrt()
+}
+
+fn fit_r2(rows: &[TorqueCalibrationRow], slope: f32, intercept: f32) -> f32 {
+    let mean_y = rows.iter().map(|row| row.torque_nm).sum::<f32>() / rows.len() as f32;
+    let ss_res = rows
+        .iter()
+        .map(|row| {
+            let predicted = slope * row.iq_ref.abs() + intercept;
+            (row.torque_nm - predicted).powi(2)
+        })
+        .sum::<f32>();
+    let ss_tot = rows
+        .iter()
+        .map(|row| (row.torque_nm - mean_y).powi(2))
+        .sum::<f32>();
+    if ss_tot <= f32::EPSILON {
+        return 1.0;
+    }
+    1.0 - ss_res / ss_tot
 }
 
 fn push_point(buffer: &mut VecDeque<egui_plot::PlotPoint>, point: egui_plot::PlotPoint) {
@@ -2251,18 +2600,35 @@ fn write_torque_calibration_csv(
     file: &mut File,
     result: &TorqueCalibrationResult,
 ) -> std::io::Result<()> {
+    let summary = format!(
+        "arm_mm,tare_g,zero_slope_nm_per_iq,zero_rmse_nm,zero_r2,affine_slope_nm_per_iq,affine_intercept_nm,affine_rmse_nm,affine_r2\n{},{},{},{},{},{},{},{},{}\n\n",
+        result.arm_mm,
+        result.tare_g,
+        optional_f32(result.fit_zero_slope_nm_per_iq),
+        optional_f32(result.fit_zero_rmse_nm),
+        optional_f32(result.fit_zero_r2),
+        optional_f32(result.fit_affine_slope_nm_per_iq),
+        optional_f32(result.fit_affine_intercept_nm),
+        optional_f32(result.fit_affine_rmse_nm),
+        optional_f32(result.fit_affine_r2),
+    );
+    file.write_all(summary.as_bytes())?;
     file.write_all(
-        b"iq_ref,loadcell_mean_g,loadcell_std_g,sample_count,arm_mm,torque_nm,nm_per_abs_iq\n",
+        b"repeat,direction,iq_ref,raw_mean_g,tare_corrected_mean_g,std_g,sample_count,rejected_samples,arm_mm,torque_nm,nm_per_abs_iq\n",
     )?;
 
     for row in &result.rows {
         let nm_per_abs_iq = row.torque_nm / row.iq_ref.abs();
         let line = format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
+            row.repeat,
+            row.direction.label(),
             row.iq_ref,
-            row.loadcell_mean_g,
-            row.loadcell_std_g,
+            row.raw_mean_g,
+            row.tare_corrected_mean_g,
+            row.std_g,
             row.sample_count,
+            row.rejected_samples,
             result.arm_mm,
             row.torque_nm,
             nm_per_abs_iq
@@ -2271,6 +2637,10 @@ fn write_torque_calibration_csv(
     }
 
     Ok(())
+}
+
+fn optional_f32(value: Option<f32>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
 }
 
 impl SequenceCaptureRow {
