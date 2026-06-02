@@ -819,6 +819,16 @@ impl MyApp {
     }
 
     fn request_initial_parameters(&self, can_id: u8) {
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::RunMode));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::AngleRef));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::SpeedRef));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::TorqueRef));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::VqRef));
+        sleep(Duration::from_millis(1));
         self.send_command_to(can_id, Command::GetParameter(ParameterIndex::AngleKp));
         sleep(Duration::from_millis(1));
         self.send_command_to(can_id, Command::GetParameter(ParameterIndex::SpeedKp));
@@ -828,6 +838,16 @@ impl MyApp {
         self.send_command_to(can_id, Command::GetParameter(ParameterIndex::CurrentKp));
         sleep(Duration::from_millis(1));
         self.send_command_to(can_id, Command::GetParameter(ParameterIndex::CurrentKi));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::Spring));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::Damping));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::SpeedLimit));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::TorqueLimit));
+        sleep(Duration::from_millis(1));
+        self.send_command_to(can_id, Command::GetParameter(ParameterIndex::CurrentLimit));
         sleep(Duration::from_millis(1));
     }
 
