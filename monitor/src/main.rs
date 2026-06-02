@@ -352,6 +352,10 @@ struct MotorTab {
     cal_stability_samples_string: String,
     cal_stability_timeout_ms_string: String,
     cal_outlier_sigma_string: String,
+    cal_release_threshold_g_string: String,
+    cal_release_timeout_ms_string: String,
+    cal_release_step_rad_string: String,
+    cal_release_max_rad_string: String,
 
     angle: f32,
     velocity: f32,
@@ -386,6 +390,10 @@ struct MotorTab {
     cal_stability_samples: usize,
     cal_stability_timeout_ms: usize,
     cal_outlier_sigma: f32,
+    cal_release_threshold_g: f32,
+    cal_release_timeout_ms: usize,
+    cal_release_step_rad: f32,
+    cal_release_max_rad: f32,
     chirp_amplitude: f32,
     chirp_duration: f32,
     chirp_target: ChirpTarget,
@@ -510,6 +518,13 @@ struct TorqueCalibration {
     stability_samples: usize,
     stability_timeout: Duration,
     outlier_sigma: f32,
+    release_threshold_g: f32,
+    release_timeout: Duration,
+    release_step_rad: f32,
+    release_max_rad: f32,
+    release_start_angle: f32,
+    release_target_angle: f32,
+    release_direction: f32,
     phase: TorqueCalibrationPhase,
     rows: Vec<TorqueCalibrationRow>,
     samples: Vec<f32>,
@@ -524,6 +539,11 @@ enum TorqueCalibrationPhase {
         until: Instant,
     },
     TareSampling,
+    ReleaseCommand,
+    WaitingForRelease {
+        timeout_at: Instant,
+        last_step_at: Instant,
+    },
     CommandStep,
     Settling {
         min_until: Instant,
@@ -638,6 +658,10 @@ impl MotorTab {
         let cal_stability_samples = 10;
         let cal_stability_timeout_ms = 3000;
         let cal_outlier_sigma = 3.0;
+        let cal_release_threshold_g = 5.0;
+        let cal_release_timeout_ms = 30000;
+        let cal_release_step_rad = 0.02;
+        let cal_release_max_rad = 0.5;
         let chirp_amplitude = 5.0;
         let chirp_duration = 30.0;
         let step_value = 5.0;
@@ -677,6 +701,10 @@ impl MotorTab {
             cal_stability_samples_string: cal_stability_samples.to_string(),
             cal_stability_timeout_ms_string: cal_stability_timeout_ms.to_string(),
             cal_outlier_sigma_string: cal_outlier_sigma.to_string(),
+            cal_release_threshold_g_string: cal_release_threshold_g.to_string(),
+            cal_release_timeout_ms_string: cal_release_timeout_ms.to_string(),
+            cal_release_step_rad_string: cal_release_step_rad.to_string(),
+            cal_release_max_rad_string: cal_release_max_rad.to_string(),
 
             angle,
             velocity,
@@ -711,6 +739,10 @@ impl MotorTab {
             cal_stability_samples,
             cal_stability_timeout_ms,
             cal_outlier_sigma,
+            cal_release_threshold_g,
+            cal_release_timeout_ms,
+            cal_release_step_rad,
+            cal_release_max_rad,
             chirp_amplitude,
             chirp_duration,
             chirp_target: ChirpTarget::Velocity,
@@ -1239,11 +1271,65 @@ impl MyApp {
                     if calibration.samples.len() >= calibration.sample_count {
                         calibration.tare_g = mean(&calibration.samples);
                         calibration.samples.clear();
+                        calibration.phase = TorqueCalibrationPhase::ReleaseCommand;
+                    }
+                }
+                TorqueCalibrationPhase::ReleaseCommand => {
+                    commands.push((
+                        tab.can_id,
+                        Command::SetParameter(ParameterValue::CurrentRef(0.0)),
+                    ));
+                    commands.push((
+                        tab.can_id,
+                        Command::SetParameter(ParameterValue::RunMode(RunMode::Angle)),
+                    ));
+                    calibration.release_start_angle = tab.angle;
+                    calibration.release_target_angle = tab.angle;
+                    calibration.release_direction = 1.0;
+                    calibration.phase = TorqueCalibrationPhase::WaitingForRelease {
+                        timeout_at: now + calibration.release_timeout,
+                        last_step_at: now,
+                    };
+                }
+                TorqueCalibrationPhase::WaitingForRelease {
+                    timeout_at,
+                    last_step_at,
+                } => {
+                    let released = latest_loadcell_grams
+                        .map(|grams| grams.abs() <= calibration.release_threshold_g)
+                        .unwrap_or(false);
+                    if released || now >= timeout_at {
                         calibration.phase = TorqueCalibrationPhase::CommandStep;
+                    } else if now.saturating_duration_since(last_step_at)
+                        >= calibration.min_settle_duration
+                    {
+                        let next = calibration.release_target_angle
+                            + calibration.release_direction * calibration.release_step_rad.abs();
+                        let offset = next - calibration.release_start_angle;
+                        if offset.abs() > calibration.release_max_rad.abs() {
+                            calibration.release_direction = -calibration.release_direction;
+                            calibration.release_target_angle = calibration.release_start_angle;
+                        } else {
+                            calibration.release_target_angle = next;
+                        }
+                        commands.push((
+                            tab.can_id,
+                            Command::SetParameter(ParameterValue::AngleRef(
+                                calibration.release_target_angle,
+                            )),
+                        ));
+                        calibration.phase = TorqueCalibrationPhase::WaitingForRelease {
+                            timeout_at,
+                            last_step_at: now,
+                        };
                     }
                 }
                 TorqueCalibrationPhase::CommandStep => {
                     if let Some(step) = calibration.steps.get(calibration.step_index).copied() {
+                        commands.push((
+                            tab.can_id,
+                            Command::SetParameter(ParameterValue::RunMode(RunMode::Torque)),
+                        ));
                         commands.push((
                             tab.can_id,
                             Command::SetParameter(ParameterValue::CurrentRef(step.iq_ref)),
@@ -1314,7 +1400,7 @@ impl MyApp {
                             torque_nm: grams_to_torque_nm(corrected_mean, calibration.arm_mm),
                         });
                         calibration.step_index += 1;
-                        calibration.phase = TorqueCalibrationPhase::CommandStep;
+                        calibration.phase = TorqueCalibrationPhase::ReleaseCommand;
                     }
                 }
             }
@@ -1332,6 +1418,7 @@ impl MyApp {
         let Some(steps) = torque_calibration_steps(tab) else {
             return;
         };
+        let release_angle = tab.angle;
 
         tab.last_torque_calibration = None;
         tab.active_torque_calibration = Some(TorqueCalibration {
@@ -1345,6 +1432,13 @@ impl MyApp {
             stability_samples: tab.cal_stability_samples,
             stability_timeout: Duration::from_millis(tab.cal_stability_timeout_ms as u64),
             outlier_sigma: tab.cal_outlier_sigma,
+            release_threshold_g: tab.cal_release_threshold_g,
+            release_timeout: Duration::from_millis(tab.cal_release_timeout_ms as u64),
+            release_step_rad: tab.cal_release_step_rad,
+            release_max_rad: tab.cal_release_max_rad,
+            release_start_angle: release_angle,
+            release_target_angle: release_angle,
+            release_direction: 1.0,
             phase: TorqueCalibrationPhase::TareCommand,
             rows: Vec::new(),
             samples: Vec::new(),
@@ -1354,7 +1448,11 @@ impl MyApp {
 
         self.send_command_to(
             can_id,
-            Command::SetParameter(ParameterValue::RunMode(RunMode::Torque)),
+            Command::SetParameter(ParameterValue::RunMode(RunMode::Angle)),
+        );
+        self.send_command_to(
+            can_id,
+            Command::SetParameter(ParameterValue::AngleRef(release_angle)),
         );
         self.send_command_to(
             can_id,
@@ -1767,6 +1865,30 @@ impl MyApp {
                             "Outlier sigma",
                             &mut tab.cal_outlier_sigma,
                             &mut tab.cal_outlier_sigma_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Release threshold [g]",
+                            &mut tab.cal_release_threshold_g,
+                            &mut tab.cal_release_threshold_g_string,
+                        );
+                        integer_field(
+                            ui,
+                            "Release timeout [ms]",
+                            &mut tab.cal_release_timeout_ms,
+                            &mut tab.cal_release_timeout_ms_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Release step [rad]",
+                            &mut tab.cal_release_step_rad,
+                            &mut tab.cal_release_step_rad_string,
+                        );
+                        motion_field(
+                            ui,
+                            "Release max [rad]",
+                            &mut tab.cal_release_max_rad,
+                            &mut tab.cal_release_max_rad_string,
                         );
                     });
                 let calibration_steps = torque_calibration_steps(tab);
@@ -2193,6 +2315,8 @@ impl TorqueCalibrationPhase {
             TorqueCalibrationPhase::TareCommand => "tare command",
             TorqueCalibrationPhase::TareSettling { .. } => "tare settle",
             TorqueCalibrationPhase::TareSampling => "tare sampling",
+            TorqueCalibrationPhase::ReleaseCommand => "release command",
+            TorqueCalibrationPhase::WaitingForRelease { .. } => "releasing",
             TorqueCalibrationPhase::CommandStep => "command",
             TorqueCalibrationPhase::Settling { .. } => "settling",
             TorqueCalibrationPhase::Sampling => "sampling",
@@ -2215,7 +2339,10 @@ fn torque_calibration_steps(tab: &MotorTab) -> Option<Vec<TorqueCalibrationStep>
         && tab.cal_iq_step.is_finite()
         && tab.cal_arm_mm.is_finite()
         && tab.cal_stability_std_g.is_finite()
-        && tab.cal_outlier_sigma.is_finite())
+        && tab.cal_outlier_sigma.is_finite()
+        && tab.cal_release_threshold_g.is_finite()
+        && tab.cal_release_step_rad.is_finite()
+        && tab.cal_release_max_rad.is_finite())
         || tab.cal_iq_start >= 0.0
         || tab.cal_iq_end >= 0.0
         || tab.cal_iq_step >= 0.0
@@ -2226,6 +2353,10 @@ fn torque_calibration_steps(tab: &MotorTab) -> Option<Vec<TorqueCalibrationStep>
         || tab.cal_stability_samples == 0
         || tab.cal_stability_timeout_ms == 0
         || tab.cal_outlier_sigma <= 0.0
+        || tab.cal_release_threshold_g < 0.0
+        || tab.cal_release_timeout_ms == 0
+        || tab.cal_release_step_rad <= 0.0
+        || tab.cal_release_max_rad <= 0.0
     {
         return None;
     }
