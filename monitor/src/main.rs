@@ -362,6 +362,7 @@ struct MotorTab {
     velocity: f32,
     torque: f32,
     vq: f32,
+    measured_angle: Option<f32>,
     sent_angle_ref: f32,
     sent_velocity_ref: f32,
     sent_torque_ref: f32,
@@ -528,7 +529,6 @@ struct TorqueCalibration {
     release_start_angle: f32,
     release_target_angle: f32,
     release_direction: f32,
-    release_last_abs_g: Option<f32>,
     approach_target_angle: f32,
     phase: TorqueCalibrationPhase,
     rows: Vec<TorqueCalibrationRow>,
@@ -722,6 +722,7 @@ impl MotorTab {
             velocity,
             torque,
             vq,
+            measured_angle: None,
             sent_angle_ref: angle,
             sent_velocity_ref: velocity,
             sent_torque_ref: torque,
@@ -842,6 +843,7 @@ impl MotorTab {
     fn apply_response(&mut self, response: &ResponseBody) {
         match response {
             ResponseBody::MotorStatus(x) => {
+                self.measured_angle = Some(x.angle);
                 if !self.is_plotting
                     || matches!(
                         self.plot_type,
@@ -1296,10 +1298,12 @@ impl MyApp {
                         tab.can_id,
                         Command::SetParameter(ParameterValue::RunMode(RunMode::Angle)),
                     ));
-                    calibration.release_start_angle = tab.angle;
-                    calibration.release_target_angle = tab.angle;
+                    let release_angle = tab
+                        .measured_angle
+                        .unwrap_or(calibration.release_target_angle);
+                    calibration.release_start_angle = release_angle;
+                    calibration.release_target_angle = release_angle;
                     calibration.release_direction = 1.0;
-                    calibration.release_last_abs_g = latest_loadcell_grams.map(f32::abs);
                     calibration.phase = TorqueCalibrationPhase::WaitingForRelease {
                         timeout_at: now + calibration.release_timeout,
                         last_step_at: now,
@@ -1317,15 +1321,6 @@ impl MyApp {
                     } else if now.saturating_duration_since(last_step_at)
                         >= calibration.min_settle_duration
                     {
-                        if let Some(abs_g) = latest_loadcell_grams.map(f32::abs) {
-                            if let Some(last_abs_g) = calibration.release_last_abs_g
-                                && abs_g > last_abs_g
-                            {
-                                calibration.release_direction = -calibration.release_direction;
-                                calibration.release_target_angle = calibration.release_start_angle;
-                            }
-                            calibration.release_last_abs_g = Some(abs_g);
-                        }
                         let next = calibration.release_target_angle
                             + calibration.release_direction * calibration.release_step_rad.abs();
                         let offset = next - calibration.release_start_angle;
@@ -1478,7 +1473,9 @@ impl MyApp {
         let Some(steps) = torque_calibration_steps(tab) else {
             return;
         };
-        let release_angle = tab.angle;
+        let Some(release_angle) = tab.measured_angle else {
+            return;
+        };
 
         tab.last_torque_calibration = None;
         tab.active_torque_calibration = Some(TorqueCalibration {
@@ -1500,7 +1497,6 @@ impl MyApp {
             release_start_angle: release_angle,
             release_target_angle: release_angle,
             release_direction: 1.0,
-            release_last_abs_g: None,
             approach_target_angle: release_angle,
             phase: TorqueCalibrationPhase::TareCommand,
             rows: Vec::new(),
@@ -1962,8 +1958,9 @@ impl MyApp {
                     });
                 let calibration_steps = torque_calibration_steps(tab);
                 let calibration_active = tab.active_torque_calibration.is_some();
-                let calibration_ready =
-                    calibration_steps.is_some() && self.latest_loadcell_grams.is_some();
+                let calibration_ready = calibration_steps.is_some()
+                    && self.latest_loadcell_grams.is_some()
+                    && tab.measured_angle.is_some();
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
