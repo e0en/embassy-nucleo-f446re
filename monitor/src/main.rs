@@ -572,7 +572,6 @@ struct TorqueCalibrationStep {
 #[derive(Clone, Copy)]
 enum CalibrationDirection {
     Descending,
-    Ascending,
 }
 
 #[derive(Clone, Copy)]
@@ -657,11 +656,11 @@ impl MotorTab {
         let motion_torque = 0.0;
         let motion_kp = 0.0;
         let motion_kd = 0.0;
-        let cal_iq_start = -0.1;
-        let cal_iq_end = -2.0;
-        let cal_iq_step = -0.1;
+        let cal_iq_start = -0.2;
+        let cal_iq_end = -1.5;
+        let cal_iq_step = -0.2;
         let cal_settle_ms = 500;
-        let cal_sample_count = 10;
+        let cal_sample_count = 5;
         let cal_arm_mm = 100.0;
         let cal_repeat_count = 3;
         let cal_stability_std_g = 2.0;
@@ -1978,7 +1977,7 @@ impl MyApp {
                         stop_calibration = true;
                     }
                     if let Some(steps) = &calibration_steps {
-                        ui.small(format!("{} negative steps", steps.len()));
+                        ui.small(format!("{} measurements", steps.len()));
                     } else {
                         ui.small("Iq start/end/step must generate only negative points");
                     }
@@ -2396,7 +2395,6 @@ impl CalibrationDirection {
     fn label(self) -> &'static str {
         match self {
             CalibrationDirection::Descending => "descending",
-            CalibrationDirection::Ascending => "ascending",
         }
     }
 }
@@ -2455,13 +2453,6 @@ fn torque_calibration_steps(tab: &MotorTab) -> Option<Vec<TorqueCalibrationStep>
                 iq_ref,
                 repeat,
                 direction: CalibrationDirection::Descending,
-            });
-        }
-        for &iq_ref in points.iter().rev() {
-            steps.push(TorqueCalibrationStep {
-                iq_ref,
-                repeat,
-                direction: CalibrationDirection::Ascending,
             });
         }
     }
