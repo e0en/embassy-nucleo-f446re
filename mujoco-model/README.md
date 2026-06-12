@@ -16,6 +16,32 @@ simulate mujoco-model/actuator.xml
 
 제어 입력 `actuator_motor`의 범위는 `-1`부터 `1`까지입니다. `gear="1"`이므로 입력값은 그대로 joint에 걸리는 토크 스케일로 사용됩니다.
 
+## uv simulator 실행
+
+이 폴더는 `uv` Python 프로젝트이기도 합니다. MuJoCo viewer를 띄우고 actuator에 명령을 넣으려면 아래처럼 실행합니다.
+
+```bash
+cd mujoco-model
+uv run actuator-sim --mode sine --amplitude 0.5 --frequency 1.0
+```
+
+macOS에서는 MuJoCo viewer 요구사항 때문에 실행 스크립트가 자동으로 `mjpython`으로 재실행됩니다.
+
+사용 가능한 구동 모드는 `hold`, `step`, `sine`, `chirp`입니다.
+
+```bash
+uv run actuator-sim --mode step --amplitude 0.5 --step-time 1.0
+uv run actuator-sim --mode chirp --amplitude 0.5 --duration 20.0 --chirp-start 0.1 --chirp-end 5.0
+```
+
+GUI 없이 모델 로드와 구동 루프만 확인하려면 `--no-viewer`를 사용합니다.
+
+```bash
+uv run actuator-sim --no-viewer --mode step --duration 2.0
+```
+
+시뮬레이터는 `actuator_angle`, `actuator_velocity`, `actuator_torque` 센서 값을 주기적으로 출력합니다.
+
 ## SysID 로그로 튜닝할 파라미터
 
 `monitor/`의 chirp 또는 step capture CSV는 아래 컬럼을 저장합니다.

@@ -1,0 +1,16 @@
+[project]
+name = "mujoco-actuator-sim"
+version = "0.1.0"
+description = "Minimal MuJoCo viewer for the actuator model"
+requires-python = ">=3.11"
+dependencies = [
+    "mujoco>=3.3",
+    "numpy>=2",
+]
+
+[project.scripts]
+actuator-sim = "mujoco_actuator_sim:main"
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9.0"]
+build-backend = "uv_build"
