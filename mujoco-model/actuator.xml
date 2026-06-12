@@ -17,9 +17,10 @@
       <geom name="base" type="box" size="0.04 0.04 0.01" rgba="0.25 0.25 0.25 1"/>
 
       <body name="actuator_link" pos="0 0 0.02">
-        <inertial pos="0.06 0 0" mass="0.02" diaginertia="0.00002 0.00008 0.00008"/>
+        <inertial pos="0 0 0" mass="0.15" diaginertia="0.0000684375 0.000046875 0.0000684375"/>
         <joint name="actuator_joint" class="actuator_hinge" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
-        <geom name="link" class="actuator_hinge" type="capsule" fromto="0 0 0 0.12 0 0" size="0.01" rgba="0.2 0.45 0.8 1"/>
+        <geom name="link" class="actuator_hinge" type="cylinder" fromto="0 -0.03 0 0 0.03 0" size="0.025" rgba="0.2 0.45 0.8 1"/>
+        <geom name="visual_arm" type="capsule" fromto="0 0.03 0.025 0 0.03 0.12" size="0.004" mass="0" contype="0" conaffinity="0" rgba="0.95 0.55 0.1 1"/>
       </body>
     </body>
   </worldbody>

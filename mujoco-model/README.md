@@ -6,6 +6,8 @@
 
 - `actuator.xml`: hinge joint 1개와 motor actuator 1개로 구성된 단독 실행 가능한 MuJoCo 모델
 
+기본 actuator 형상은 지름 50 mm, 높이 60 mm, 질량 150 g인 원통으로 정의되어 있습니다. 원통 중심축은 joint 회전축인 Y축과 일치합니다. 회전 확인용 `visual_arm`은 한쪽 끝면에서 반지름 방향으로 뻗은 질량 0 표시용 geom이며 동역학에는 영향을 주지 않습니다.
+
 ## 실행
 
 MuJoCo viewer 또는 `simulate`에서 바로 열 수 있습니다.
