@@ -13,7 +13,7 @@ import mujoco
 import numpy as np
 
 
-DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "actuator.xml"
+DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "actuator_standalone.xml"
 MJPYTHON_REEXEC_ENV = "MUJOCO_ACTUATOR_SIM_MJPYTHON"
 
 

@@ -4,19 +4,20 @@
 
 ## 파일
 
-- `actuator.xml`: hinge joint 1개와 motor actuator 1개로 구성된 단독 실행 가능한 MuJoCo 모델
+- `actuator.xml`: 다른 MJCF에서 `<include>`로 재사용할 `gm3506` actuator default class
+- `actuator_standalone.xml`: `actuator.xml`의 class로 테스트용 단일 축을 만든 MuJoCo 모델
 
-기본 actuator 형상은 지름 50 mm, 높이 60 mm, 질량 150 g인 원통으로 정의되어 있습니다. 원통 중심축은 joint 회전축인 Y축과 일치합니다. 회전 확인용 `visual_arm`은 한쪽 끝면에서 반지름 방향으로 뻗은 질량 0 표시용 geom이며 동역학에는 영향을 주지 않습니다.
+단독 테스트 모델에서는 높이 60 mm housing을 고정하고, 회전 확인용 `visual_arm`만 `actuator_joint`에 붙어 움직입니다. `visual_arm`은 질량 0 표시용 geom이라 동역학에는 영향을 주지 않습니다. 회전 출력부의 동역학은 테스트 모델의 `actuator_output` 관성값으로 표현합니다.
 
 ## 실행
 
-MuJoCo viewer 또는 `simulate`에서 바로 열 수 있습니다.
+MuJoCo viewer 또는 `simulate`에서 standalone 모델을 바로 열 수 있습니다.
 
 ```bash
-simulate mujoco-model/actuator.xml
+simulate mujoco-model/actuator_standalone.xml
 ```
 
-제어 입력 `actuator_motor`의 범위는 `-1`부터 `1`까지입니다. `gear="1"`이므로 입력값은 그대로 joint에 걸리는 토크 스케일로 사용됩니다.
+제어 입력 `actuator_motor`는 position actuator의 목표 각도이며 범위는 `-3.14`부터 `3.14`까지입니다.
 
 ## uv simulator 실행
 
@@ -56,42 +57,48 @@ sequence_kind,sequence_target,sequence_value,timestamp_ms,row_kind,command_targe
 
 | 대상 | XML 위치 | 로그에서 주로 쓰는 값 |
 | --- | --- | --- |
-| 토크 스케일 | `actuator_motor gear` | `TorqueRef`, `torque`, `i_q` |
+| Position gain | `gm3506 position kp` | `AngleRef`, `angle` |
 | 명령 제한 | `actuator_motor ctrlrange` | `command_value` |
-| 출력 토크 제한 | `actuator_motor forcerange` | 포화된 `torque`, `velocity` 응답 |
-| 입력 지연 | `actuator_motor delay` | command row와 status row 사이의 응답 지연 |
-| 회전자 관성 | `actuator_joint armature` | torque step의 `velocity` 상승 기울기 |
-| 링크/부하 관성 | `actuator_link inertial` | torque step의 `velocity` 상승 기울기 |
-| 점성 마찰 | `actuator_joint damping` | chirp의 `velocity` 응답 |
-| 정지 마찰 | `actuator_joint frictionloss` | 작은 step에서 움직이기 시작하는 `torque` |
+| 출력 토크 제한 | `gm3506 position forcerange` | 포화된 `torque`, `velocity` 응답 |
+| 회전자 관성 | `gm3506 joint armature` | step의 `velocity` 상승 기울기 |
+| 출력/부하 관성 | `actuator_output inertial` | step의 `velocity` 상승 기울기 |
+| 점성 마찰 | `gm3506 joint damping` | chirp의 `velocity` 응답 |
+| 정지 마찰 | `gm3506 joint frictionloss` | 작은 step에서 움직이기 시작하는 `torque` |
 
-`sequence_target`이 `TorqueRef`인 로그는 actuator 자체 식별에 가장 직접적입니다. `SpeedRef`와 `AngleRef` 로그는 firmware의 외부 제어 루프 응답까지 포함하므로, 먼저 `TorqueRef`로 위 파라미터를 맞춘 뒤 제어기 튜닝에 사용하세요.
-
-권장 순서는 `delay`, `gear`, 관성(`armature`, `inertial`), 마찰(`damping`, `frictionloss`), 제한(`ctrlrange`, `forcerange`)입니다. 입력을 전류[A]로 넣을 경우 `gear`를 토크 상수[Nm/A]로 두고 `ctrlrange`를 전류 제한으로 맞춥니다. 입력을 토크[Nm]로 넣을 경우 `gear="1"`을 유지하고 `ctrlrange`와 `forcerange`를 토크 제한으로 맞춥니다.
+권장 순서는 position gain(`kp`, `kv`), 관성(`armature`, `inertial`), 마찰(`damping`, `frictionloss`), 제한(`ctrlrange`, `forcerange`)입니다.
 
 `sensor`의 `actuator_angle`, `actuator_velocity`, `actuator_torque`는 monitor 로그의 `angle`, `velocity`, `torque`와 비교하기 위한 출력입니다.
 
 ## 외부 로봇 모델에 가져다 쓰기
 
-다른 MJCF에 붙일 때는 보통 아래 부분만 가져가면 됩니다.
-
-1. `<default class="actuator_hinge">` 블록
-2. 구동되는 body의 `<inertial>` 값
-3. `<actuator>` 안의 `<motor>` 정의
-4. 필요한 경우 `<sensor>` 안의 비교용 센서 정의
-
-예시:
+다른 MJCF에서는 루트 `<mujoco>` 아래에서 default class를 include하고, 각 로봇 joint/body에서 필요한 class를 선택합니다.
 
 ```xml
-<actuator>
-  <motor name="shoulder_motor" joint="shoulder_joint" ctrllimited="true" ctrlrange="-1 1" forcelimited="true" forcerange="-1 1" gear="1" delay="0"/>
-</actuator>
+<mujoco model="robot">
+  <compiler angle="radian"/>
+
+  <include file="path/to/actuator.xml"/>
+
+  <worldbody>
+    <body name="upper_arm">
+      <geom name="elbow_housing" class="gm3506" type="cylinder" fromto="0 -0.03 0 0 0.03 0" size="0.025"/>
+
+      <body name="forearm">
+        <joint name="elbow_joint" class="gm3506" type="hinge" axis="0 1 0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="elbow_motor" class="gm3506" joint="elbow_joint" ctrlrange="-1.69 1.69"/>
+  </actuator>
+</mujoco>
 ```
 
-로봇의 실제 응답에 맞게 `gear`, `delay`, `ctrlrange`, `forcerange`, joint의 `damping`, `armature`, `frictionloss`, body의 `inertial` 값을 조정하세요.
+여러 actuator를 쓰는 로봇에서는 joint, actuator, sensor 이름을 로봇 모델 쪽에서 각각 다르게 정하고, `gm3506` class만 재사용합니다. 로봇의 실제 응답에 맞게 `kp`, `kv`, `ctrlrange`, `forcerange`, joint의 `damping`, `armature`, `frictionloss`, body의 `inertial` 값을 조정하세요.
 
 ## 구성 의도
 
 - 외부 mesh나 texture 없이 동작
-- actuator 동작 확인에 필요한 body, joint, geom만 포함
-- 복사해서 다른 로봇 모델에 붙이기 쉬운 class 기반 정의 사용
+- 단독 모델에는 actuator 동작 확인에 필요한 body, joint, geom만 포함
+- 로봇 모델에서 이름 충돌 없이 쓰기 쉬운 class 기반 정의 사용

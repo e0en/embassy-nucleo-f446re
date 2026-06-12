@@ -1,0 +1,29 @@
+<mujoco model="minimal_actuator">
+  <option integrator="implicitfast" timestep="0.005" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+
+  <compiler angle="radian" autolimits="true"/>
+
+  <include file="actuator.xml"/>
+
+  <worldbody>
+    <light pos="0 0 1.5"/>
+
+    <geom name="housing" class="gm3506" type="cylinder" fromto="0 -0.03 0 0 0.03 0" size="0.025" rgba="0.2 0.45 0.8 1"/>
+
+    <body name="actuator_output" pos="0 0 0">
+      <inertial pos="0 0 0" mass="0.01" diaginertia="0.000001 0.000001 0.000001"/>
+      <joint name="actuator_joint" class="gm3506" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+      <geom name="visual_arm" type="capsule" fromto="0 0.03 0.025 0 0.03 0.12" size="0.004" mass="0" contype="0" conaffinity="0" rgba="0.95 0.55 0.1 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="actuator_motor" class="gm3506" joint="actuator_joint" ctrlrange="-3.14 3.14"/>
+  </actuator>
+
+  <sensor>
+    <jointpos name="actuator_angle" joint="actuator_joint"/>
+    <jointvel name="actuator_velocity" joint="actuator_joint"/>
+    <actuatorfrc name="actuator_torque" actuator="actuator_motor"/>
+  </sensor>
+</mujoco>

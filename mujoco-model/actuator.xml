@@ -1,37 +1,10 @@
-<mujoco model="minimal_actuator">
-  <compiler angle="radian"/>
-
-  <option timestep="0.001" gravity="0 0 -9.81"/>
-
+<mujoco model="actuator">
   <default>
-    <default class="actuator_hinge">
-      <joint limited="true" damping="0.02" armature="0.0005" frictionloss="0.001"/>
-      <geom density="900" friction="0.8 0.02 0.001"/>
+    <default class="gm3506">
+      <geom contype="0" conaffinity="0"/>
+      <joint damping="0.60" frictionloss="0.052" armature="0.028"/>
+      <!-- Position gains and force limits are starting points for simulation tuning. -->
+      <position kp="998.22" kv="2.731" forcerange="-2.94 2.94"/>
     </default>
   </default>
-
-  <worldbody>
-    <light pos="0 0 1.5"/>
-
-    <body name="actuator_base" pos="0 0 0">
-      <geom name="base" type="box" size="0.04 0.04 0.01" rgba="0.25 0.25 0.25 1"/>
-
-      <body name="actuator_link" pos="0 0 0.02">
-        <inertial pos="0 0 0" mass="0.15" diaginertia="0.0000684375 0.000046875 0.0000684375"/>
-        <joint name="actuator_joint" class="actuator_hinge" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
-        <geom name="link" class="actuator_hinge" type="cylinder" fromto="0 -0.03 0 0 0.03 0" size="0.025" rgba="0.2 0.45 0.8 1"/>
-        <geom name="visual_arm" type="capsule" fromto="0 0.03 0.025 0 0.03 0.12" size="0.004" mass="0" contype="0" conaffinity="0" rgba="0.95 0.55 0.1 1"/>
-      </body>
-    </body>
-  </worldbody>
-
-  <actuator>
-    <motor name="actuator_motor" joint="actuator_joint" ctrllimited="true" ctrlrange="-1 1" forcelimited="true" forcerange="-1 1" gear="1" delay="0"/>
-  </actuator>
-
-  <sensor>
-    <jointpos name="actuator_angle" joint="actuator_joint"/>
-    <jointvel name="actuator_velocity" joint="actuator_joint"/>
-    <actuatorfrc name="actuator_torque" actuator="actuator_motor"/>
-  </sensor>
 </mujoco>
