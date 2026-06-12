@@ -404,6 +404,7 @@ struct MotorTab {
     step_target: ChirpTarget,
 
     run_mode: RunMode,
+    ui_tab: MotorUiTab,
     plot_type: PlotType,
     plot_points_1: VecDeque<egui_plot::PlotPoint>,
     plot_points_2: VecDeque<egui_plot::PlotPoint>,
@@ -619,6 +620,15 @@ enum SequenceUiRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MotorUiTab {
+    Control,
+    Motion,
+    Calibration,
+    Excitation,
+    Maintenance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChirpTarget {
     Angle,
     Velocity,
@@ -763,6 +773,7 @@ impl MotorTab {
             step_target: ChirpTarget::Velocity,
 
             run_mode: RunMode::Impedance,
+            ui_tab: MotorUiTab::Control,
             plot_type: PlotType::Angle,
             plot_points_1: VecDeque::with_capacity(MAX_PLOT_POINTS),
             plot_points_2: VecDeque::with_capacity(MAX_PLOT_POINTS),
@@ -1623,565 +1634,666 @@ impl MyApp {
             let mut start_calibration = false;
             let mut stop_calibration = false;
 
+            let plot_height = 260.0;
+            let control_height = (ui.available_height() - plot_height - 16.0).max(160.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(control_height)
+                .show(ui, |ui| {
+                    let tab = &mut self.tabs[selected_index];
+
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Active motor: 0x{:02X}", tab.can_id));
+                        let name_label = ui.label("Rename to CAN ID");
+                        ui.text_edit_singleline(&mut tab.rename_can_id_string)
+                            .labelled_by(name_label.id);
+                        let parsed_rename_id = tab.rename_can_id_string.parse::<u8>().ok();
+                        let can_rename = parsed_rename_id
+                            .map(|new_id| new_id == tab.can_id || !other_can_ids.contains(&new_id))
+                            .unwrap_or(false);
+                        if ui
+                            .add_enabled(can_rename, egui::Button::new("Set on motor"))
+                            .clicked()
+                        {
+                            rename_to = parsed_rename_id;
+                        }
+                    });
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(&mut tab.ui_tab, MotorUiTab::Control, "Control");
+                        ui.selectable_value(&mut tab.ui_tab, MotorUiTab::Motion, "Motion");
+                        ui.selectable_value(
+                            &mut tab.ui_tab,
+                            MotorUiTab::Calibration,
+                            "Calibration",
+                        );
+                        ui.selectable_value(&mut tab.ui_tab, MotorUiTab::Excitation, "Excitation");
+                        ui.selectable_value(
+                            &mut tab.ui_tab,
+                            MotorUiTab::Maintenance,
+                            "Maintenance",
+                        );
+                    });
+
+                    ui.separator();
+
+                    match tab.ui_tab {
+                        MotorUiTab::Control => {
+                            let old_mode = tab.run_mode;
+                            ui.label("Run mode");
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(
+                                    &mut tab.run_mode,
+                                    RunMode::Impedance,
+                                    "Impedance",
+                                );
+                                ui.selectable_value(&mut tab.run_mode, RunMode::Angle, "Angle");
+                                ui.selectable_value(
+                                    &mut tab.run_mode,
+                                    RunMode::Velocity,
+                                    "Velocity",
+                                );
+                                ui.selectable_value(&mut tab.run_mode, RunMode::Torque, "Torque");
+                                ui.selectable_value(&mut tab.run_mode, RunMode::Voltage, "Voltage");
+                            });
+                            if old_mode != tab.run_mode {
+                                queued_commands.push(Command::SetParameter(
+                                    ParameterValue::RunMode(tab.run_mode),
+                                ));
+                            }
+
+                            ui.separator();
+                            ui.label("Feedback");
+                            ui.horizontal(|ui| {
+                                if ui.button("Start feedback").clicked() {
+                                    queued_commands.push(Command::SetFeedbackType(
+                                        tab.current_feedback_type(),
+                                    ));
+                                    queued_commands.push(Command::RequestStatus(HOST_CAN_ID));
+                                }
+
+                                if ui.button("Send status request").clicked() {
+                                    queued_commands.push(Command::RequestStatus(HOST_CAN_ID));
+                                }
+
+                                if ui.button("Refresh parameters").clicked() {
+                                    request_initial_parameters = true;
+                                }
+                            });
+
+                            ui.horizontal(|ui| {
+                                let name_label = ui.label("Feedback interval");
+                                ui.text_edit_singleline(&mut tab.feedback_interval_string)
+                                    .labelled_by(name_label.id);
+
+                                let parsed_interval =
+                                    tab.feedback_interval_string.parse::<u8>().ok();
+                                if ui
+                                    .add_enabled(
+                                        parsed_interval.is_some(),
+                                        egui::Button::new("Set interval"),
+                                    )
+                                    .clicked()
+                                    && let Some(period) = parsed_interval
+                                {
+                                    queued_commands.push(Command::SetFeedbackInterval(period));
+                                }
+
+                                ui.label("raw ticks");
+                            });
+
+                            ui.separator();
+                            ui.label("Motor");
+                            ui.horizontal(|ui| {
+                                if ui.button("disable").clicked() {
+                                    if tab.active_sequence.is_some() {
+                                        sequence_request = Some(SequenceUiRequest::Stop);
+                                        tab.active_sequence = None;
+                                    }
+                                    queued_commands.push(Command::Stop);
+                                }
+                                if ui.button("enable").clicked() {
+                                    queued_commands.push(Command::Enable);
+                                }
+                            });
+
+                            ui.separator();
+                            egui::Grid::new(format!("params-{}", tab.can_id))
+                                .num_columns(3)
+                                .spacing([40.0, 4.0])
+                                .show(ui, |ui| {
+                                    param_row(
+                                        ui,
+                                        "Angle Ref",
+                                        &mut tab.angle,
+                                        &mut tab.angle_string,
+                                        &mut queued_commands,
+                                        ParameterValue::AngleRef,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Velocity Ref",
+                                        &mut tab.velocity,
+                                        &mut tab.velocity_string,
+                                        &mut queued_commands,
+                                        ParameterValue::SpeedRef,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Torque Ref [Nm]",
+                                        &mut tab.torque,
+                                        &mut tab.torque_string,
+                                        &mut queued_commands,
+                                        ParameterValue::TorqueRef,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "V_q Ref",
+                                        &mut tab.vq,
+                                        &mut tab.vq_string,
+                                        &mut queued_commands,
+                                        ParameterValue::VqRef,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Angle K_p",
+                                        &mut tab.angle_kp,
+                                        &mut tab.angle_kp_string,
+                                        &mut queued_commands,
+                                        ParameterValue::AngleKp,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Speed K_p",
+                                        &mut tab.speed_kp,
+                                        &mut tab.speed_kp_string,
+                                        &mut queued_commands,
+                                        ParameterValue::SpeedKp,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Speed K_i",
+                                        &mut tab.speed_ki,
+                                        &mut tab.speed_ki_string,
+                                        &mut queued_commands,
+                                        ParameterValue::SpeedKi,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Current K_p",
+                                        &mut tab.iq_kp,
+                                        &mut tab.iq_kp_string,
+                                        &mut queued_commands,
+                                        ParameterValue::CurrentKp,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Current K_i",
+                                        &mut tab.iq_ki,
+                                        &mut tab.iq_ki_string,
+                                        &mut queued_commands,
+                                        ParameterValue::CurrentKi,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Spring",
+                                        &mut tab.spring,
+                                        &mut tab.spring_string,
+                                        &mut queued_commands,
+                                        ParameterValue::Spring,
+                                    );
+                                    param_row(
+                                        ui,
+                                        "Damping",
+                                        &mut tab.damping,
+                                        &mut tab.damping_string,
+                                        &mut queued_commands,
+                                        ParameterValue::Damping,
+                                    );
+                                });
+                        }
+
+                        MotorUiTab::Motion => {
+                            ui.label("Motion Control");
+                            egui::Grid::new(format!("motion-{}", tab.can_id))
+                                .num_columns(2)
+                                .spacing([40.0, 4.0])
+                                .show(ui, |ui| {
+                                    motion_field(
+                                        ui,
+                                        "Position [rad]",
+                                        &mut tab.motion_angle,
+                                        &mut tab.motion_angle_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Velocity [rad/s]",
+                                        &mut tab.motion_velocity,
+                                        &mut tab.motion_velocity_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Torque [Nm]",
+                                        &mut tab.motion_torque,
+                                        &mut tab.motion_torque_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Kp [Nm/rad]",
+                                        &mut tab.motion_kp,
+                                        &mut tab.motion_kp_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Kd [Nm/(rad/s)]",
+                                        &mut tab.motion_kd,
+                                        &mut tab.motion_kd_string,
+                                    );
+                                });
+                            let motion_valid = [
+                                tab.motion_angle,
+                                tab.motion_velocity,
+                                tab.motion_torque,
+                                tab.motion_kp,
+                                tab.motion_kd,
+                            ]
+                            .iter()
+                            .all(|value| value.is_finite());
+                            if ui
+                                .add_enabled(motion_valid, egui::Button::new("Send motion"))
+                                .clicked()
+                            {
+                                queued_commands.push(Command::MotionControl(MotionControl {
+                                    angle: tab.motion_angle,
+                                    velocity: tab.motion_velocity,
+                                    torque: tab.motion_torque,
+                                    kp: tab.motion_kp,
+                                    kd: tab.motion_kd,
+                                }));
+                            }
+                        }
+
+                        MotorUiTab::Calibration => {
+                            ui.label("Current-Torque Calibration");
+                            ui.horizontal(|ui| {
+                                ui.label("Loadcell");
+                                ui.monospace(&self.loadcell_status);
+                            });
+                            egui::Grid::new(format!("torque-cal-{}", tab.can_id))
+                                .num_columns(2)
+                                .spacing([40.0, 4.0])
+                                .show(ui, |ui| {
+                                    motion_field(
+                                        ui,
+                                        "Iq start",
+                                        &mut tab.cal_iq_start,
+                                        &mut tab.cal_iq_start_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Iq end",
+                                        &mut tab.cal_iq_end,
+                                        &mut tab.cal_iq_end_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Iq step",
+                                        &mut tab.cal_iq_step,
+                                        &mut tab.cal_iq_step_string,
+                                    );
+                                    integer_field(
+                                        ui,
+                                        "Settle [ms]",
+                                        &mut tab.cal_settle_ms,
+                                        &mut tab.cal_settle_ms_string,
+                                    );
+                                    integer_field(
+                                        ui,
+                                        "Samples",
+                                        &mut tab.cal_sample_count,
+                                        &mut tab.cal_sample_count_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Arm [mm]",
+                                        &mut tab.cal_arm_mm,
+                                        &mut tab.cal_arm_mm_string,
+                                    );
+                                    integer_field(
+                                        ui,
+                                        "Repeats",
+                                        &mut tab.cal_repeat_count,
+                                        &mut tab.cal_repeat_count_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Stable std [g]",
+                                        &mut tab.cal_stability_std_g,
+                                        &mut tab.cal_stability_std_g_string,
+                                    );
+                                    integer_field(
+                                        ui,
+                                        "Stable samples",
+                                        &mut tab.cal_stability_samples,
+                                        &mut tab.cal_stability_samples_string,
+                                    );
+                                    integer_field(
+                                        ui,
+                                        "Stable timeout [ms]",
+                                        &mut tab.cal_stability_timeout_ms,
+                                        &mut tab.cal_stability_timeout_ms_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Outlier sigma",
+                                        &mut tab.cal_outlier_sigma,
+                                        &mut tab.cal_outlier_sigma_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Release threshold [g]",
+                                        &mut tab.cal_release_threshold_g,
+                                        &mut tab.cal_release_threshold_g_string,
+                                    );
+                                    integer_field(
+                                        ui,
+                                        "Release timeout [ms]",
+                                        &mut tab.cal_release_timeout_ms,
+                                        &mut tab.cal_release_timeout_ms_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Release step [rad]",
+                                        &mut tab.cal_release_step_rad,
+                                        &mut tab.cal_release_step_rad_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Release max [rad]",
+                                        &mut tab.cal_release_max_rad,
+                                        &mut tab.cal_release_max_rad_string,
+                                    );
+                                    motion_field(
+                                        ui,
+                                        "Contact threshold [g]",
+                                        &mut tab.cal_contact_threshold_g,
+                                        &mut tab.cal_contact_threshold_g_string,
+                                    );
+                                });
+                            let calibration_steps = torque_calibration_steps(tab);
+                            let calibration_active = tab.active_torque_calibration.is_some();
+                            let calibration_ready = calibration_steps.is_some()
+                                && self.latest_loadcell_grams.is_some()
+                                && tab.measured_angle.is_some();
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        calibration_ready && !calibration_active,
+                                        egui::Button::new("Start calibration"),
+                                    )
+                                    .clicked()
+                                {
+                                    start_calibration = true;
+                                }
+                                if ui
+                                    .add_enabled(
+                                        calibration_active,
+                                        egui::Button::new("Stop calibration"),
+                                    )
+                                    .clicked()
+                                {
+                                    stop_calibration = true;
+                                }
+                                if let Some(steps) = &calibration_steps {
+                                    ui.small(format!("{} measurements", steps.len()));
+                                } else {
+                                    ui.small(
+                                        "Iq start/end/step must generate only negative points",
+                                    );
+                                }
+                            });
+                            if let Some(calibration) = &tab.active_torque_calibration {
+                                ui.small(format!(
+                                    "{} step {}/{} rows {} tare {:.2} g",
+                                    calibration.phase.label(),
+                                    calibration.step_index + 1,
+                                    calibration.steps.len(),
+                                    calibration.rows.len(),
+                                    calibration.tare_g
+                                ));
+                            }
+                            if let Some(result) = tab.torque_calibration()
+                                && let Some(k) = result.fit_zero_slope_nm_per_iq
+                            {
+                                ui.small(format!(
+                                    "fit: T = {:.4} * |Iq| Nm, RMSE {:.4} Nm",
+                                    k,
+                                    result.fit_zero_rmse_nm.unwrap_or(0.0)
+                                ));
+                            }
+                            let calibration_export_label =
+                                if tab.active_torque_calibration.is_some() {
+                                    "Export active calibration"
+                                } else {
+                                    "Export last calibration"
+                                };
+                            if ui
+                                .add_enabled(
+                                    tab.has_torque_calibration(),
+                                    egui::Button::new(calibration_export_label),
+                                )
+                                .clicked()
+                            {
+                                calibration_export_requested = true;
+                            }
+                        }
+
+                        MotorUiTab::Excitation => {
+                            ui.label("Chirp");
+                            ui.add_enabled_ui(!tab.step_active(), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(
+                                        &mut tab.chirp_target,
+                                        ChirpTarget::Angle,
+                                        "Angle",
+                                    );
+                                    ui.selectable_value(
+                                        &mut tab.chirp_target,
+                                        ChirpTarget::Velocity,
+                                        "Velocity",
+                                    );
+                                    ui.selectable_value(
+                                        &mut tab.chirp_target,
+                                        ChirpTarget::Torque,
+                                        "Torque",
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    let amplitude_label = ui.label("Amplitude");
+                                    ui.text_edit_singleline(&mut tab.chirp_amplitude_string)
+                                        .labelled_by(amplitude_label.id);
+                                    let amplitude_valid = tab
+                                        .chirp_amplitude_string
+                                        .parse::<f32>()
+                                        .map(|value| {
+                                            tab.chirp_amplitude = value;
+                                            value.is_finite() && value > 0.0
+                                        })
+                                        .unwrap_or(false);
+
+                                    let duration_label = ui.label("Duration [s]");
+                                    ui.text_edit_singleline(&mut tab.chirp_duration_string)
+                                        .labelled_by(duration_label.id);
+                                    let duration_valid = tab
+                                        .chirp_duration_string
+                                        .parse::<f32>()
+                                        .map(|value| {
+                                            tab.chirp_duration = value;
+                                            value.is_finite() && value > 0.0
+                                        })
+                                        .unwrap_or(false);
+
+                                    let can_start_chirp = amplitude_valid
+                                        && duration_valid
+                                        && !tab.excitation_active();
+                                    if ui
+                                        .add_enabled(
+                                            can_start_chirp,
+                                            egui::Button::new("Start chirp"),
+                                        )
+                                        .clicked()
+                                    {
+                                        let sequence = ActiveSequence::Chirp {
+                                            target: tab.chirp_target,
+                                            amplitude: tab.chirp_amplitude,
+                                            duration: Duration::from_secs_f32(tab.chirp_duration),
+                                        };
+                                        tab.run_mode = sequence.run_mode();
+                                        tab.set_sequence_value(tab.chirp_target, 0.0);
+                                        tab.active_sequence = Some(sequence);
+                                        tab.start_capture(sequence);
+                                        sequence_request = Some(SequenceUiRequest::Start(sequence));
+                                    }
+
+                                    if ui
+                                        .add_enabled(
+                                            tab.chirp_active(),
+                                            egui::Button::new("Stop chirp"),
+                                        )
+                                        .clicked()
+                                    {
+                                        let target = tab
+                                            .active_sequence_target()
+                                            .unwrap_or(tab.chirp_target);
+                                        tab.active_sequence = None;
+                                        tab.set_sequence_value(target, 0.0);
+                                        sequence_request = Some(SequenceUiRequest::Stop);
+                                    }
+                                });
+                            });
+                            ui.small(format!(
+                                "{:.1} -> {:.1} Hz logarithmic sweep on {}",
+                                CHIRP_START_FREQ_HZ,
+                                CHIRP_END_FREQ_HZ,
+                                tab.chirp_target.label()
+                            ));
+
+                            ui.separator();
+                            ui.label("Step");
+                            ui.add_enabled_ui(!tab.chirp_active(), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(
+                                        &mut tab.step_target,
+                                        ChirpTarget::Angle,
+                                        "Angle",
+                                    );
+                                    ui.selectable_value(
+                                        &mut tab.step_target,
+                                        ChirpTarget::Velocity,
+                                        "Velocity",
+                                    );
+                                    ui.selectable_value(
+                                        &mut tab.step_target,
+                                        ChirpTarget::Torque,
+                                        "Torque",
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    let value_label = ui.label("Value");
+                                    ui.text_edit_singleline(&mut tab.step_value_string)
+                                        .labelled_by(value_label.id);
+                                    let step_valid = tab
+                                        .step_value_string
+                                        .parse::<f32>()
+                                        .map(|value| {
+                                            tab.step_value = value;
+                                            value.is_finite()
+                                        })
+                                        .unwrap_or(false);
+
+                                    if ui
+                                        .add_enabled(
+                                            step_valid && !tab.excitation_active(),
+                                            egui::Button::new("Send step"),
+                                        )
+                                        .clicked()
+                                    {
+                                        let sequence = ActiveSequence::Step {
+                                            target: tab.step_target,
+                                            value: tab.step_value,
+                                        };
+                                        tab.run_mode = sequence.run_mode();
+                                        tab.set_sequence_value(tab.step_target, tab.step_value);
+                                        tab.active_sequence = Some(sequence);
+                                        tab.start_capture(sequence);
+                                        sequence_request = Some(SequenceUiRequest::Start(sequence));
+                                    }
+
+                                    if ui
+                                        .add_enabled(
+                                            tab.step_active(),
+                                            egui::Button::new("Clear step"),
+                                        )
+                                        .clicked()
+                                    {
+                                        let target =
+                                            tab.active_sequence_target().unwrap_or(tab.step_target);
+                                        tab.set_sequence_value(target, 0.0);
+                                        tab.active_sequence = None;
+                                        sequence_request = Some(SequenceUiRequest::Stop);
+                                    }
+                                });
+                            });
+                            ui.small(format!("Send a held step on {}", tab.step_target.label()));
+
+                            ui.separator();
+                            let sequence_export_label = if tab.active_capture.is_some() {
+                                "Export active test capture"
+                            } else {
+                                "Export last test capture"
+                            };
+                            if ui
+                                .add_enabled(
+                                    tab.has_sequence_capture(),
+                                    egui::Button::new(sequence_export_label),
+                                )
+                                .clicked()
+                            {
+                                sequence_export_requested = true;
+                            }
+                        }
+
+                        MotorUiTab::Maintenance => {
+                            ui.label("Maintenance");
+                            ui.horizontal(|ui| {
+                                if ui.button("Set zero").clicked() {
+                                    queued_commands.push(Command::SetZeroPosition);
+                                }
+                                ui.small("Use current primary/secondary encoder angles as zero");
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Save settings").clicked() {
+                                    queued_commands.push(Command::SaveParameters);
+                                }
+                                ui.small("Persist current motor settings to flash");
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Retune motor").clicked() {
+                                    queued_commands.push(Command::RunMotorTuning);
+                                }
+                                ui.small("Clear stored calibration and reboot into tuning");
+                            });
+                        }
+                    }
+                });
+
+            ui.separator();
+
             {
                 let tab = &mut self.tabs[selected_index];
-
-                ui.horizontal(|ui| {
-                    ui.label(format!("Active motor: 0x{:02X}", tab.can_id));
-                    let name_label = ui.label("Rename to CAN ID");
-                    ui.text_edit_singleline(&mut tab.rename_can_id_string)
-                        .labelled_by(name_label.id);
-                    let parsed_rename_id = tab.rename_can_id_string.parse::<u8>().ok();
-                    let can_rename = parsed_rename_id
-                        .map(|new_id| new_id == tab.can_id || !other_can_ids.contains(&new_id))
-                        .unwrap_or(false);
-                    if ui
-                        .add_enabled(can_rename, egui::Button::new("Set on motor"))
-                        .clicked()
-                    {
-                        rename_to = parsed_rename_id;
-                    }
-                });
-
-                let old_mode = tab.run_mode;
-                ui.label("Run mode");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut tab.run_mode, RunMode::Impedance, "Impedance");
-                    ui.selectable_value(&mut tab.run_mode, RunMode::Angle, "Angle");
-                    ui.selectable_value(&mut tab.run_mode, RunMode::Velocity, "Velocity");
-                    ui.selectable_value(&mut tab.run_mode, RunMode::Torque, "Torque");
-                    ui.selectable_value(&mut tab.run_mode, RunMode::Voltage, "Voltage");
-                });
-                if old_mode != tab.run_mode {
-                    queued_commands
-                        .push(Command::SetParameter(ParameterValue::RunMode(tab.run_mode)));
-                }
-
-                ui.separator();
-                ui.label("Feedback");
-                ui.horizontal(|ui| {
-                    if ui.button("Start feedback").clicked() {
-                        queued_commands.push(Command::SetFeedbackType(tab.current_feedback_type()));
-                        queued_commands.push(Command::RequestStatus(HOST_CAN_ID));
-                    }
-
-                    if ui.button("Send status request").clicked() {
-                        queued_commands.push(Command::RequestStatus(HOST_CAN_ID));
-                    }
-
-                    if ui.button("Refresh parameters").clicked() {
-                        request_initial_parameters = true;
-                    }
-
-                    if ui.button("Apply plot type").clicked() {
-                        queued_commands.push(Command::SetFeedbackType(tab.current_feedback_type()));
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    let name_label = ui.label("Feedback interval");
-                    ui.text_edit_singleline(&mut tab.feedback_interval_string)
-                        .labelled_by(name_label.id);
-
-                    let parsed_interval = tab.feedback_interval_string.parse::<u8>().ok();
-                    if ui
-                        .add_enabled(parsed_interval.is_some(), egui::Button::new("Set interval"))
-                        .clicked()
-                        && let Some(period) = parsed_interval
-                    {
-                        queued_commands.push(Command::SetFeedbackInterval(period));
-                    }
-
-                    ui.label("raw ticks");
-                });
-
-                egui::Grid::new(format!("params-{}", tab.can_id))
-                    .num_columns(3)
-                    .spacing([40.0, 4.0])
-                    .show(ui, |ui| {
-                        param_row(
-                            ui,
-                            "Angle Ref",
-                            &mut tab.angle,
-                            &mut tab.angle_string,
-                            &mut queued_commands,
-                            ParameterValue::AngleRef,
-                        );
-                        param_row(
-                            ui,
-                            "Velocity Ref",
-                            &mut tab.velocity,
-                            &mut tab.velocity_string,
-                            &mut queued_commands,
-                            ParameterValue::SpeedRef,
-                        );
-                        param_row(
-                            ui,
-                            "Torque Ref [Nm]",
-                            &mut tab.torque,
-                            &mut tab.torque_string,
-                            &mut queued_commands,
-                            ParameterValue::TorqueRef,
-                        );
-                        param_row(
-                            ui,
-                            "V_q Ref",
-                            &mut tab.vq,
-                            &mut tab.vq_string,
-                            &mut queued_commands,
-                            ParameterValue::VqRef,
-                        );
-                        param_row(
-                            ui,
-                            "Angle K_p",
-                            &mut tab.angle_kp,
-                            &mut tab.angle_kp_string,
-                            &mut queued_commands,
-                            ParameterValue::AngleKp,
-                        );
-                        param_row(
-                            ui,
-                            "Speed K_p",
-                            &mut tab.speed_kp,
-                            &mut tab.speed_kp_string,
-                            &mut queued_commands,
-                            ParameterValue::SpeedKp,
-                        );
-                        param_row(
-                            ui,
-                            "Speed K_i",
-                            &mut tab.speed_ki,
-                            &mut tab.speed_ki_string,
-                            &mut queued_commands,
-                            ParameterValue::SpeedKi,
-                        );
-                        param_row(
-                            ui,
-                            "Current K_p",
-                            &mut tab.iq_kp,
-                            &mut tab.iq_kp_string,
-                            &mut queued_commands,
-                            ParameterValue::CurrentKp,
-                        );
-                        param_row(
-                            ui,
-                            "Current K_i",
-                            &mut tab.iq_ki,
-                            &mut tab.iq_ki_string,
-                            &mut queued_commands,
-                            ParameterValue::CurrentKi,
-                        );
-                        param_row(
-                            ui,
-                            "Spring",
-                            &mut tab.spring,
-                            &mut tab.spring_string,
-                            &mut queued_commands,
-                            ParameterValue::Spring,
-                        );
-                        param_row(
-                            ui,
-                            "Damping",
-                            &mut tab.damping,
-                            &mut tab.damping_string,
-                            &mut queued_commands,
-                            ParameterValue::Damping,
-                        );
-                    });
-
-                ui.separator();
-                ui.label("Motion Control");
-                egui::Grid::new(format!("motion-{}", tab.can_id))
-                    .num_columns(2)
-                    .spacing([40.0, 4.0])
-                    .show(ui, |ui| {
-                        motion_field(
-                            ui,
-                            "Position [rad]",
-                            &mut tab.motion_angle,
-                            &mut tab.motion_angle_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Velocity [rad/s]",
-                            &mut tab.motion_velocity,
-                            &mut tab.motion_velocity_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Torque [Nm]",
-                            &mut tab.motion_torque,
-                            &mut tab.motion_torque_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Kp [Nm/rad]",
-                            &mut tab.motion_kp,
-                            &mut tab.motion_kp_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Kd [Nm/(rad/s)]",
-                            &mut tab.motion_kd,
-                            &mut tab.motion_kd_string,
-                        );
-                    });
-                let motion_valid = [
-                    tab.motion_angle,
-                    tab.motion_velocity,
-                    tab.motion_torque,
-                    tab.motion_kp,
-                    tab.motion_kd,
-                ]
-                .iter()
-                .all(|value| value.is_finite());
-                if ui
-                    .add_enabled(motion_valid, egui::Button::new("Send motion"))
-                    .clicked()
-                {
-                    queued_commands.push(Command::MotionControl(MotionControl {
-                        angle: tab.motion_angle,
-                        velocity: tab.motion_velocity,
-                        torque: tab.motion_torque,
-                        kp: tab.motion_kp,
-                        kd: tab.motion_kd,
-                    }));
-                }
-
-                ui.separator();
-                ui.label("Current-Torque Calibration");
-                ui.horizontal(|ui| {
-                    ui.label("Loadcell");
-                    ui.monospace(&self.loadcell_status);
-                });
-                egui::Grid::new(format!("torque-cal-{}", tab.can_id))
-                    .num_columns(2)
-                    .spacing([40.0, 4.0])
-                    .show(ui, |ui| {
-                        motion_field(
-                            ui,
-                            "Iq start",
-                            &mut tab.cal_iq_start,
-                            &mut tab.cal_iq_start_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Iq end",
-                            &mut tab.cal_iq_end,
-                            &mut tab.cal_iq_end_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Iq step",
-                            &mut tab.cal_iq_step,
-                            &mut tab.cal_iq_step_string,
-                        );
-                        integer_field(
-                            ui,
-                            "Settle [ms]",
-                            &mut tab.cal_settle_ms,
-                            &mut tab.cal_settle_ms_string,
-                        );
-                        integer_field(
-                            ui,
-                            "Samples",
-                            &mut tab.cal_sample_count,
-                            &mut tab.cal_sample_count_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Arm [mm]",
-                            &mut tab.cal_arm_mm,
-                            &mut tab.cal_arm_mm_string,
-                        );
-                        integer_field(
-                            ui,
-                            "Repeats",
-                            &mut tab.cal_repeat_count,
-                            &mut tab.cal_repeat_count_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Stable std [g]",
-                            &mut tab.cal_stability_std_g,
-                            &mut tab.cal_stability_std_g_string,
-                        );
-                        integer_field(
-                            ui,
-                            "Stable samples",
-                            &mut tab.cal_stability_samples,
-                            &mut tab.cal_stability_samples_string,
-                        );
-                        integer_field(
-                            ui,
-                            "Stable timeout [ms]",
-                            &mut tab.cal_stability_timeout_ms,
-                            &mut tab.cal_stability_timeout_ms_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Outlier sigma",
-                            &mut tab.cal_outlier_sigma,
-                            &mut tab.cal_outlier_sigma_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Release threshold [g]",
-                            &mut tab.cal_release_threshold_g,
-                            &mut tab.cal_release_threshold_g_string,
-                        );
-                        integer_field(
-                            ui,
-                            "Release timeout [ms]",
-                            &mut tab.cal_release_timeout_ms,
-                            &mut tab.cal_release_timeout_ms_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Release step [rad]",
-                            &mut tab.cal_release_step_rad,
-                            &mut tab.cal_release_step_rad_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Release max [rad]",
-                            &mut tab.cal_release_max_rad,
-                            &mut tab.cal_release_max_rad_string,
-                        );
-                        motion_field(
-                            ui,
-                            "Contact threshold [g]",
-                            &mut tab.cal_contact_threshold_g,
-                            &mut tab.cal_contact_threshold_g_string,
-                        );
-                    });
-                let calibration_steps = torque_calibration_steps(tab);
-                let calibration_active = tab.active_torque_calibration.is_some();
-                let calibration_ready = calibration_steps.is_some()
-                    && self.latest_loadcell_grams.is_some()
-                    && tab.measured_angle.is_some();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            calibration_ready && !calibration_active,
-                            egui::Button::new("Start calibration"),
-                        )
-                        .clicked()
-                    {
-                        start_calibration = true;
-                    }
-                    if ui
-                        .add_enabled(calibration_active, egui::Button::new("Stop calibration"))
-                        .clicked()
-                    {
-                        stop_calibration = true;
-                    }
-                    if let Some(steps) = &calibration_steps {
-                        ui.small(format!("{} measurements", steps.len()));
-                    } else {
-                        ui.small("Iq start/end/step must generate only negative points");
-                    }
-                });
-                if let Some(calibration) = &tab.active_torque_calibration {
-                    ui.small(format!(
-                        "{} step {}/{} rows {} tare {:.2} g",
-                        calibration.phase.label(),
-                        calibration.step_index + 1,
-                        calibration.steps.len(),
-                        calibration.rows.len(),
-                        calibration.tare_g
-                    ));
-                }
-                if let Some(result) = tab.torque_calibration()
-                    && let Some(k) = result.fit_zero_slope_nm_per_iq
-                {
-                    ui.small(format!(
-                        "fit: T = {:.4} * |Iq| Nm, RMSE {:.4} Nm",
-                        k,
-                        result.fit_zero_rmse_nm.unwrap_or(0.0)
-                    ));
-                }
-                let calibration_export_label = if tab.active_torque_calibration.is_some() {
-                    "Export active calibration"
-                } else {
-                    "Export last calibration"
-                };
-                if ui
-                    .add_enabled(
-                        tab.has_torque_calibration(),
-                        egui::Button::new(calibration_export_label),
-                    )
-                    .clicked()
-                {
-                    calibration_export_requested = true;
-                }
-
-                ui.horizontal(|ui| {
-                    if ui.button("disable").clicked() {
-                        if tab.active_sequence.is_some() {
-                            sequence_request = Some(SequenceUiRequest::Stop);
-                            tab.active_sequence = None;
-                        }
-                        queued_commands.push(Command::Stop);
-                    }
-                    if ui.button("enable").clicked() {
-                        queued_commands.push(Command::Enable);
-                    }
-                });
-
-                ui.separator();
-                ui.label("Chirp");
-                ui.add_enabled_ui(!tab.step_active(), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Angle, "Angle");
-                        ui.selectable_value(
-                            &mut tab.chirp_target,
-                            ChirpTarget::Velocity,
-                            "Velocity",
-                        );
-                        ui.selectable_value(&mut tab.chirp_target, ChirpTarget::Torque, "Torque");
-                    });
-                    ui.horizontal(|ui| {
-                        let amplitude_label = ui.label("Amplitude");
-                        ui.text_edit_singleline(&mut tab.chirp_amplitude_string)
-                            .labelled_by(amplitude_label.id);
-                        let amplitude_valid = tab
-                            .chirp_amplitude_string
-                            .parse::<f32>()
-                            .map(|value| {
-                                tab.chirp_amplitude = value;
-                                value.is_finite() && value > 0.0
-                            })
-                            .unwrap_or(false);
-
-                        let duration_label = ui.label("Duration [s]");
-                        ui.text_edit_singleline(&mut tab.chirp_duration_string)
-                            .labelled_by(duration_label.id);
-                        let duration_valid = tab
-                            .chirp_duration_string
-                            .parse::<f32>()
-                            .map(|value| {
-                                tab.chirp_duration = value;
-                                value.is_finite() && value > 0.0
-                            })
-                            .unwrap_or(false);
-
-                        let can_start_chirp =
-                            amplitude_valid && duration_valid && !tab.excitation_active();
-                        if ui
-                            .add_enabled(can_start_chirp, egui::Button::new("Start chirp"))
-                            .clicked()
-                        {
-                            let sequence = ActiveSequence::Chirp {
-                                target: tab.chirp_target,
-                                amplitude: tab.chirp_amplitude,
-                                duration: Duration::from_secs_f32(tab.chirp_duration),
-                            };
-                            tab.run_mode = sequence.run_mode();
-                            tab.set_sequence_value(tab.chirp_target, 0.0);
-                            tab.active_sequence = Some(sequence);
-                            tab.start_capture(sequence);
-                            sequence_request = Some(SequenceUiRequest::Start(sequence));
-                        }
-
-                        if ui
-                            .add_enabled(tab.chirp_active(), egui::Button::new("Stop chirp"))
-                            .clicked()
-                        {
-                            let target = tab.active_sequence_target().unwrap_or(tab.chirp_target);
-                            tab.active_sequence = None;
-                            tab.set_sequence_value(target, 0.0);
-                            sequence_request = Some(SequenceUiRequest::Stop);
-                        }
-                    });
-                });
-                ui.small(format!(
-                    "{:.1} -> {:.1} Hz logarithmic sweep on {}",
-                    CHIRP_START_FREQ_HZ,
-                    CHIRP_END_FREQ_HZ,
-                    tab.chirp_target.label()
-                ));
-
-                ui.separator();
-                ui.label("Step");
-                ui.add_enabled_ui(!tab.chirp_active(), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut tab.step_target, ChirpTarget::Angle, "Angle");
-                        ui.selectable_value(
-                            &mut tab.step_target,
-                            ChirpTarget::Velocity,
-                            "Velocity",
-                        );
-                        ui.selectable_value(&mut tab.step_target, ChirpTarget::Torque, "Torque");
-                    });
-                    ui.horizontal(|ui| {
-                        let value_label = ui.label("Value");
-                        ui.text_edit_singleline(&mut tab.step_value_string)
-                            .labelled_by(value_label.id);
-                        let step_valid = tab
-                            .step_value_string
-                            .parse::<f32>()
-                            .map(|value| {
-                                tab.step_value = value;
-                                value.is_finite()
-                            })
-                            .unwrap_or(false);
-
-                        if ui
-                            .add_enabled(
-                                step_valid && !tab.excitation_active(),
-                                egui::Button::new("Send step"),
-                            )
-                            .clicked()
-                        {
-                            let sequence = ActiveSequence::Step {
-                                target: tab.step_target,
-                                value: tab.step_value,
-                            };
-                            tab.run_mode = sequence.run_mode();
-                            tab.set_sequence_value(tab.step_target, tab.step_value);
-                            tab.active_sequence = Some(sequence);
-                            tab.start_capture(sequence);
-                            sequence_request = Some(SequenceUiRequest::Start(sequence));
-                        }
-
-                        if ui
-                            .add_enabled(tab.step_active(), egui::Button::new("Clear step"))
-                            .clicked()
-                        {
-                            let target = tab.active_sequence_target().unwrap_or(tab.step_target);
-                            tab.set_sequence_value(target, 0.0);
-                            tab.active_sequence = None;
-                            sequence_request = Some(SequenceUiRequest::Stop);
-                        }
-                    });
-                });
-                ui.small(format!("Send a held step on {}", tab.step_target.label()));
-
-                ui.separator();
-                ui.label("Maintenance");
-                ui.horizontal(|ui| {
-                    if ui.button("Set zero").clicked() {
-                        queued_commands.push(Command::SetZeroPosition);
-                    }
-                    ui.small("Use current primary/secondary encoder angles as zero");
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Save settings").clicked() {
-                        queued_commands.push(Command::SaveParameters);
-                    }
-                    ui.small("Persist current motor settings to flash");
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Retune motor").clicked() {
-                        queued_commands.push(Command::RunMotorTuning);
-                    }
-                    ui.small("Clear stored calibration and reboot into tuning");
-                });
-
                 let before = tab.plot_type;
-                ui.label("Plot Type");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Plot Type");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Angle, "Angle");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Velocity, "Velocity");
                     ui.selectable_value(&mut tab.plot_type, PlotType::Torque, "Torque");
@@ -2198,63 +2310,55 @@ impl MyApp {
                     queued_commands.push(Command::SetFeedbackType(tab.current_feedback_type()));
                     tab.clear_plot();
                 }
-                if ui
-                    .button(if tab.is_plotting { "Stop plot" } else { "Plot" })
-                    .clicked()
-                {
-                    if !tab.is_plotting {
-                        tab.clear_plot();
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if tab.is_plotting { "Stop plot" } else { "Plot" })
+                        .clicked()
+                    {
+                        if !tab.is_plotting {
+                            tab.clear_plot();
+                        }
+                        tab.is_plotting = !tab.is_plotting;
                     }
-                    tab.is_plotting = !tab.is_plotting;
-                }
 
-                let export_txt = format!("Export {} samples", tab.plot_points_1.len());
-                if ui
-                    .add_enabled(!tab.plot_points_1.is_empty(), egui::Button::new(export_txt))
-                    .clicked()
-                {
-                    export_requested = true;
-                }
-
-                let sequence_export_label = if tab.active_capture.is_some() {
-                    "Export active test capture"
-                } else {
-                    "Export last test capture"
-                };
-                if ui
-                    .add_enabled(
-                        tab.has_sequence_capture(),
-                        egui::Button::new(sequence_export_label),
-                    )
-                    .clicked()
-                {
-                    sequence_export_requested = true;
-                }
+                    let export_txt = format!("Export {} samples", tab.plot_points_1.len());
+                    if ui
+                        .add_enabled(!tab.plot_points_1.is_empty(), egui::Button::new(export_txt))
+                        .clicked()
+                    {
+                        export_requested = true;
+                    }
+                });
 
                 let points_1: Vec<_> = tab.plot_points_1.iter().copied().collect();
                 let points_2: Vec<_> = tab.plot_points_2.iter().copied().collect();
                 let (line_1_name, line_2_name) = tab.plot_type.plot_line_names();
-                egui_plot::Plot::new(format!("plot-{}", tab.can_id)).show(ui, |plot_ui| {
-                    let line_1 =
-                        egui_plot::Line::new("y1", egui_plot::PlotPoints::Owned(points_1.clone()))
-                            .name(line_1_name)
-                            .style(egui_plot::LineStyle::Solid)
-                            .color(egui::Color32::RED)
-                            .width(2.0);
-                    plot_ui.line(line_1);
-
-                    if let Some(line_2_name) = line_2_name {
-                        let line_2 = egui_plot::Line::new(
-                            "y2",
-                            egui_plot::PlotPoints::Owned(points_2.clone()),
+                egui_plot::Plot::new(format!("plot-{}", tab.can_id))
+                    .height(plot_height)
+                    .show(ui, |plot_ui| {
+                        let line_1 = egui_plot::Line::new(
+                            "y1",
+                            egui_plot::PlotPoints::Owned(points_1.clone()),
                         )
-                        .name(line_2_name)
+                        .name(line_1_name)
                         .style(egui_plot::LineStyle::Solid)
-                        .color(egui::Color32::GREEN)
+                        .color(egui::Color32::RED)
                         .width(2.0);
-                        plot_ui.line(line_2);
-                    }
-                });
+                        plot_ui.line(line_1);
+
+                        if let Some(line_2_name) = line_2_name {
+                            let line_2 = egui_plot::Line::new(
+                                "y2",
+                                egui_plot::PlotPoints::Owned(points_2.clone()),
+                            )
+                            .name(line_2_name)
+                            .style(egui_plot::LineStyle::Solid)
+                            .color(egui::Color32::GREEN)
+                            .width(2.0);
+                            plot_ui.line(line_2);
+                        }
+                    });
             }
 
             for command in queued_commands {
