@@ -1,0 +1,29 @@
+<mujoco model="minimal_actuator">
+  <compiler angle="radian"/>
+
+  <option timestep="0.001" gravity="0 0 -9.81"/>
+
+  <default>
+    <default class="actuator_hinge">
+      <joint limited="true" damping="0.02" armature="0.0005" frictionloss="0.001"/>
+      <geom density="900" friction="0.8 0.02 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 1.5"/>
+
+    <body name="actuator_base" pos="0 0 0">
+      <geom name="base" type="box" size="0.04 0.04 0.01" rgba="0.25 0.25 0.25 1"/>
+
+      <body name="actuator_link" pos="0 0 0.02">
+        <joint name="actuator_joint" class="actuator_hinge" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+        <geom name="link" class="actuator_hinge" type="capsule" fromto="0 0 0 0.12 0 0" size="0.01" rgba="0.2 0.45 0.8 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="actuator_motor" joint="actuator_joint" ctrllimited="true" ctrlrange="-1 1" gear="1"/>
+  </actuator>
+</mujoco>
