@@ -50,6 +50,11 @@ fn torque_nm_to_iq(torque_nm: f32) -> f32 {
 }
 
 #[inline]
+fn output_torque_nm_to_iq(torque_nm: f32) -> f32 {
+    torque_nm / (ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM)
+}
+
+#[inline]
 fn iq_to_torque_nm(iq: f32) -> f32 {
     iq * gm3506::IQ_TO_TORQUE_NM
 }
@@ -57,6 +62,11 @@ fn iq_to_torque_nm(iq: f32) -> f32 {
 #[inline]
 fn output_gain_to_internal_iq_gain(gain: f32) -> f32 {
     gain / (ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM)
+}
+
+#[inline]
+fn motion_gain_to_internal_iq_gain(gain: f32) -> f32 {
+    output_gain_to_internal_iq_gain(gain / ACTUATOR_REDUCTION_RATIO)
 }
 
 macro_rules! dispatch_get_param {
@@ -274,9 +284,9 @@ fn apply_motion_control(command: MotionControl) {
         foc.set_run_mode(foc::controller::RunMode::Impedance);
         foc.set_target_angle(foc_isr::user_to_input_angle(command.angle));
         foc.set_target_velocity(command.velocity * ACTUATOR_REDUCTION_RATIO);
-        foc.set_target_torque(torque_nm_to_iq(command.torque));
-        foc.set_spring(output_gain_to_internal_iq_gain(command.kp));
-        foc.set_damping(output_gain_to_internal_iq_gain(command.kd));
+        foc.set_target_torque(output_torque_nm_to_iq(command.torque));
+        foc.set_spring(motion_gain_to_internal_iq_gain(command.kp));
+        foc.set_damping(motion_gain_to_internal_iq_gain(command.kd));
     });
 }
 

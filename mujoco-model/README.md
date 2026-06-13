@@ -45,29 +45,40 @@ uv run actuator-sim --no-viewer --mode step --duration 2.0
 
 시뮬레이터는 `actuator_angle`, `actuator_velocity`, `actuator_torque` 센서 값을 주기적으로 출력합니다.
 
-## SysID 로그로 튜닝할 파라미터
+## CAN SysID 기반 자동 튜닝
 
-`monitor/`의 chirp 또는 step capture CSV는 아래 컬럼을 저장합니다.
+`actuator-sysid`는 CAN으로 실기기 모터를 MotionControl 모드로 구동하며 데이터를 수집하고, 같은 실행에서 MuJoCo actuator 파라미터를 least-squares로 맞춥니다. sysid 명령은 `angle_ref`만 바꾸고 `dq_ref=0`, `tau_ff=0`으로 고정합니다. 실기기에 보낼 MotionControl의 `kp/kd`는 `--motion-kp`, `--motion-kd`로 지정합니다. 펌웨어와 시뮬레이터 모두 `kp`는 출력축 기준 `Nm/rad`, `kd`는 출력축 기준 `Nm/(rad/s)`로 해석합니다. 튜닝에서는 명령 값을 초기값으로 쓰되, 실제 position 응답에서 유효 `kp/kd`를 다시 추정합니다. `--amplitude`는 angle reference amplitude[rad]입니다. 안전을 위해 실제 구동은 `--yes`를 명시해야 시작됩니다.
 
-```text
-sequence_kind,sequence_target,sequence_value,timestamp_ms,row_kind,command_target,command_value,angle,velocity,torque,temperature,i_q,i_d,debug_kind,debug_value
+```bash
+cd mujoco-model
+uv run actuator-sysid --channel can0 --motor-id 0x0F --amplitude 0.5 --motion-kp 20 --motion-kd 0.5 --duration 30 --yes
 ```
 
-실제 MuJoCo 동역학에 반영되는 최소 튜닝 파라미터는 아래와 같습니다.
+수집만 하려면:
 
-| 대상 | XML 위치 | 로그에서 주로 쓰는 값 |
-| --- | --- | --- |
-| Position gain | `gm3506 position kp` | `AngleRef`, `angle` |
-| 명령 제한 | `actuator_motor ctrlrange` | `command_value` |
-| 출력 토크 제한 | `gm3506 position forcerange` | 포화된 `torque`, `velocity` 응답 |
-| 회전자 관성 | `gm3506 joint armature` | step의 `velocity` 상승 기울기 |
-| 출력/부하 관성 | `actuator_output inertial` | step의 `velocity` 상승 기울기 |
-| 점성 마찰 | `gm3506 joint damping` | chirp의 `velocity` 응답 |
-| 정지 마찰 | `gm3506 joint frictionloss` | 작은 step에서 움직이기 시작하는 `torque` |
+```bash
+uv run actuator-sysid collect --capture sysid_capture.csv --amplitude 0.5 --motion-kp 20 --motion-kd 0.5 --duration 30 --yes
+```
 
-권장 순서는 position gain(`kp`, `kv`), 관성(`armature`, `inertial`), 마찰(`damping`, `frictionloss`), 제한(`ctrlrange`, `forcerange`)입니다.
+이미 수집한 capture를 다시 튜닝하려면:
 
-`sensor`의 `actuator_angle`, `actuator_velocity`, `actuator_torque`는 monitor 로그의 `angle`, `velocity`, `torque`와 비교하기 위한 출력입니다.
+```bash
+uv run actuator-sysid tune --capture sysid_capture.csv
+```
+
+multi-start를 여러 코어로 병렬 실행하려면 `--workers`를 지정합니다. `0`은 사용 가능한 CPU와 `--multi-start` 중 작은 값을 자동으로 씁니다.
+
+```bash
+uv run actuator-sysid tune --capture sysid_capture.csv --multi-start 16 --workers 0
+```
+
+튜닝은 stage fitting으로 진행합니다. 전체 동적 구간에서 `delay_s`를 먼저 맞추고, `small_prbs`/`medium_prbs`/`sweep` 구간에서 유효 Motion gain `kp/kd`를 맞춥니다. 그 다음 `pulses`/`large_prbs` 구간에서 `armature`를 맞추고, `small_prbs`/`medium_prbs`/`sweep` 구간에서 `damping`과 `frictionloss`를 맞춥니다. 각 stage는 multi-start least-squares를 사용합니다.
+
+튜닝 대상은 `joint damping`, `joint frictionloss`, `joint armature`, `delay_s`, `kp`, `kd`입니다. 시뮬레이션 torque는 `tau = kp * (angle_ref - angle) - kd * velocity`로 계산하고 `1.5 Nm`으로 clip합니다. residual은 측정 position과 시뮬레이션 position의 차이만 사용합니다.
+
+최종 출력의 `least-squares cost`는 최적화 내부의 normalized residual 값이라 물리 단위로 해석하기 어렵습니다. 실제 적합 품질은 함께 출력되는 `fit metrics`를 봅니다. `angle_rmse_rad`가 핵심 지표이고, `velocity_rmse_rad_s`, `velocity_corr`는 참고용입니다. 같은 값들은 `actuator_sysid.json`의 `metrics`에도 저장됩니다.
+
+원본 `actuator.xml`에 바로 반영하려면 `--write`를 사용합니다.
 
 ## 외부 로봇 모델에 가져다 쓰기
 

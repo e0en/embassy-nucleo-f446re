@@ -6,10 +6,13 @@ requires-python = ">=3.11"
 dependencies = [
     "mujoco>=3.3",
     "numpy>=2",
+    "python-can>=4.5",
+    "scipy>=1.14",
 ]
 
 [project.scripts]
 actuator-sim = "mujoco_actuator_sim:main"
+actuator-sysid = "mujoco_actuator_sim.sysid:main"
 
 [build-system]
 requires = ["uv_build>=0.8.0,<0.9.0"]
