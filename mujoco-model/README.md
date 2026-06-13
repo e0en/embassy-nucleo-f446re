@@ -76,7 +76,7 @@ uv run actuator-sysid tune --capture sysid_capture.csv --multi-start 16 --worker
 
 튜닝 대상은 `joint damping`, `joint frictionloss`, `joint armature`, `delay_s`, `kp`, `kd`입니다. 시뮬레이션 torque는 `tau = kp * (angle_ref - angle) - kd * velocity`로 계산하고 `1.5 Nm`으로 clip합니다. residual은 측정 position과 시뮬레이션 position의 차이만 사용합니다.
 
-최종 출력의 `least-squares cost`는 최적화 내부의 normalized residual 값이라 물리 단위로 해석하기 어렵습니다. 실제 적합 품질은 함께 출력되는 `fit metrics`를 봅니다. `angle_rmse_rad`가 핵심 지표이고, `velocity_rmse_rad_s`, `velocity_corr`는 참고용입니다. 같은 값들은 `actuator_sysid.json`의 `metrics`에도 저장됩니다.
+최종 출력의 `least-squares cost`는 최적화 내부의 normalized residual 값이라 물리 단위로 해석하기 어렵습니다. 실제 적합 품질은 함께 출력되는 `fit metrics`를 봅니다. `angle_rmse_rad`가 핵심 지표이고, `velocity_rmse_rad_s`, `velocity_corr`는 참고용입니다. 같은 값들은 `actuator_sysid.json`의 `metrics`에도 저장됩니다. 튜닝이 끝나면 phase별 command/measured/simulated angle 비교 plot도 기본적으로 `actuator_sysid_plots.png`에 저장됩니다. 경로를 바꾸려면 `--output-plot`을 지정합니다.
 
 원본 `actuator.xml`에 바로 반영하려면 `--write`를 사용합니다.
 

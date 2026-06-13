@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Minimal MuJoCo viewer for the actuator model"
 requires-python = ">=3.11"
 dependencies = [
+    "matplotlib>=3.11.0",
     "mujoco>=3.3",
     "numpy>=2",
     "python-can>=4.5",

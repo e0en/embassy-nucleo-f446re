@@ -27,6 +27,7 @@ DEFAULT_ACTUATOR_XML = MODEL_DIR / "actuator.xml"
 DEFAULT_CAPTURE = MODEL_DIR / "sysid_capture.csv"
 DEFAULT_TUNED_XML = MODEL_DIR / "actuator_tuned.xml"
 DEFAULT_TUNED_JSON = MODEL_DIR / "actuator_sysid.json"
+DEFAULT_PLOT = MODEL_DIR / "actuator_sysid_plots.png"
 
 HOST_CAN_ID = 0x00
 DEFAULT_MOTOR_CAN_ID = 0x0F
@@ -54,7 +55,7 @@ PARAMETER_NAMES = (
 )
 
 TORQUE_LIMIT_NM = 1.5
-LOWER_BOUNDS = np.array([1e-5, 1e-6, 1e-4, -0.1, 0.1, 1e-4])
+LOWER_BOUNDS = np.array([1e-5, 1e-6, 1e-4, 0.0, 0.1, 1e-4])
 UPPER_BOUNDS = np.array([20.0, 5.0, 1.0, 0.1, 2000.0, 50.0])
 LOG_PARAM_MASK = np.array([True, True, True, False, True, True])
 LOG_MULTI_START_SPREAD = 0.35
@@ -166,6 +167,7 @@ def add_tune_args(parser: argparse.ArgumentParser, include_capture: bool = True)
     parser.add_argument("--actuator", type=Path, default=DEFAULT_ACTUATOR_XML)
     parser.add_argument("--output-xml", type=Path, default=DEFAULT_TUNED_XML)
     parser.add_argument("--output-json", type=Path, default=DEFAULT_TUNED_JSON)
+    parser.add_argument("--output-plot", type=Path, default=DEFAULT_PLOT)
     parser.add_argument("--max-samples", type=int, default=1500)
     parser.add_argument("--max-nfev", type=int, default=200)
     parser.add_argument("--diff-step", type=float, default=0.05)
@@ -250,9 +252,10 @@ def collect(args: argparse.Namespace) -> None:
                     status = decode_status(frame, args.motor_id, args.host_id)
                     if status is None:
                         continue
+                    status_elapsed = time.monotonic() - started_at
                     writer.writerow(
                         {
-                            "t": f"{elapsed:.9f}",
+                            "t": f"{status_elapsed:.9f}",
                             "phase": phase,
                             "command": f"{command:.9g}",
                             "kp": f"{args.motion_kp:.9g}",
@@ -370,16 +373,16 @@ def tune_command(args: argparse.Namespace) -> None:
         args.workers,
     )
     final_cost = stage_results[-1][1].cost
-    metrics = fit_metrics(
-        samples,
-        simulate(samples, args.model, args.actuator, tuned),
-    )
+    sim = simulate(samples, args.model, args.actuator, tuned)
+    metrics = fit_metrics(samples, sim)
 
     print_result(initial, tuned, final_cost, len(samples), stage_results, metrics)
     write_actuator_params(args.actuator, args.output_xml, tuned)
     write_sysid_json(args.output_json, tuned, final_cost, stage_results, metrics)
+    write_phase_plots(args.output_plot, samples, sim)
     print(f"wrote tuned actuator XML: {args.output_xml}")
     print(f"wrote sysid parameters: {args.output_json}")
+    print(f"wrote fit plots: {args.output_plot}")
 
     if args.write:
         write_actuator_params(args.actuator, args.actuator, tuned)
@@ -769,6 +772,58 @@ def fit_metrics(samples: list[Sample], sim: np.ndarray) -> dict[str, object]:
             for phase in phases
         },
     }
+
+
+def write_phase_plots(path: Path, samples: list[Sample], sim: np.ndarray) -> None:
+    if len(samples) == 0 or not np.all(np.isfinite(sim)):
+        return
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    phases = sorted({sample.phase for sample in samples if sample.phase})
+    if not phases:
+        phases = ["all"]
+
+    cols = 2
+    rows = math.ceil(len(phases) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(14, max(3.0 * rows, 4.0)), squeeze=False)
+    measured_angle = np.unwrap(np.array([sample.angle for sample in samples], dtype=float))
+    simulated_angle = np.unwrap(sim[:, 0])
+    command = np.array([sample.command for sample in samples], dtype=float)
+    times = np.array([sample.t for sample in samples], dtype=float)
+
+    for axis, phase in zip(axes.flat, phases):
+        indices = [index for index, sample in enumerate(samples) if phase == "all" or sample.phase == phase]
+        if not indices:
+            axis.set_visible(False)
+            continue
+        index_array = np.array(indices, dtype=int)
+        phase_times = times[index_array] - times[index_array][0]
+        phase_measured = measured_angle[index_array]
+        phase_simulated = simulated_angle[index_array]
+        phase_command = command[index_array]
+        rmse_rad = rmse(phase_simulated - phase_measured)
+
+        axis.plot(phase_times, phase_command, color="0.55", linewidth=1.0, label="command")
+        axis.plot(phase_times, phase_measured, color="tab:blue", linewidth=1.2, label="measured")
+        axis.plot(phase_times, phase_simulated, color="tab:orange", linewidth=1.2, label="simulated")
+        axis.set_title(f"{phase}  angle RMSE={rmse_rad:.4g} rad")
+        axis.set_xlabel("time [s]")
+        axis.set_ylabel("angle [rad]")
+        axis.grid(True, alpha=0.3)
+
+    for axis in axes.flat[len(phases) :]:
+        axis.set_visible(False)
+
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
 def metric_block_for_indices(
