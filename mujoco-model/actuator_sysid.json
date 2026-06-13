@@ -1,0 +1,115 @@
+{
+  "damping": 0.6484037605762246,
+  "frictionloss": 0.03530671646133864,
+  "armature": 0.007531385761505413,
+  "delay_s": 0.01585065490636542,
+  "kp": 105.93620321925259,
+  "kd": 6.839383482155062,
+  "torque_limit": 2.6839871616490116,
+  "least_squares_cost": 295.5694546185797,
+  "stages": [
+    {
+      "name": "delay",
+      "cost": 18623.267602041644,
+      "nfev": 18,
+      "status": 3,
+      "message": "`xtol` termination condition is satisfied."
+    },
+    {
+      "name": "torque_limit",
+      "cost": 674.1348235138298,
+      "nfev": 13,
+      "status": 2,
+      "message": "`ftol` termination condition is satisfied."
+    },
+    {
+      "name": "gains",
+      "cost": 755.8096263738871,
+      "nfev": 19,
+      "status": 3,
+      "message": "`xtol` termination condition is satisfied."
+    },
+    {
+      "name": "armature",
+      "cost": 410.9723688590516,
+      "nfev": 26,
+      "status": 3,
+      "message": "`xtol` termination condition is satisfied."
+    },
+    {
+      "name": "damping_friction",
+      "cost": 295.5694546185797,
+      "nfev": 26,
+      "status": 3,
+      "message": "`xtol` termination condition is satisfied."
+    }
+  ],
+  "metrics": {
+    "simulation_finite": true,
+    "all": {
+      "angle_rmse_rad": 0.06311318074003891,
+      "angle_mae_rad": 0.0502493856186621,
+      "angle_max_abs_rad": 0.23647280889973782,
+      "velocity_rmse_rad_s": 0.655476900457561,
+      "velocity_mae_rad_s": 0.5308168103371831,
+      "velocity_max_abs_rad_s": 3.3425194774157383,
+      "velocity_corr": 0.9714310597559049
+    },
+    "phases": {
+      "large_prbs": {
+        "angle_rmse_rad": 0.07969092123373067,
+        "angle_mae_rad": 0.06486379074937847,
+        "angle_max_abs_rad": 0.23647280889973782,
+        "velocity_rmse_rad_s": 0.5065794834516101,
+        "velocity_mae_rad_s": 0.3480579166433212,
+        "velocity_max_abs_rad_s": 3.040501368250263,
+        "velocity_corr": 0.9893181096575897
+      },
+      "medium_prbs": {
+        "angle_rmse_rad": 0.07887390320613259,
+        "angle_mae_rad": 0.06393882107064934,
+        "angle_max_abs_rad": 0.23459718191554088,
+        "velocity_rmse_rad_s": 0.575013502742639,
+        "velocity_mae_rad_s": 0.42178247894678095,
+        "velocity_max_abs_rad_s": 3.3425194774157383,
+        "velocity_corr": 0.9848739763989456
+      },
+      "pulses": {
+        "angle_rmse_rad": 0.0687790060013848,
+        "angle_mae_rad": 0.05998251866267488,
+        "angle_max_abs_rad": 0.1796088830114756,
+        "velocity_rmse_rad_s": 0.7354188168989579,
+        "velocity_mae_rad_s": 0.5345648250395035,
+        "velocity_max_abs_rad_s": 3.2270556436615525,
+        "velocity_corr": 0.9744017908193526
+      },
+      "settle": {
+        "angle_rmse_rad": 0.03873027496803283,
+        "angle_mae_rad": 0.03859077266621378,
+        "angle_max_abs_rad": 0.07785076489296855,
+        "velocity_rmse_rad_s": 0.7398254763928069,
+        "velocity_mae_rad_s": 0.730611642262053,
+        "velocity_max_abs_rad_s": 2.9067835232797705,
+        "velocity_corr": 0.1821132612853338
+      },
+      "small_prbs": {
+        "angle_rmse_rad": 0.052215459521902936,
+        "angle_mae_rad": 0.04336594201098971,
+        "angle_max_abs_rad": 0.12838784538269365,
+        "velocity_rmse_rad_s": 0.7301141040198832,
+        "velocity_mae_rad_s": 0.5900245460803168,
+        "velocity_max_abs_rad_s": 2.8195538689444843,
+        "velocity_corr": 0.9696311815086482
+      },
+      "sweep": {
+        "angle_rmse_rad": 0.03150500548361771,
+        "angle_mae_rad": 0.02608508044371682,
+        "angle_max_abs_rad": 0.12274254566787657,
+        "velocity_rmse_rad_s": 0.6901415906366762,
+        "velocity_mae_rad_s": 0.6794015265001715,
+        "velocity_max_abs_rad_s": 1.9991718218709276,
+        "velocity_corr": 0.5196864665670755
+      }
+    }
+  }
+}

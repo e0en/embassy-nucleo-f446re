@@ -1,10 +1,9 @@
 <mujoco model="actuator">
   <default>
     <default class="gm3506">
-      <geom contype="0" conaffinity="0"/>
-      <joint damping="0.60" frictionloss="0.052" armature="0.028"/>
-      <!-- Position gains and force limits are starting points for simulation tuning. -->
-      <position kp="998.22" kv="2.731" forcerange="-2.94 2.94"/>
+      <geom contype="0" conaffinity="0" />
+      <joint damping="0.648404" frictionloss="0.0353067" armature="0.00753139" />
+      <position kp="105.936" kv="6.83938" forcerange="-2.68399 2.68399" />
     </default>
   </default>
 </mujoco>
