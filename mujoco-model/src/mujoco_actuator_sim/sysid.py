@@ -44,6 +44,7 @@ MOTION_KP_MIN = 0.0
 MOTION_KP_MAX = 500.0
 MOTION_KD_MIN = 0.0
 MOTION_KD_MAX = 5.0
+ACTUATOR_REDUCTION_RATIO = 19.0
 
 PARAMETER_NAMES = (
     "damping",
@@ -52,14 +53,14 @@ PARAMETER_NAMES = (
     "delay_s",
     "kp",
     "kd",
+    "torque_limit",
 )
 
-TORQUE_LIMIT_NM = 1.5
-LOWER_BOUNDS = np.array([1e-5, 1e-6, 1e-4, 0.0, 0.1, 1e-4])
-UPPER_BOUNDS = np.array([20.0, 5.0, 1.0, 0.1, 2000.0, 50.0])
-LOG_PARAM_MASK = np.array([True, True, True, False, True, True])
+LOWER_BOUNDS = np.array([1e-5, 1e-6, 1e-4, 0.0, 0.1, 1e-4, 0.1])
+UPPER_BOUNDS = np.array([20.0, 5.0, 1.0, 0.1, 2000.0, 50.0, 100.0])
+LOG_PARAM_MASK = np.array([True, True, True, False, True, True, True])
 LOG_MULTI_START_SPREAD = 0.35
-LINEAR_MULTI_START_SPREAD = np.array([0.0, 0.0, 0.0, 0.01, 0.0, 0.0])
+LINEAR_MULTI_START_SPREAD = np.array([0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0])
 
 ANGLE_MIN = -1000.0
 ANGLE_MAX = 1000.0
@@ -79,6 +80,7 @@ class PlantParams:
     delay_s: float
     kp: float
     kd: float
+    torque_limit: float
 
     def as_array(self) -> np.ndarray:
         return np.array(
@@ -89,6 +91,7 @@ class PlantParams:
                 self.delay_s,
                 self.kp,
                 self.kd,
+                self.torque_limit,
             ],
             dtype=float,
         )
@@ -439,6 +442,11 @@ def initial_params(actuator_path: Path, samples: list[Sample]) -> PlantParams:
     position = required(root, ".//position")
     capture_kp = finite_positive_median(sample.kp for sample in samples)
     capture_kd = finite_positive_median(sample.kd for sample in samples)
+    capture_torque_limit = finite_abs_percentile(
+        (sample.torque * ACTUATOR_REDUCTION_RATIO for sample in samples),
+        95.0,
+    )
+    xml_torque_limit = forcerange_limit(position.attrib.get("forcerange"))
 
     return PlantParams(
         damping=float(joint.attrib["damping"]),
@@ -447,6 +455,7 @@ def initial_params(actuator_path: Path, samples: list[Sample]) -> PlantParams:
         delay_s=0.0,
         kp=capture_kp if capture_kp is not None else float(position.attrib.get("kp", 20.0)),
         kd=capture_kd if capture_kd is not None else float(position.attrib.get("kv", 0.5)),
+        torque_limit=capture_torque_limit if capture_torque_limit is not None else xml_torque_limit,
     )
 
 
@@ -455,6 +464,26 @@ def finite_positive_median(values: Iterable[float]) -> float | None:
     if not finite:
         return None
     return float(np.median(np.array(finite, dtype=float)))
+
+
+def finite_abs_percentile(values: Iterable[float], percentile: float) -> float | None:
+    finite = [abs(float(value)) for value in values if math.isfinite(float(value))]
+    if not finite:
+        return None
+    return float(np.percentile(np.array(finite, dtype=float), percentile))
+
+
+def forcerange_limit(value: str | None) -> float:
+    if value is None:
+        return 1.5
+    parts = value.split()
+    if len(parts) != 2:
+        return 1.5
+    try:
+        low, high = (float(part) for part in parts)
+    except ValueError:
+        return 1.5
+    return max(abs(low), abs(high))
 
 
 def tune_stage(
@@ -577,7 +606,7 @@ def tune_staged(
 ) -> tuple[PlantParams, list[tuple[str, OptimizeResult]]]:
     params = initial
     results = []
-    for stage in ("delay", "gains", "armature", "damping_friction"):
+    for stage in ("delay", "torque_limit", "gains", "armature", "damping_friction"):
         result = tune_stage(
             stage,
             params,
@@ -598,7 +627,9 @@ def tune_staged(
 def select_stage_samples(samples: list[Sample], stage: str) -> list[Sample]:
     if not any(sample.phase for sample in samples):
         return rebase_samples(samples)
-    if stage == "gains":
+    if stage == "torque_limit":
+        selected = [sample for sample in samples if sample.phase in {"large_prbs", "pulses"}]
+    elif stage == "gains":
         selected = [sample for sample in samples if sample.phase in {"small_prbs", "medium_prbs", "sweep"}]
     elif stage == "armature":
         selected = [sample for sample in samples if sample.phase in {"large_prbs", "pulses"}]
@@ -635,14 +666,16 @@ def rebase_samples(samples: list[Sample]) -> list[Sample]:
 
 def stage_mask(stage: str) -> np.ndarray:
     if stage == "delay":
-        return np.array([False, False, False, True, False, False])
+        return np.array([False, False, False, True, False, False, False])
+    if stage == "torque_limit":
+        return np.array([False, False, False, False, False, False, True])
     if stage == "gains":
-        return np.array([False, False, False, False, True, True])
+        return np.array([False, False, False, False, True, True, False])
     if stage == "armature":
-        return np.array([False, False, True, False, False, False])
+        return np.array([False, False, True, False, False, False, False])
     if stage == "damping_friction":
-        return np.array([True, True, False, False, False, False])
-    return np.array([True, True, True, True, True, True])
+        return np.array([True, True, False, False, False, False, False])
+    return np.array([True, True, True, True, True, True, True])
 
 
 def packed_bounds(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -948,7 +981,7 @@ def simulate(
 
 def motion_torque(angle_ref: float, angle: float, velocity: float, params: PlantParams) -> float:
     torque = params.kp * (angle_ref - angle) - params.kd * velocity
-    return float(np.clip(torque, -TORQUE_LIMIT_NM, TORQUE_LIMIT_NM))
+    return float(np.clip(torque, -params.torque_limit, params.torque_limit))
 
 
 def write_plant_model(source: Path, destination: Path) -> None:
@@ -1069,7 +1102,7 @@ def write_actuator_params(source: Path, destination: Path, params: PlantParams) 
     position.set("kv", format_param(params.kd))
     position.set(
         "forcerange",
-        f"{format_param(-TORQUE_LIMIT_NM)} {format_param(TORQUE_LIMIT_NM)}",
+        f"{format_param(-params.torque_limit)} {format_param(params.torque_limit)}",
     )
 
     ET.indent(tree, space="  ")
@@ -1094,7 +1127,7 @@ def write_sysid_json(
                     "delay_s": params.delay_s,
                     "kp": params.kp,
                     "kd": params.kd,
-                    "torque_limit": TORQUE_LIMIT_NM,
+                    "torque_limit": params.torque_limit,
                     "least_squares_cost": cost,
                     "stages": [
                         {
@@ -1149,7 +1182,6 @@ def print_result(
     print("\nparameters:")
     for name, before, after in zip(PARAMETER_NAMES, initial.as_array(), tuned.as_array()):
         print(f"  {name:18s} {before:10.6g} -> {after:10.6g}")
-    print(f"  {'torque_limit':18s} {TORQUE_LIMIT_NM:10.6g} fixed")
     print(f"\nleast-squares cost: {cost:.6g}")
     print_metrics(metrics)
     print_bound_warnings(tuned)
