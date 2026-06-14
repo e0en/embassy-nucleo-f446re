@@ -7,7 +7,7 @@
 - `actuator.xml`: 다른 MJCF에서 `<include>`로 재사용할 `gm3506` actuator default class
 - `actuator_standalone.xml`: `actuator.xml`의 class로 테스트용 단일 축을 만든 MuJoCo 모델
 
-단독 테스트 모델에서는 높이 60 mm housing을 고정하고, 회전 확인용 `visual_arm`만 `actuator_joint`에 붙어 움직입니다. `visual_arm`은 질량 0 표시용 geom이라 동역학에는 영향을 주지 않습니다. 회전 출력부의 동역학은 테스트 모델의 `actuator_output` 관성값으로 표현합니다.
+단독 테스트 모델에서는 지름 50 mm, 높이 50 mm housing을 고정하고, 회전 확인용 `visual_arm`만 `actuator_joint`에 붙어 움직입니다. `visual_arm`은 질량 0 표시용 geom이라 동역학에는 영향을 주지 않습니다. 회전 출력부의 동역학은 테스트 모델의 155 g `actuator_output` 관성값으로 표현합니다.
 
 ## 실행
 
