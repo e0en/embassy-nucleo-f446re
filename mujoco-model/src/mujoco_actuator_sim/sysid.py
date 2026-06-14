@@ -606,7 +606,7 @@ def tune_staged(
 ) -> tuple[PlantParams, list[tuple[str, OptimizeResult]]]:
     params = initial
     results = []
-    for stage in ("delay", "torque_limit", "gains", "armature", "damping_friction"):
+    for stage in ("delay", "torque_limit", "armature", "damping_friction"):
         result = tune_stage(
             stage,
             params,
@@ -629,8 +629,6 @@ def select_stage_samples(samples: list[Sample], stage: str) -> list[Sample]:
         return rebase_samples(samples)
     if stage == "torque_limit":
         selected = [sample for sample in samples if sample.phase in {"large_prbs", "pulses"}]
-    elif stage == "gains":
-        selected = [sample for sample in samples if sample.phase in {"small_prbs", "medium_prbs", "sweep"}]
     elif stage == "armature":
         selected = [sample for sample in samples if sample.phase in {"large_prbs", "pulses"}]
     elif stage == "damping_friction":
@@ -669,8 +667,6 @@ def stage_mask(stage: str) -> np.ndarray:
         return np.array([False, False, False, True, False, False, False])
     if stage == "torque_limit":
         return np.array([False, False, False, False, False, False, True])
-    if stage == "gains":
-        return np.array([False, False, False, False, True, True, False])
     if stage == "armature":
         return np.array([False, False, True, False, False, False, False])
     if stage == "damping_friction":
