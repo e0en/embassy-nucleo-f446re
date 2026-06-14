@@ -69,6 +69,11 @@ fn motion_gain_to_internal_iq_gain(gain: f32) -> f32 {
     output_gain_to_internal_iq_gain(gain / ACTUATOR_REDUCTION_RATIO)
 }
 
+#[inline]
+fn internal_iq_gain_to_motion_gain(gain: f32) -> f32 {
+    gain * ACTUATOR_REDUCTION_RATIO * ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM
+}
+
 macro_rules! dispatch_get_param {
     ($p:expr, $( $variant:ident => $value:expr ),* $(,)?) => {
         match $p {
@@ -197,7 +202,14 @@ async fn handle_command(
             foc_isr::with_foc(|foc| foc.stop());
         }
         Command::MotionControl(x) => {
-            apply_motion_control(*x);
+            if has_active_fault() {
+                warn!("MotionControl rejected while fault is active");
+            } else {
+                if take_motor_disarmed_by_fault() {
+                    set_gate_driver_enabled(true).await;
+                }
+                apply_motion_control(*x);
+            }
         }
         Command::SetParameter(ParameterValue::RunMode(m)) => {
             info!("received runmode {}", *m as u8);
@@ -223,6 +235,12 @@ async fn handle_command(
         Command::SetParameter(ParameterValue::CurrentRef(iq_ref)) => {
             foc_isr::with_foc(|foc| foc.set_target_torque(*iq_ref));
         }
+        Command::SetParameter(ParameterValue::Spring(kp)) => {
+            foc_isr::with_foc(|foc| foc.set_spring(motion_gain_to_internal_iq_gain(*kp)));
+        }
+        Command::SetParameter(ParameterValue::Damping(kd)) => {
+            foc_isr::with_foc(|foc| foc.set_damping(motion_gain_to_internal_iq_gain(*kd)));
+        }
         _ => {
             dispatch_set_param!(command,
                 CurrentLimit => set_current_limit,
@@ -231,8 +249,6 @@ async fn handle_command(
                 SpeedKp => set_velocity_kp,
                 SpeedKi => set_velocity_ki,
                 AngleKp => set_angle_kp,
-                Spring => set_spring,
-                Damping => set_damping,
                 VqRef => set_target_voltage,
             );
         }
@@ -262,8 +278,8 @@ async fn handle_command(
                 CurrentKi => foc.current_q_pid.gains.i,
                 CurrentFilter => foc.current_q_filter.time_constant,
                 CurrentLimit => foc.current_limit.unwrap_or(0.0),
-                Spring => foc.target.spring,
-                Damping => foc.target.damping,
+                Spring => internal_iq_gain_to_motion_gain(foc.target.spring),
+                Damping => internal_iq_gain_to_motion_gain(foc.target.damping),
                 VqRef => foc.target.voltage,
                 CurrentRef => foc.user_frame_i_ref(),
             )
@@ -287,6 +303,7 @@ fn apply_motion_control(command: MotionControl) {
         foc.set_target_torque(output_torque_nm_to_iq(command.torque));
         foc.set_spring(motion_gain_to_internal_iq_gain(command.kp));
         foc.set_damping(motion_gain_to_internal_iq_gain(command.kd));
+        foc.enable();
     });
 }
 

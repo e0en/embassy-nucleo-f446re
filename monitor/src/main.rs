@@ -1836,7 +1836,7 @@ impl MyApp {
                                     );
                                     param_row(
                                         ui,
-                                        "Spring",
+                                        "Spring [Nm/rad]",
                                         &mut tab.spring,
                                         &mut tab.spring_string,
                                         &mut queued_commands,
@@ -1844,7 +1844,7 @@ impl MyApp {
                                     );
                                     param_row(
                                         ui,
-                                        "Damping",
+                                        "Damping [Nm/(rad/s)]",
                                         &mut tab.damping,
                                         &mut tab.damping_string,
                                         &mut queued_commands,
