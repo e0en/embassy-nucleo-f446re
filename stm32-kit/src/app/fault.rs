@@ -10,7 +10,6 @@ use crate::foc_isr;
 use super::{DRV_FAULT_POLL_INTERVAL_MS, persistence::GATE_DRIVER};
 
 static DRV_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
-static CAN_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOTOR_DISARMED_BY_FAULT: AtomicBool = AtomicBool::new(false);
 
 fn set_fault_led(led: &mut gpio::Output<'static>, fault_active: bool) {
@@ -54,61 +53,6 @@ pub(crate) async fn drv_fault_monitor_task(
 }
 
 #[derive(Format, Clone, Copy)]
-#[allow(dead_code)]
-enum BusState {
-    Ok,
-    ErrorWarning,
-    ErrorPassive,
-    BusOff,
-}
-
-impl BusState {
-    #[allow(dead_code)]
-    fn is_ok(&self) -> bool {
-        matches!(self, BusState::Ok)
-    }
-}
-
-#[derive(Format, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum CanLastError {
-    None,
-    Stuff,
-    Form,
-    Ack,
-    Bit1Recessive,
-    Bit0Dominant,
-    Crc,
-    NoChange,
-}
-
-impl CanLastError {
-    #[allow(dead_code)]
-    fn is_fault(&self) -> bool {
-        !matches!(self, CanLastError::None | CanLastError::NoChange)
-    }
-}
-
-#[derive(Format, Clone, Copy)]
-#[allow(dead_code)]
-struct FdcanStatus {
-    bus_state: BusState,
-    tx_error_count: u8,
-    rx_error_count: u8,
-    last_error: CanLastError,
-}
-
-impl FdcanStatus {
-    #[allow(dead_code)]
-    fn has_fault(&self) -> bool {
-        !self.bus_state.is_ok()
-            || self.tx_error_count > 0
-            || self.rx_error_count > 0
-            || self.last_error.is_fault()
-    }
-}
-
-#[derive(Format, Clone, Copy)]
 struct FdcanRegisters {
     cccr: u32,
     nbtp: u32,
@@ -136,43 +80,8 @@ pub(crate) fn log_fdcan_registers(context: &'static str) {
     );
 }
 
-#[allow(dead_code)]
-fn read_fdcan_status() -> FdcanStatus {
-    let fdcan = pac::FDCAN1;
-    let psr = fdcan.psr().read();
-    let ecr = fdcan.ecr().read();
-
-    let bus_state = if psr.bo() {
-        BusState::BusOff
-    } else if psr.ep() {
-        BusState::ErrorPassive
-    } else if psr.ew() {
-        BusState::ErrorWarning
-    } else {
-        BusState::Ok
-    };
-
-    let last_error = match psr.lec().to_bits() {
-        0 => CanLastError::None,
-        1 => CanLastError::Stuff,
-        2 => CanLastError::Form,
-        3 => CanLastError::Ack,
-        4 => CanLastError::Bit1Recessive,
-        5 => CanLastError::Bit0Dominant,
-        6 => CanLastError::Crc,
-        _ => CanLastError::NoChange,
-    };
-
-    FdcanStatus {
-        bus_state,
-        tx_error_count: ecr.tec(),
-        rx_error_count: ecr.rec(),
-        last_error,
-    }
-}
-
 pub(crate) fn has_active_fault() -> bool {
-    DRV_FAULT_ACTIVE.load(Ordering::Relaxed) || CAN_FAULT_ACTIVE.load(Ordering::Relaxed)
+    DRV_FAULT_ACTIVE.load(Ordering::Relaxed)
 }
 
 pub(crate) fn take_motor_disarmed_by_fault() -> bool {
