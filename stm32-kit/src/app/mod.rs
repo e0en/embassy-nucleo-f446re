@@ -37,3 +37,5 @@ pub(crate) const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 pub(crate) const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
 pub(crate) const ACTUATOR_REDUCTION_RATIO_MAGNITUDE: i32 = 19;
 pub(crate) const ACTUATOR_REDUCTION_RATIO: f32 = ACTUATOR_REDUCTION_RATIO_MAGNITUDE as f32;
+/// Measured with a 100mm arm pressing a load cell: torque[Nm] ~= |i_q_ref| * 0.81.
+pub(crate) const ACTUATOR_IQ_TO_TORQUE_NM: f32 = 0.81;

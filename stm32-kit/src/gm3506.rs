@@ -6,10 +6,6 @@ pub const SETUP: foc::controller::MotorSetup = foc::controller::MotorSetup {
     max_velocity: 2375.0 * (2.0 * core::f32::consts::PI) / 60.0,
 };
 
-// Measured with a 100mm arm pressing a load cell: torque[Nm] ~= |i_q_ref| * 0.81.
-#[allow(dead_code)]
-pub const IQ_TO_TORQUE_NM: f32 = 0.81;
-
 #[allow(dead_code)]
 pub const CURRENT_PID: foc::pid::PID = foc::pid::PID {
     p: 5.0,
