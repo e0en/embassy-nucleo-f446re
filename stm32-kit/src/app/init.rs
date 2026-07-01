@@ -148,6 +148,69 @@ async fn run_motor_calibration(
     Ok(align_voltage)
 }
 
+struct AlignSweep {
+    positive_steps: usize,
+    negative_steps: usize,
+    net_angle: f32,
+}
+
+impl AlignSweep {
+    fn dominant_positive(&self) -> bool {
+        self.positive_steps > self.negative_steps
+    }
+
+    fn dominant_steps(&self) -> usize {
+        if self.dominant_positive() {
+            self.positive_steps
+        } else {
+            self.negative_steps
+        }
+    }
+}
+
+async fn measure_align_sweep(
+    driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    candidate_voltage: f32,
+    psu_voltage: f32,
+    electrical_angle: &mut f32,
+    previous_angle: &mut f32,
+    direction: f32,
+) -> Result<AlignSweep, &'static str> {
+    let mut positive_steps = 0;
+    let mut negative_steps = 0;
+    let mut net_angle = 0.0;
+
+    for _ in 0..ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS {
+        *electrical_angle += direction * ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD;
+        let signal = svpwm(
+            candidate_voltage,
+            0.0,
+            *electrical_angle,
+            psu_voltage,
+            sincos,
+        )
+        .map_err(|_| "Failed to generate align search sweep signal")?;
+        driver.run(signal);
+        Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
+        let angle = read_sensor().phase;
+        // Preserve local direction across the 0/2pi boundary.
+        let delta = wrap_pm_pi(angle - *previous_angle);
+        if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
+            positive_steps += 1;
+        } else if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
+            negative_steps += 1;
+        }
+        net_angle += delta;
+        *previous_angle = angle;
+    }
+
+    Ok(AlignSweep {
+        positive_steps,
+        negative_steps,
+        net_angle,
+    })
+}
+
 async fn find_minimum_align_voltage(
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
     psu_voltage: f32,
@@ -167,90 +230,46 @@ async fn find_minimum_align_voltage(
 
         let mut electrical_angle = LOCK_ANGLE;
         let mut previous_angle = read_sensor().phase;
-        let mut forward_positive_steps = 0;
-        let mut forward_negative_steps = 0;
-        let mut forward_net_angle = 0.0;
-
-        for _ in 0..ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS {
-            electrical_angle += ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD;
-            let signal = svpwm(
-                candidate_voltage,
-                0.0,
-                electrical_angle,
-                psu_voltage,
-                sincos,
-            )
-            .map_err(|_| "Failed to generate align search sweep signal")?;
-            driver.run(signal);
-            Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().phase;
-            // The sweep only needs the local signed motion, so wrap the phase
-            // delta to preserve direction across the 0/2pi boundary.
-            let delta = wrap_pm_pi(angle - previous_angle);
-            if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
-                forward_positive_steps += 1;
-            } else if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
-                forward_negative_steps += 1;
-            }
-            forward_net_angle += delta;
-            previous_angle = angle;
-        }
-
-        let mut backward_positive_steps = 0;
-        let mut backward_negative_steps = 0;
-        let mut backward_net_angle = 0.0;
-        for _ in 0..ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS {
-            electrical_angle -= ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD;
-            let signal = svpwm(
-                candidate_voltage,
-                0.0,
-                electrical_angle,
-                psu_voltage,
-                sincos,
-            )
-            .map_err(|_| "Failed to generate align search sweep signal")?;
-            driver.run(signal);
-            Timer::after_millis(ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS).await;
-            let angle = read_sensor().phase;
-            let delta = wrap_pm_pi(angle - previous_angle);
-            if delta <= -ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
-                backward_negative_steps += 1;
-            } else if delta >= ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD {
-                backward_positive_steps += 1;
-            }
-            backward_net_angle += delta;
-            previous_angle = angle;
-        }
+        let forward_sweep = measure_align_sweep(
+            driver,
+            candidate_voltage,
+            psu_voltage,
+            &mut electrical_angle,
+            &mut previous_angle,
+            1.0,
+        )
+        .await?;
+        let backward_sweep = measure_align_sweep(
+            driver,
+            candidate_voltage,
+            psu_voltage,
+            &mut electrical_angle,
+            &mut previous_angle,
+            -1.0,
+        )
+        .await?;
 
         driver.run(DutyCycle3Phase::zero());
-        let forward_dominant_positive = forward_positive_steps > forward_negative_steps;
-        let backward_dominant_positive = backward_positive_steps > backward_negative_steps;
-        let forward_dominant_steps = if forward_dominant_positive {
-            forward_positive_steps
-        } else {
-            forward_negative_steps
-        };
-        let backward_dominant_steps = if backward_dominant_positive {
-            backward_positive_steps
-        } else {
-            backward_negative_steps
-        };
+        let forward_dominant_positive = forward_sweep.dominant_positive();
+        let backward_dominant_positive = backward_sweep.dominant_positive();
+        let forward_dominant_steps = forward_sweep.dominant_steps();
+        let backward_dominant_steps = backward_sweep.dominant_steps();
         info!(
             "Align search {}V: fwd(+/-)={}/{} fwd_net={} bwd(+/-)={}/{} bwd_net={}",
             candidate_voltage,
-            forward_positive_steps,
-            forward_negative_steps,
-            forward_net_angle,
-            backward_positive_steps,
-            backward_negative_steps,
-            backward_net_angle
+            forward_sweep.positive_steps,
+            forward_sweep.negative_steps,
+            forward_sweep.net_angle,
+            backward_sweep.positive_steps,
+            backward_sweep.negative_steps,
+            backward_sweep.net_angle
         );
 
         if forward_dominant_steps >= ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS
             && backward_dominant_steps >= ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS
-            && forward_net_angle.abs() >= ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD
-            && backward_net_angle.abs() >= ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD
-            && forward_net_angle * backward_net_angle < 0.0
+            && forward_sweep.net_angle.abs() >= ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD
+            && backward_sweep.net_angle.abs() >= ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD
+            && forward_sweep.net_angle * backward_sweep.net_angle < 0.0
             && forward_dominant_positive != backward_dominant_positive
         {
             return Ok(candidate_voltage);
