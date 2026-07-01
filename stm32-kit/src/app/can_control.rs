@@ -141,75 +141,99 @@ async fn handle_command(
     response_sender: &Sender<'static, CriticalSectionRawMutex, QueuedResponse, 64>,
 ) {
     match command {
-        Command::Enable => {
-            if has_active_fault() {
-                warn!("Enable rejected while fault is active");
-            } else {
-                if take_motor_disarmed_by_fault() {
-                    set_gate_driver_enabled(true).await;
-                }
-                foc_isr::with_foc(|foc| {
-                    match foc.mode {
-                        foc::controller::RunMode::Angle | foc::controller::RunMode::Impedance => {
-                            foc.set_target_angle(foc.state.angle);
-                            foc.set_target_velocity(0.0);
-                        }
-                        foc::controller::RunMode::Velocity => {
-                            foc.set_target_velocity(0.0);
-                        }
-                        foc::controller::RunMode::Torque => {}
-                        foc::controller::RunMode::Voltage => {
-                            foc.set_target_voltage(0.0);
-                        }
-                    }
-                    foc.set_target_torque(0.0);
-                    foc.enable();
-                });
-            }
-        }
+        Command::Enable => enable_motor().await,
         Command::Stop => {
             foc_isr::with_foc(|foc| foc.stop());
         }
-        Command::MotionControl(x) => {
-            if has_active_fault() {
-                warn!("MotionControl rejected while fault is active");
-            } else {
-                if take_motor_disarmed_by_fault() {
-                    set_gate_driver_enabled(true).await;
-                }
-                apply_motion_control(*x);
+        Command::MotionControl(x) => apply_checked_motion_control(*x).await,
+        Command::SetParameter(parameter) => apply_set_parameter(parameter),
+        _ => {}
+    }
+
+    if let Command::RequestStatus(_) = command {
+        foc_isr::set_feedback_host_can_id(host_can_id);
+    }
+
+    if let Command::GetParameter(p) = command {
+        send_parameter_response(*p, host_can_id, response_sender).await;
+    }
+}
+
+async fn enable_motor() {
+    if has_active_fault() {
+        warn!("Enable rejected while fault is active");
+        return;
+    }
+
+    enable_gate_driver_after_fault().await;
+    foc_isr::with_foc(|foc| {
+        match foc.mode {
+            foc::controller::RunMode::Angle | foc::controller::RunMode::Impedance => {
+                foc.set_target_angle(foc.state.angle);
+                foc.set_target_velocity(0.0);
+            }
+            foc::controller::RunMode::Velocity => {
+                foc.set_target_velocity(0.0);
+            }
+            foc::controller::RunMode::Torque => {}
+            foc::controller::RunMode::Voltage => {
+                foc.set_target_voltage(0.0);
             }
         }
-        Command::SetParameter(ParameterValue::RunMode(m)) => {
+        foc.set_target_torque(0.0);
+        foc.enable();
+    });
+}
+
+async fn apply_checked_motion_control(command: MotionControl) {
+    if has_active_fault() {
+        warn!("MotionControl rejected while fault is active");
+        return;
+    }
+
+    enable_gate_driver_after_fault().await;
+    apply_motion_control(command);
+}
+
+async fn enable_gate_driver_after_fault() {
+    if take_motor_disarmed_by_fault() {
+        set_gate_driver_enabled(true).await;
+    }
+}
+
+fn apply_set_parameter(parameter: &ParameterValue) {
+    match parameter {
+        ParameterValue::RunMode(m) => {
             info!("received runmode {}", *m as u8);
             foc_isr::with_foc(|foc| foc.set_run_mode(decode_run_mode(m)));
         }
-        Command::SetParameter(ParameterValue::AngleRef(angle)) => {
+        ParameterValue::AngleRef(angle) => {
             foc_isr::with_foc(|foc| foc.set_target_angle(foc_isr::user_to_input_angle(*angle)));
         }
-        Command::SetParameter(ParameterValue::SpeedRef(velocity)) => {
+        ParameterValue::SpeedRef(velocity) => {
             foc_isr::with_foc(|foc| foc.set_target_velocity(output_to_input_shaft(*velocity)));
         }
-        Command::SetParameter(ParameterValue::SpeedLimit(velocity_limit)) => {
+        ParameterValue::SpeedLimit(velocity_limit) => {
             foc_isr::with_foc(|foc| foc.set_velocity_limit(output_to_input_shaft(*velocity_limit)));
         }
-        Command::SetParameter(ParameterValue::TorqueRef(torque_nm)) => {
+        ParameterValue::TorqueRef(torque_nm) => {
             foc_isr::with_foc(|foc| foc.set_target_torque(torque_nm_to_iq(*torque_nm)));
         }
-        Command::SetParameter(ParameterValue::TorqueLimit(torque_nm)) => {
+        ParameterValue::TorqueLimit(torque_nm) => {
             foc_isr::with_foc(|foc| foc.set_torque_limit(torque_nm_to_iq(*torque_nm)));
         }
-        Command::SetParameter(ParameterValue::CurrentRef(iq_ref)) => {
+        ParameterValue::CurrentRef(iq_ref) => {
             foc_isr::with_foc(|foc| foc.set_target_torque(*iq_ref));
         }
-        Command::SetParameter(ParameterValue::Spring(kp)) => {
+        ParameterValue::Spring(kp) => {
             foc_isr::with_foc(|foc| foc.set_spring(motion_gain_to_internal_iq_gain(*kp)));
         }
-        Command::SetParameter(ParameterValue::Damping(kd)) => {
+        ParameterValue::Damping(kd) => {
             foc_isr::with_foc(|foc| foc.set_damping(motion_gain_to_internal_iq_gain(*kd)));
         }
         _ => {
-            dispatch_set_param!(command,
+            let command = Command::SetParameter(*parameter);
+            dispatch_set_param!(&command,
                 CurrentLimit => set_current_limit,
                 CurrentKp => set_current_kp,
                 CurrentKi => set_current_ki,
@@ -220,45 +244,45 @@ async fn handle_command(
             );
         }
     }
+}
 
-    if let Command::RequestStatus(_) = command {
-        foc_isr::set_feedback_host_can_id(host_can_id);
-    }
-
-    if let Command::GetParameter(p) = command {
-        info!("parameter requested {}", *p as u16);
-        let pv = foc_isr::with_foc(|foc| {
-            dispatch_get_param!(p,
-                RunMode => encode_run_mode(&foc.mode),
-                TorqueRef => iq_to_torque_nm(foc.user_frame_i_ref()),
-                Angle => foc_isr::input_to_user_angle(foc.state.angle),
-                AngleRef => foc_isr::input_to_user_angle(foc.target.angle),
-                Speed => input_to_output_shaft(foc.state.velocity),
-                SpeedRef => input_to_output_shaft(foc.target.velocity),
-                SpeedLimit => input_to_output_shaft(foc.velocity_limit.unwrap_or(0.0)),
-                TorqueLimit => iq_to_torque_nm(foc.torque_limit.unwrap_or(0.0)),
-                Torque => iq_to_torque_nm(foc.user_frame_i_q()),
-                AngleKp => foc.angle_pid.gains.p,
-                SpeedKp => foc.velocity_pid.gains.p,
-                SpeedKi => foc.velocity_pid.gains.i,
-                CurrentKp => foc.current_q_pid.gains.p,
-                CurrentKi => foc.current_q_pid.gains.i,
-                CurrentFilter => foc.current_q_filter.time_constant,
-                CurrentLimit => foc.current_limit.unwrap_or(0.0),
-                Spring => internal_iq_gain_to_motion_gain(foc.target.spring),
-                Damping => internal_iq_gain_to_motion_gain(foc.target.damping),
-                VqRef => foc.target.voltage,
-                CurrentRef => foc.user_frame_i_ref(),
-            )
-        });
-        if let Some(pv) = pv {
-            response_sender
-                .send(QueuedResponse {
-                    host_can_id,
-                    body: ResponseBody::ParameterValue(pv),
-                })
-                .await;
-        }
+async fn send_parameter_response(
+    parameter: ParameterIndex,
+    host_can_id: u8,
+    response_sender: &Sender<'static, CriticalSectionRawMutex, QueuedResponse, 64>,
+) {
+    info!("parameter requested {}", parameter as u16);
+    let pv = foc_isr::with_foc(|foc| {
+        dispatch_get_param!(&parameter,
+            RunMode => encode_run_mode(&foc.mode),
+            TorqueRef => iq_to_torque_nm(foc.user_frame_i_ref()),
+            Angle => foc_isr::input_to_user_angle(foc.state.angle),
+            AngleRef => foc_isr::input_to_user_angle(foc.target.angle),
+            Speed => input_to_output_shaft(foc.state.velocity),
+            SpeedRef => input_to_output_shaft(foc.target.velocity),
+            SpeedLimit => input_to_output_shaft(foc.velocity_limit.unwrap_or(0.0)),
+            TorqueLimit => iq_to_torque_nm(foc.torque_limit.unwrap_or(0.0)),
+            Torque => iq_to_torque_nm(foc.user_frame_i_q()),
+            AngleKp => foc.angle_pid.gains.p,
+            SpeedKp => foc.velocity_pid.gains.p,
+            SpeedKi => foc.velocity_pid.gains.i,
+            CurrentKp => foc.current_q_pid.gains.p,
+            CurrentKi => foc.current_q_pid.gains.i,
+            CurrentFilter => foc.current_q_filter.time_constant,
+            CurrentLimit => foc.current_limit.unwrap_or(0.0),
+            Spring => internal_iq_gain_to_motion_gain(foc.target.spring),
+            Damping => internal_iq_gain_to_motion_gain(foc.target.damping),
+            VqRef => foc.target.voltage,
+            CurrentRef => foc.user_frame_i_ref(),
+        )
+    });
+    if let Some(pv) = pv {
+        response_sender
+            .send(QueuedResponse {
+                host_can_id,
+                body: ResponseBody::ParameterValue(pv),
+            })
+            .await;
     }
 }
 
