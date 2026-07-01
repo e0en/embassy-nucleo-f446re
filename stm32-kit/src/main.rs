@@ -108,7 +108,6 @@ async fn main(spawner: Spawner) {
         can_control::can_id_filter(startup_can_id),
     );
     let p_can = can_conf.into_normal_mode();
-    fault::log_fdcan_registers("startup");
     let (can_tx, can_rx, properties) = p_can.split();
 
     {

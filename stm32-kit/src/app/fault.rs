@@ -1,8 +1,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{Format, info, warn};
+use defmt::{info, warn};
 use embassy_executor::task;
-use embassy_stm32::{gpio, pac};
+use embassy_stm32::gpio;
 use embassy_time::Timer;
 
 use crate::foc_isr;
@@ -50,34 +50,6 @@ pub(crate) async fn drv_fault_monitor_task(
 
         Timer::after_millis(DRV_FAULT_POLL_INTERVAL_MS).await;
     }
-}
-
-#[derive(Format, Clone, Copy)]
-struct FdcanRegisters {
-    cccr: u32,
-    nbtp: u32,
-    psr: u32,
-    ecr: u32,
-    ir: u32,
-}
-
-fn read_fdcan_registers() -> FdcanRegisters {
-    let fdcan = pac::FDCAN1;
-    FdcanRegisters {
-        cccr: fdcan.cccr().read().0,
-        nbtp: fdcan.nbtp().read().0,
-        psr: fdcan.psr().read().0,
-        ecr: fdcan.ecr().read().0,
-        ir: fdcan.ir().read().0,
-    }
-}
-
-pub(crate) fn log_fdcan_registers(context: &'static str) {
-    let regs = read_fdcan_registers();
-    info!(
-        "CAN regs[{}]: CCCR={=u32:#010x} NBTP={=u32:#010x} PSR={=u32:#010x} ECR={=u32:#010x} IR={=u32:#010x}",
-        context, regs.cccr, regs.nbtp, regs.psr, regs.ecr, regs.ir,
-    );
 }
 
 pub(crate) fn has_active_fault() -> bool {
