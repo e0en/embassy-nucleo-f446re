@@ -17,9 +17,9 @@ use foc::current::PhaseCurrent;
 use foc::encoder::EncoderReading;
 use foc::pwm_output::DutyCycle3Phase;
 
-use crate::app::ACTUATOR_REDUCTION_RATIO;
+use crate::app::units::{input_to_output_shaft, iq_to_torque_nm, output_to_input_shaft};
 use crate::drv8316::{self, CsaGain};
-use crate::{RESPONSE_CHANNEL, gm3506, read_sensor};
+use crate::{RESPONSE_CHANNEL, read_sensor};
 
 type FocSincos = fn(f32) -> (f32, f32);
 
@@ -47,23 +47,13 @@ static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);
 static OUTPUT_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
-fn input_to_output_shaft(value: f32) -> f32 {
-    value / ACTUATOR_REDUCTION_RATIO
-}
-
-#[inline(always)]
-fn iq_to_torque_nm(iq: f32) -> f32 {
-    iq * gm3506::IQ_TO_TORQUE_NM
-}
-
-#[inline(always)]
 fn input_to_user_output_shaft(value: f32) -> f32 {
     input_to_output_shaft(value) - output_zero_offset()
 }
 
 #[inline(always)]
 fn user_output_to_input_shaft(value: f32) -> f32 {
-    (value + output_zero_offset()) * ACTUATOR_REDUCTION_RATIO
+    output_to_input_shaft(value + output_zero_offset())
 }
 
 pub struct FocContext {

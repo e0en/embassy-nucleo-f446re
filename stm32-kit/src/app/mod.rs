@@ -7,6 +7,7 @@ pub(crate) mod fault;
 pub(crate) mod init;
 pub(crate) mod monitor;
 pub(crate) mod persistence;
+pub(crate) mod units;
 
 pub(crate) type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
 

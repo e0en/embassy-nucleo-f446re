@@ -14,15 +14,19 @@ use can_message::message::{
 
 use crate::{
     can::{convert_response_message, parse_command_frame},
-    foc_isr, gm3506, read_sensor,
+    foc_isr, read_sensor,
 };
 
 use super::{
-    ACTUATOR_REDUCTION_RATIO,
     fault::{has_active_fault, set_gate_driver_enabled, take_motor_disarmed_by_fault},
     persistence::{
         CAN_ID, CAN_PROPERTIES, save_can_id_to_flash, save_output_zero_offset_to_flash,
         save_runtime_config,
+    },
+    units::{
+        input_to_output_shaft, internal_iq_gain_to_motion_gain, iq_to_torque_nm,
+        motion_gain_to_internal_iq_gain, output_to_input_shaft, output_torque_nm_to_iq,
+        torque_nm_to_iq,
     },
 };
 
@@ -37,41 +41,6 @@ macro_rules! dispatch_set_param {
             _ => {}
         }
     };
-}
-
-#[inline]
-fn input_to_output_shaft(value: f32) -> f32 {
-    value / ACTUATOR_REDUCTION_RATIO
-}
-
-#[inline]
-fn torque_nm_to_iq(torque_nm: f32) -> f32 {
-    torque_nm / gm3506::IQ_TO_TORQUE_NM
-}
-
-#[inline]
-fn output_torque_nm_to_iq(torque_nm: f32) -> f32 {
-    torque_nm / (ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM)
-}
-
-#[inline]
-fn iq_to_torque_nm(iq: f32) -> f32 {
-    iq * gm3506::IQ_TO_TORQUE_NM
-}
-
-#[inline]
-fn output_gain_to_internal_iq_gain(gain: f32) -> f32 {
-    gain / (ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM)
-}
-
-#[inline]
-fn motion_gain_to_internal_iq_gain(gain: f32) -> f32 {
-    output_gain_to_internal_iq_gain(gain / ACTUATOR_REDUCTION_RATIO)
-}
-
-#[inline]
-fn internal_iq_gain_to_motion_gain(gain: f32) -> f32 {
-    gain * ACTUATOR_REDUCTION_RATIO * ACTUATOR_REDUCTION_RATIO * gm3506::IQ_TO_TORQUE_NM
 }
 
 macro_rules! dispatch_get_param {
@@ -219,12 +188,10 @@ async fn handle_command(
             foc_isr::with_foc(|foc| foc.set_target_angle(foc_isr::user_to_input_angle(*angle)));
         }
         Command::SetParameter(ParameterValue::SpeedRef(velocity)) => {
-            foc_isr::with_foc(|foc| foc.set_target_velocity(*velocity * ACTUATOR_REDUCTION_RATIO));
+            foc_isr::with_foc(|foc| foc.set_target_velocity(output_to_input_shaft(*velocity)));
         }
         Command::SetParameter(ParameterValue::SpeedLimit(velocity_limit)) => {
-            foc_isr::with_foc(|foc| {
-                foc.set_velocity_limit(*velocity_limit * ACTUATOR_REDUCTION_RATIO)
-            });
+            foc_isr::with_foc(|foc| foc.set_velocity_limit(output_to_input_shaft(*velocity_limit)));
         }
         Command::SetParameter(ParameterValue::TorqueRef(torque_nm)) => {
             foc_isr::with_foc(|foc| foc.set_target_torque(torque_nm_to_iq(*torque_nm)));
@@ -299,7 +266,7 @@ fn apply_motion_control(command: MotionControl) {
     foc_isr::with_foc(|foc| {
         foc.set_run_mode(foc::controller::RunMode::Impedance);
         foc.set_target_angle(foc_isr::user_to_input_angle(command.angle));
-        foc.set_target_velocity(command.velocity * ACTUATOR_REDUCTION_RATIO);
+        foc.set_target_velocity(output_to_input_shaft(command.velocity));
         foc.set_target_torque(output_torque_nm_to_iq(command.torque));
         foc.set_spring(motion_gain_to_internal_iq_gain(command.kp));
         foc.set_damping(motion_gain_to_internal_iq_gain(command.kd));
