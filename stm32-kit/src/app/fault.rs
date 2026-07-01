@@ -27,7 +27,6 @@ pub(crate) async fn drv_fault_monitor_task(
     mut led_fault: gpio::Output<'static>,
 ) {
     let mut last_drv_fault_active = false;
-    let mut last_can_fault_active = false;
     let mut last_led_active = false;
     set_fault_led(&mut led_fault, last_led_active);
 
@@ -44,28 +43,7 @@ pub(crate) async fn drv_fault_monitor_task(
             last_drv_fault_active = drv_fault_active;
         }
 
-        let can_status = read_fdcan_status();
-        let can_fault_active = can_status.has_fault();
-        CAN_FAULT_ACTIVE.store(can_fault_active, Ordering::Relaxed);
-        if can_fault_active != last_can_fault_active {
-            if can_fault_active {
-                warn!(
-                    "CAN fault detected: {} TEC={} REC={} last_err={}",
-                    can_status.bus_state,
-                    can_status.tx_error_count,
-                    can_status.rx_error_count,
-                    can_status.last_error,
-                );
-                log_fdcan_registers("fault");
-                disarm_motor_due_to_fault().await;
-            } else {
-                info!("CAN fault cleared");
-                log_fdcan_registers("cleared");
-            }
-            last_can_fault_active = can_fault_active;
-        }
-
-        let led_active = drv_fault_active || can_fault_active;
+        let led_active = drv_fault_active;
         if led_active != last_led_active {
             set_fault_led(&mut led_fault, led_active);
             last_led_active = led_active;
@@ -76,6 +54,7 @@ pub(crate) async fn drv_fault_monitor_task(
 }
 
 #[derive(Format, Clone, Copy)]
+#[allow(dead_code)]
 enum BusState {
     Ok,
     ErrorWarning,
@@ -84,12 +63,14 @@ enum BusState {
 }
 
 impl BusState {
+    #[allow(dead_code)]
     fn is_ok(&self) -> bool {
         matches!(self, BusState::Ok)
     }
 }
 
 #[derive(Format, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum CanLastError {
     None,
     Stuff,
@@ -102,12 +83,14 @@ enum CanLastError {
 }
 
 impl CanLastError {
+    #[allow(dead_code)]
     fn is_fault(&self) -> bool {
         !matches!(self, CanLastError::None | CanLastError::NoChange)
     }
 }
 
 #[derive(Format, Clone, Copy)]
+#[allow(dead_code)]
 struct FdcanStatus {
     bus_state: BusState,
     tx_error_count: u8,
@@ -116,6 +99,7 @@ struct FdcanStatus {
 }
 
 impl FdcanStatus {
+    #[allow(dead_code)]
     fn has_fault(&self) -> bool {
         !self.bus_state.is_ok()
             || self.tx_error_count > 0
@@ -152,6 +136,7 @@ pub(crate) fn log_fdcan_registers(context: &'static str) {
     );
 }
 
+#[allow(dead_code)]
 fn read_fdcan_status() -> FdcanStatus {
     let fdcan = pac::FDCAN1;
     let psr = fdcan.psr().read();
