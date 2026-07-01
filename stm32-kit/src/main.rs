@@ -62,6 +62,7 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     clock::set_clock(&mut config);
     cordic::initialize_cordic();
+    #[cfg(debug_assertions)]
     cordic::run_and_log_validation_tests();
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
