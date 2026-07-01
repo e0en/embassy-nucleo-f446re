@@ -5,13 +5,10 @@ use foc::controller::FocState;
 
 use crate::{adc, foc_isr};
 
-use super::fault::log_fdcan_status;
-
 #[task]
 pub(crate) async fn monitor_task() {
     let mut last_logged_at = Instant::now();
     let mut psu_voltage_tick: u8 = 0;
-    let mut can_diag_tick: u8 = 0;
     loop {
         Timer::after_millis(100).await;
 
@@ -19,12 +16,6 @@ pub(crate) async fn monitor_task() {
         if psu_voltage_tick >= 10 {
             foc_isr::with_foc(|foc| foc.set_psu_voltage(adc::measure_vm_sense()));
             psu_voltage_tick = 0;
-        }
-
-        can_diag_tick += 1;
-        if can_diag_tick >= 10 {
-            can_diag_tick = 0;
-            log_fdcan_status();
         }
 
         let loop_count = foc_isr::get_loop_counter();

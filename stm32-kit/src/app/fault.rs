@@ -267,22 +267,6 @@ fn read_fdcan_status() -> FdcanStatus {
     }
 }
 
-pub(crate) fn log_fdcan_status() {
-    let status = read_fdcan_status();
-
-    if status.bus_state.is_ok() {
-        info!(
-            "CAN: {} TEC={} REC={} last_err={}",
-            status.bus_state, status.tx_error_count, status.rx_error_count, status.last_error,
-        );
-    } else {
-        warn!(
-            "CAN: {} TEC={} REC={} last_err={}",
-            status.bus_state, status.tx_error_count, status.rx_error_count, status.last_error,
-        );
-    }
-}
-
 pub(crate) fn has_active_fault() -> bool {
     DRV_FAULT_ACTIVE.load(Ordering::Relaxed) || CAN_FAULT_ACTIVE.load(Ordering::Relaxed)
 }
