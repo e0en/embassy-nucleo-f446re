@@ -7,6 +7,7 @@ use embassy_stm32::flash::{Blocking, Flash, WRITE_SIZE};
 use foc::controller::Direction;
 use foc::current::PhaseCurrent;
 
+use crate::app::DEFAULT_MOTOR_CAN_ID;
 use crate::encoder_correction::{EncoderCorrection, LUT_SIZE};
 
 /// Magic number to identify valid config: "MOTC" in ASCII
@@ -127,7 +128,7 @@ impl ConfigData {
             velocity_kp: 0.0,
             velocity_ki: 0.0,
             angle_kp: 0.0,
-            can_id: 0x0F,
+            can_id: DEFAULT_MOTOR_CAN_ID,
             pole_pair_count: 0,
             phase_resistance: 0.0,
             kv_rating: 0.0,

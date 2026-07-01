@@ -24,8 +24,8 @@ mod pwm;
 mod velocity_tuning;
 
 use app::{
-    ACTUATOR_REDUCTION_RATIO_MAGNITUDE, CAN_BITRATE, CAN_INTERRUPT_PRIORITY, INIT_DELAY_CYCLES,
-    VELOCITY_OBSERVER_BANDWIDTH, can_control, encoder, fault, init, monitor,
+    ACTUATOR_REDUCTION_RATIO_MAGNITUDE, CAN_BITRATE, CAN_INTERRUPT_PRIORITY, DEFAULT_MOTOR_CAN_ID,
+    INIT_DELAY_CYCLES, VELOCITY_OBSERVER_BANDWIDTH, can_control, encoder, fault, init, monitor,
     persistence::{CAN_ID, CAN_PROPERTIES, FLASH, SPI},
 };
 use as5047p::As5047P;
@@ -45,8 +45,6 @@ use {defmt_rtt as _, panic_probe as _};
 
 pub(crate) use app::can_control::{QueuedResponse, RESPONSE_CHANNEL};
 pub(crate) use app::encoder::read_sensor;
-
-pub(crate) const DEFAULT_HOST_CAN_ID: u8 = 0;
 
 bind_interrupts!(
     struct Irqs {
@@ -98,7 +96,7 @@ async fn main(spawner: Spawner) {
     let startup_can_id = stored_config
         .as_ref()
         .map(|config| config.can_id)
-        .unwrap_or(0x0F);
+        .unwrap_or(DEFAULT_MOTOR_CAN_ID);
 
     let mut can_conf = stm32_can::CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
     can_conf.set_bitrate(CAN_BITRATE);

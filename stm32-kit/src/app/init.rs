@@ -22,8 +22,9 @@ use super::{
     ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD, ALIGN_VOLTAGE_SEARCH_SETTLE_MS,
     ALIGN_VOLTAGE_SEARCH_START, ALIGN_VOLTAGE_SEARCH_STEP, ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS,
     ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD, ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS, CURRENT_PI_FREQUENCY,
-    CURRENT_SAFETY_MARGIN, FocControllerType, IMPEDANCE_TUNING_MAX_CURRENT,
-    PHASE_MAPPING_TOLERANCE, PSU_VOLTAGE, VELOCITY_PI_FREQUENCY, VOLTAGE_RAMP_RATE,
+    CURRENT_SAFETY_MARGIN, CURRENT_SENSE_GAIN, DEFAULT_MOTOR_CAN_ID, FocControllerType,
+    IMPEDANCE_TUNING_MAX_CURRENT, PHASE_MAPPING_TOLERANCE, PSU_VOLTAGE, USE_CURRENT_SENSING,
+    VELOCITY_PI_FREQUENCY, VOLTAGE_RAMP_RATE,
     encoder::{apply_secondary_zero_offset, read_sensor},
     persistence::GATE_DRIVER,
 };
@@ -422,10 +423,13 @@ pub(crate) async fn init_foc(
     p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
     stored_config: Option<flash_config::ConfigData>,
 ) -> Option<u8> {
-    let use_current_sensing = true;
-    let csa_gain = drv8316::CsaGain::Gain0_3V;
+    let use_current_sensing = USE_CURRENT_SENSING;
+    let csa_gain = CURRENT_SENSE_GAIN;
 
-    let can_id = stored_config.as_ref().map(|c| c.can_id).unwrap_or(0x0F);
+    let can_id = stored_config
+        .as_ref()
+        .map(|c| c.can_id)
+        .unwrap_or(DEFAULT_MOTOR_CAN_ID);
 
     if stored_config.is_some() {
         info!("Found stored calibration, skipping motor calibration");

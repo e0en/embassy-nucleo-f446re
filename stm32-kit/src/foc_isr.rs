@@ -17,7 +17,10 @@ use foc::current::PhaseCurrent;
 use foc::encoder::EncoderReading;
 use foc::pwm_output::DutyCycle3Phase;
 
-use crate::app::units::{input_to_output_shaft, iq_to_torque_nm, output_to_input_shaft};
+use crate::app::{
+    DEFAULT_HOST_CAN_ID,
+    units::{input_to_output_shaft, iq_to_torque_nm, output_to_input_shaft},
+};
 use crate::drv8316::{self, CsaGain};
 use crate::{RESPONSE_CHANNEL, read_sensor};
 
@@ -40,7 +43,7 @@ static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new
 static FEEDBACK_TYPE: AtomicU8 = AtomicU8::new(0); // 0 = Status, 1 = Current
 static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(DEFAULT_FEEDBACK_INTERVAL_TICKS);
 static FEEDBACK_COUNTER: AtomicU8 = AtomicU8::new(0);
-static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(crate::DEFAULT_HOST_CAN_ID);
+static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(DEFAULT_HOST_CAN_ID);
 static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
 
 static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);

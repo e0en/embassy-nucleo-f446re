@@ -1,6 +1,8 @@
 use embassy_stm32::interrupt;
 use foc::controller::FocController;
 
+use crate::drv8316;
+
 pub(crate) mod can_control;
 pub(crate) mod encoder;
 pub(crate) mod fault;
@@ -33,8 +35,12 @@ pub(crate) const CAN_BITRATE: u32 = 1_000_000;
 pub(crate) const CAN_RECOVERY_REINIT_INTERVAL_MS: u64 = 100;
 pub(crate) const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 pub(crate) const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
+pub(crate) const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
+pub(crate) const DEFAULT_HOST_CAN_ID: u8 = 0;
 pub(crate) const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 pub(crate) const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
+pub(crate) const USE_CURRENT_SENSING: bool = true;
+pub(crate) const CURRENT_SENSE_GAIN: drv8316::CsaGain = drv8316::CsaGain::Gain0_3V;
 pub(crate) const ACTUATOR_REDUCTION_RATIO_MAGNITUDE: i32 = 19;
 pub(crate) const ACTUATOR_REDUCTION_RATIO: f32 = ACTUATOR_REDUCTION_RATIO_MAGNITUDE as f32;
 /// Measured with a 100mm arm pressing a load cell: torque[Nm] ~= |i_q_ref| * 0.81.

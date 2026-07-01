@@ -4,7 +4,7 @@ use defmt::{error, info, warn};
 use embassy_stm32::{can as stm32_can, flash::Flash, mode::Async, spi as stm32_spi};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 
-use crate::{drv8316t, flash_config, foc_isr};
+use crate::{app::DEFAULT_MOTOR_CAN_ID, drv8316t, flash_config, foc_isr};
 
 pub(crate) type SpiMutex = Mutex<ThreadModeRawMutex, Option<stm32_spi::Spi<'static, Async>>>;
 
@@ -62,7 +62,8 @@ async fn update_config(
 }
 
 pub(crate) async fn save_runtime_config() {
-    if let Some(config) = foc_isr::with_foc(|foc| flash_config::from_foc(foc, 0x0F)) {
+    if let Some(config) = foc_isr::with_foc(|foc| flash_config::from_foc(foc, DEFAULT_MOTOR_CAN_ID))
+    {
         update_config(
             |stored_config| {
                 let mut runtime_config = config;
