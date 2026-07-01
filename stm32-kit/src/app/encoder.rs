@@ -37,6 +37,26 @@ impl SensorSnapshotBuffer {
             dt: AtomicU32::new(0),
         }
     }
+
+    fn write(&self, encoder_reading: &EncoderReading, secondary_phase: f32) {
+        store_f32(&self.phase, encoder_reading.phase);
+        store_f32(&self.secondary_phase, secondary_phase);
+        self.full_rotations
+            .store(encoder_reading.full_rotations, Ordering::Relaxed);
+        store_f32(&self.cumulative_angle, encoder_reading.cumulative_angle);
+        store_f32(&self.velocity, encoder_reading.velocity);
+        store_f32(&self.dt, encoder_reading.dt);
+    }
+
+    fn read_encoder(&self) -> EncoderReading {
+        EncoderReading {
+            phase: load_f32(&self.phase),
+            full_rotations: self.full_rotations.load(Ordering::Relaxed),
+            cumulative_angle: load_f32(&self.cumulative_angle),
+            velocity: load_f32(&self.velocity),
+            dt: load_f32(&self.dt),
+        }
+    }
 }
 
 static SENSOR_SNAPSHOTS: [SensorSnapshotBuffer; 2] =
@@ -58,34 +78,24 @@ static ENCODER_TASK_COMMAND_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskComm
 static ENCODER_TASK_RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskResponse, 1> =
     Channel::new();
 
+fn store_f32(slot: &AtomicU32, value: f32) {
+    slot.store(u32::from_le_bytes(value.to_le_bytes()), Ordering::Relaxed);
+}
+
+fn load_f32(slot: &AtomicU32) -> f32 {
+    f32::from_le_bytes(slot.load(Ordering::Relaxed).to_le_bytes())
+}
+
+fn active_sensor_snapshot() -> &'static SensorSnapshotBuffer {
+    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
+    &SENSOR_SNAPSHOTS[active_index]
+}
+
 fn write_sensor_snapshot(encoder_reading: &EncoderReading, secondary_phase: f32) {
     let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Relaxed) as usize;
     let next_index = active_index ^ 1;
     let snapshot = &SENSOR_SNAPSHOTS[next_index];
-
-    snapshot.phase.store(
-        u32::from_le_bytes(encoder_reading.phase.to_le_bytes()),
-        Ordering::Relaxed,
-    );
-    snapshot.secondary_phase.store(
-        u32::from_le_bytes(secondary_phase.to_le_bytes()),
-        Ordering::Relaxed,
-    );
-    snapshot
-        .full_rotations
-        .store(encoder_reading.full_rotations, Ordering::Relaxed);
-    snapshot.cumulative_angle.store(
-        u32::from_le_bytes(encoder_reading.cumulative_angle.to_le_bytes()),
-        Ordering::Relaxed,
-    );
-    snapshot.velocity.store(
-        u32::from_le_bytes(encoder_reading.velocity.to_le_bytes()),
-        Ordering::Relaxed,
-    );
-    snapshot.dt.store(
-        u32::from_le_bytes(encoder_reading.dt.to_le_bytes()),
-        Ordering::Relaxed,
-    );
+    snapshot.write(encoder_reading, secondary_phase);
 
     // Writer runs in thread mode and reader runs in ADC ISR, so once the
     // index is published the ISR can only observe a fully written snapshot.
@@ -210,41 +220,10 @@ pub(crate) async fn encoder_task(
 }
 
 pub(crate) fn read_sensor() -> EncoderReading {
-    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
-    let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let raw_phase = snapshot.phase.load(Ordering::Relaxed);
-    let full_rotations = snapshot.full_rotations.load(Ordering::Relaxed);
-    let raw_cumulative_angle = snapshot.cumulative_angle.load(Ordering::Relaxed);
-    let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
-    let raw_dt = snapshot.dt.load(Ordering::Relaxed);
-
-    EncoderReading {
-        phase: f32::from_le_bytes(raw_phase.to_le_bytes()),
-        full_rotations,
-        cumulative_angle: f32::from_le_bytes(raw_cumulative_angle.to_le_bytes()),
-        velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
-        dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
-    }
+    active_sensor_snapshot().read_encoder()
 }
 
 pub(crate) fn read_sensor_pair() -> (EncoderReading, f32) {
-    let active_index = ACTIVE_SENSOR_SNAPSHOT.load(Ordering::Acquire) as usize;
-    let snapshot = &SENSOR_SNAPSHOTS[active_index];
-    let raw_phase = snapshot.phase.load(Ordering::Relaxed);
-    let raw_secondary_phase = snapshot.secondary_phase.load(Ordering::Relaxed);
-    let full_rotations = snapshot.full_rotations.load(Ordering::Relaxed);
-    let raw_cumulative_angle = snapshot.cumulative_angle.load(Ordering::Relaxed);
-    let raw_velocity = snapshot.velocity.load(Ordering::Relaxed);
-    let raw_dt = snapshot.dt.load(Ordering::Relaxed);
-
-    (
-        EncoderReading {
-            phase: f32::from_le_bytes(raw_phase.to_le_bytes()),
-            full_rotations,
-            cumulative_angle: f32::from_le_bytes(raw_cumulative_angle.to_le_bytes()),
-            velocity: f32::from_le_bytes(raw_velocity.to_le_bytes()),
-            dt: f32::from_le_bytes(raw_dt.to_le_bytes()),
-        },
-        f32::from_le_bytes(raw_secondary_phase.to_le_bytes()),
-    )
+    let snapshot = active_sensor_snapshot();
+    (snapshot.read_encoder(), load_f32(&snapshot.secondary_phase))
 }
