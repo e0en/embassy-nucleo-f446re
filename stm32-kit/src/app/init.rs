@@ -262,6 +262,130 @@ async fn find_minimum_align_voltage(
     Err("Failed to find align voltage with directional response")
 }
 
+fn apply_stored_calibration(foc: &mut FocControllerType, config: &flash_config::ConfigData) {
+    flash_config::apply_to_foc(foc, config);
+    set_runtime_correction(config.get_encoder_correction());
+    foc_isr::set_output_zero_offset(config.output_zero_offset);
+    info!(
+        "Loaded calibration: mapping=({},{},{}), bias_angle={}",
+        config.current_mapping.0,
+        config.current_mapping.1,
+        config.current_mapping.2,
+        config.bias_angle
+    );
+}
+
+async fn calibrate_encoder_tables(
+    foc: &FocControllerType,
+    driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    align_voltage: f32,
+) -> f32 {
+    let mut secondary_zero_offset = 0.0;
+
+    match calibration::calibrate_encoder_correction(driver, foc, align_voltage).await {
+        Ok(correction) => {
+            set_runtime_correction(correction);
+            info!("Encoder LUT calibration complete");
+        }
+        Err(e) => warn!("{}", e),
+    }
+
+    match calibration::calibrate_secondary_zero_offset(driver, foc, align_voltage).await {
+        Ok(calibrated_secondary_zero_offset) => {
+            if apply_secondary_zero_offset(calibrated_secondary_zero_offset).await {
+                secondary_zero_offset = calibrated_secondary_zero_offset;
+                info!("Secondary encoder zero offset = {}", secondary_zero_offset);
+            } else {
+                warn!("Failed to apply calibrated secondary zero offset");
+            }
+        }
+        Err(e) => warn!("{}", e),
+    }
+
+    secondary_zero_offset
+}
+
+async fn tune_runtime_gains(
+    foc: &mut FocControllerType,
+    p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
+    driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    csa_gain: drv8316::CsaGain,
+) {
+    if let Some(velocity_gain) = velocity_tuning::tune_velocity_pi(
+        foc,
+        driver,
+        p_adc,
+        csa_gain,
+        read_sensor,
+        VELOCITY_PI_FREQUENCY,
+    )
+    .await
+    {
+        foc.set_velocity_kp(velocity_gain.p);
+        foc.set_velocity_ki(velocity_gain.i);
+        info!("velocity kp={}, ki={}", velocity_gain.p, velocity_gain.i);
+    } else {
+        warn!("Velocity PI tuning failed, using defaults");
+    }
+
+    let kv = motor_tuning::find_kv_rating(foc, driver, p_adc, csa_gain, read_sensor).await;
+    foc.motor.kv_rating = kv;
+    info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
+}
+
+fn save_calibration(
+    foc: &FocControllerType,
+    p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
+    can_id: u8,
+    secondary_zero_offset: f32,
+) {
+    let mut config = flash_config::from_foc(foc, can_id);
+    config.output_zero_offset = 0.0;
+    config.secondary_zero_offset = secondary_zero_offset;
+    config.set_encoder_correction(runtime_snapshot());
+    if let Err(e) = flash_config::write_config(p_flash, &mut config) {
+        warn!("Failed to save calibration to flash: {:?}", e);
+    } else {
+        info!("Calibration saved to flash");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_full_calibration(
+    foc: &mut FocControllerType,
+    p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
+    driver: &mut PwmDriver<'_, peripherals::TIM1>,
+    gate_driver: &mut drv8316t::Drv8316T<'static>,
+    p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
+    can_id: u8,
+    csa_gain: drv8316::CsaGain,
+    use_current_sensing: bool,
+) -> Result<(), &'static str> {
+    let align_voltage = run_motor_calibration(
+        foc,
+        p_adc,
+        driver,
+        gate_driver,
+        csa_gain,
+        use_current_sensing,
+    )
+    .await?;
+
+    let secondary_zero_offset = calibrate_encoder_tables(foc, driver, align_voltage).await;
+
+    foc.enable();
+    tune_runtime_gains(foc, p_adc, driver, csa_gain).await;
+    save_calibration(foc, p_flash, can_id, secondary_zero_offset);
+    foc_isr::set_output_zero_offset(0.0);
+
+    Ok(())
+}
+
+fn start_foc(foc: FocControllerType, csa_gain: drv8316::CsaGain, use_current_sensing: bool) {
+    foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
+    info!("FOC interrupt-driven control started");
+}
+
 #[inline]
 pub(crate) async fn init_foc(
     drvoff_pin: gpio::Output<'static>,
@@ -282,10 +406,9 @@ pub(crate) async fn init_foc(
     let use_current_sensing = true;
     let csa_gain = drv8316::CsaGain::Gain0_3V;
 
-    let has_stored_config = stored_config.is_some();
     let can_id = stored_config.as_ref().map(|c| c.can_id).unwrap_or(0x0F);
 
-    if has_stored_config {
+    if stored_config.is_some() {
         info!("Found stored calibration, skipping motor calibration");
     } else {
         info!("No stored calibration found, running motor calibration");
@@ -301,102 +424,29 @@ pub(crate) async fn init_foc(
     foc.set_psu_voltage(measure_vm_sense());
 
     if let Some(config) = &stored_config {
-        flash_config::apply_to_foc(&mut foc, config);
-        set_runtime_correction(config.get_encoder_correction());
-        foc_isr::set_output_zero_offset(config.output_zero_offset);
-        info!(
-            "Loaded calibration: mapping=({},{},{}), bias_angle={}",
-            config.current_mapping.0,
-            config.current_mapping.1,
-            config.current_mapping.2,
-            config.bias_angle
-        );
-    } else {
-        let mut secondary_zero_offset = 0.0;
-        let align_voltage = match run_motor_calibration(
-            &mut foc,
-            &mut p_adc,
-            &mut driver,
-            &mut gate_driver,
-            csa_gain,
-            use_current_sensing,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                error!("{}", e);
-                gate_driver.turn_off();
-                return None;
-            }
-        };
-
-        match calibration::calibrate_encoder_correction(&mut driver, &foc, align_voltage).await {
-            Ok(correction) => {
-                set_runtime_correction(correction);
-                info!("Encoder LUT calibration complete");
-            }
-            Err(e) => warn!("{}", e),
-        }
-
-        match calibration::calibrate_secondary_zero_offset(&mut driver, &foc, align_voltage).await {
-            Ok(calibrated_secondary_zero_offset) => {
-                if apply_secondary_zero_offset(calibrated_secondary_zero_offset).await {
-                    secondary_zero_offset = calibrated_secondary_zero_offset;
-                    info!("Secondary encoder zero offset = {}", secondary_zero_offset);
-                } else {
-                    warn!("Failed to apply calibrated secondary zero offset");
-                }
-            }
-            Err(e) => warn!("{}", e),
-        }
-
-        foc.enable();
-
-        if let Some(velocity_gain) = velocity_tuning::tune_velocity_pi(
-            &mut foc,
-            &mut driver,
-            &mut p_adc,
-            csa_gain,
-            read_sensor,
-            VELOCITY_PI_FREQUENCY,
-        )
-        .await
-        {
-            foc.set_velocity_kp(velocity_gain.p);
-            foc.set_velocity_ki(velocity_gain.i);
-            info!("velocity kp={}, ki={}", velocity_gain.p, velocity_gain.i);
-        } else {
-            warn!("Velocity PI tuning failed, using defaults");
-        }
-
-        let kv =
-            motor_tuning::find_kv_rating(&mut foc, &mut driver, &mut p_adc, csa_gain, read_sensor)
-                .await;
-        foc.motor.kv_rating = kv;
-        info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
-
-        let mut config = flash_config::from_foc(&foc, can_id);
-        config.output_zero_offset = 0.0;
-        config.secondary_zero_offset = secondary_zero_offset;
-        config.set_encoder_correction(runtime_snapshot());
-        if let Err(e) = flash_config::write_config(p_flash, &mut config) {
-            warn!("Failed to save calibration to flash: {:?}", e);
-        } else {
-            info!("Calibration saved to flash");
-        }
-    }
-
-    if stored_config.is_none() {
-        foc_isr::set_output_zero_offset(0.0);
+        apply_stored_calibration(&mut foc, config);
+    } else if let Err(e) = run_full_calibration(
+        &mut foc,
+        &mut p_adc,
+        &mut driver,
+        &mut gate_driver,
+        p_flash,
+        can_id,
+        csa_gain,
+        use_current_sensing,
+    )
+    .await
+    {
+        error!("{}", e);
+        gate_driver.turn_off();
+        return None;
     }
 
     foc.set_run_mode(RunMode::Torque);
     foc.set_target_torque(0.0);
     foc.enable();
 
-    foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
-    info!("FOC interrupt-driven control started");
+    start_foc(foc, csa_gain, use_current_sensing);
 
     *(GATE_DRIVER.lock().await) = Some(gate_driver);
 
