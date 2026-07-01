@@ -32,7 +32,6 @@ pub(crate) const ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS: usize = 16;
 pub(crate) const ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD: f32 = 0.005;
 pub(crate) const INIT_DELAY_CYCLES: u32 = 160_000;
 pub(crate) const CAN_BITRATE: u32 = 1_000_000;
-pub(crate) const CAN_RECOVERY_REINIT_INTERVAL_MS: u64 = 100;
 pub(crate) const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
 pub(crate) const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priority::P7;
 pub(crate) const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
