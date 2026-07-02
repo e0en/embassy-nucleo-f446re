@@ -8,12 +8,14 @@ mod adc;
 mod app;
 mod as5047p;
 mod bldc_driver;
+#[cfg(feature = "tuner-fw")]
 mod calibration;
 mod can;
 mod clock;
 mod cordic;
 #[cfg(feature = "cordic-self-test")]
 mod cordic_selftest;
+#[cfg(feature = "tuner-fw")]
 mod current_tuning;
 mod drv8316;
 mod drv8316t;
@@ -22,8 +24,10 @@ mod encoder_correction;
 mod flash_config;
 mod foc_isr;
 mod gm3506;
+#[cfg(feature = "tuner-fw")]
 mod motor_tuning;
 mod pwm;
+#[cfg(feature = "tuner-fw")]
 mod velocity_tuning;
 
 use app::{

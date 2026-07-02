@@ -1,8 +1,13 @@
-use defmt::{error, info, warn};
+#[cfg(feature = "tuner-fw")]
+use defmt::warn;
+use defmt::{error, info};
 use embassy_stm32::{flash::Flash, gpio, peripherals};
-use embassy_time::{Duration, Timer};
+#[cfg(feature = "tuner-fw")]
+use embassy_time::Duration;
+use embassy_time::Timer;
+use foc::controller::{FocController, OutputLimit, RunMode};
+#[cfg(feature = "tuner-fw")]
 use foc::{
-    controller::{FocController, OutputLimit, RunMode},
     pwm_output::{DutyCycle3Phase, PwmOutput},
     svpwm,
 };
@@ -10,23 +15,34 @@ use foc::{
 use crate::{
     adc::{self, measure_vm_sense},
     bldc_driver::PwmDriver,
-    calibration,
     cordic::sincos,
-    current_tuning, drv8316, drv8316t,
-    encoder_correction::{runtime_snapshot, set_runtime_correction, wrap_pm_pi},
-    flash_config, foc_isr, gm3506 as motor, motor_tuning, pwm, velocity_tuning,
+    drv8316, drv8316t,
+    encoder_correction::set_runtime_correction,
+    flash_config, foc_isr, gm3506 as motor, pwm,
+};
+#[cfg(feature = "tuner-fw")]
+use crate::{
+    calibration, current_tuning,
+    encoder_correction::{runtime_snapshot, wrap_pm_pi},
+    motor_tuning, velocity_tuning,
 };
 
 use super::{
-    ALIGN_VOLTAGE, ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD, ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS,
-    ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD, ALIGN_VOLTAGE_SEARCH_SETTLE_MS,
-    ALIGN_VOLTAGE_SEARCH_START, ALIGN_VOLTAGE_SEARCH_STEP, ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS,
-    ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD, ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS, CURRENT_PI_FREQUENCY,
-    CURRENT_SAFETY_MARGIN, CURRENT_SENSE_GAIN, DEFAULT_MOTOR_CAN_ID, FocControllerType,
-    IMPEDANCE_TUNING_MAX_CURRENT, PHASE_MAPPING_TOLERANCE, PSU_VOLTAGE, VELOCITY_PI_FREQUENCY,
-    VOLTAGE_RAMP_RATE,
-    encoder::{apply_secondary_zero_offset, read_sensor},
+    CURRENT_SAFETY_MARGIN, CURRENT_SENSE_GAIN, FocControllerType, PSU_VOLTAGE, VOLTAGE_RAMP_RATE,
     persistence::GATE_DRIVER,
+};
+#[cfg(feature = "tuner-fw")]
+use super::{
+    DEFAULT_MOTOR_CAN_ID,
+    encoder::{apply_secondary_zero_offset, read_sensor},
+    tuning::{
+        ALIGN_VOLTAGE, ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD,
+        ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS, ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD,
+        ALIGN_VOLTAGE_SEARCH_SETTLE_MS, ALIGN_VOLTAGE_SEARCH_START, ALIGN_VOLTAGE_SEARCH_STEP,
+        ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS, ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD,
+        ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS, CURRENT_PI_FREQUENCY, IMPEDANCE_TUNING_MAX_CURRENT,
+        PHASE_MAPPING_TOLERANCE, VELOCITY_PI_FREQUENCY,
+    },
 };
 
 fn create_foc_controller() -> FocControllerType {
@@ -45,6 +61,7 @@ fn create_foc_controller() -> FocControllerType {
     foc
 }
 
+#[cfg(feature = "tuner-fw")]
 async fn run_motor_calibration(
     foc: &mut FocControllerType,
     p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
@@ -138,12 +155,14 @@ async fn run_motor_calibration(
     Ok(align_voltage)
 }
 
+#[cfg(feature = "tuner-fw")]
 struct AlignSweep {
     positive_steps: usize,
     negative_steps: usize,
     net_angle: f32,
 }
 
+#[cfg(feature = "tuner-fw")]
 impl AlignSweep {
     fn dominant_positive(&self) -> bool {
         self.positive_steps > self.negative_steps
@@ -158,6 +177,7 @@ impl AlignSweep {
     }
 }
 
+#[cfg(feature = "tuner-fw")]
 async fn measure_align_sweep(
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
     candidate_voltage: f32,
@@ -201,6 +221,7 @@ async fn measure_align_sweep(
     })
 }
 
+#[cfg(feature = "tuner-fw")]
 async fn find_minimum_align_voltage(
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
     psu_voltage: f32,
@@ -284,6 +305,7 @@ fn apply_stored_calibration(foc: &mut FocControllerType, config: &flash_config::
     );
 }
 
+#[cfg(feature = "tuner-fw")]
 async fn calibrate_encoder_tables(
     foc: &FocControllerType,
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
@@ -314,6 +336,7 @@ async fn calibrate_encoder_tables(
     secondary_zero_offset
 }
 
+#[cfg(feature = "tuner-fw")]
 async fn tune_runtime_gains(
     foc: &mut FocControllerType,
     p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
@@ -342,6 +365,7 @@ async fn tune_runtime_gains(
     info!("Motor kv rating = {}", kv / core::f32::consts::TAU * 60.0);
 }
 
+#[cfg(feature = "tuner-fw")]
 fn save_calibration(
     foc: &FocControllerType,
     p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
@@ -360,6 +384,7 @@ fn save_calibration(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "tuner-fw")]
 async fn run_full_calibration(
     foc: &mut FocControllerType,
     p_adc: &mut adc::DummyAdc<peripherals::ADC1>,
@@ -386,19 +411,73 @@ fn start_foc(foc: FocControllerType, csa_gain: drv8316::CsaGain) {
     info!("FOC interrupt-driven control started");
 }
 
+type MotorTimer = pwm::Pwm6Timer<
+    'static,
+    peripherals::TIM1,
+    peripherals::PA8,
+    peripherals::PA9,
+    peripherals::PA10,
+    peripherals::PB13,
+    peripherals::PB14,
+    peripherals::PB15,
+>;
+
+async fn start_configured_foc(
+    mut foc: FocControllerType,
+    mut gate_driver: drv8316t::Drv8316T<'static>,
+    driver: PwmDriver<'static, peripherals::TIM1>,
+    csa_gain: drv8316::CsaGain,
+) {
+    gate_driver.turn_on();
+
+    foc.set_run_mode(RunMode::Torque);
+    foc.set_target_torque(0.0);
+    foc.enable();
+
+    start_foc(foc, csa_gain);
+
+    *(GATE_DRIVER.lock().await) = Some(gate_driver);
+
+    core::mem::forget(driver);
+}
+
 #[inline]
+#[cfg(feature = "main-fw")]
 pub(crate) async fn init_foc(
     drvoff_pin: gpio::Output<'static>,
-    timer: pwm::Pwm6Timer<
-        'static,
-        peripherals::TIM1,
-        peripherals::PA8,
-        peripherals::PA9,
-        peripherals::PA10,
-        peripherals::PB13,
-        peripherals::PB14,
-        peripherals::PB15,
-    >,
+    timer: MotorTimer,
+    _p_adc: adc::DummyAdc<peripherals::ADC1>,
+    _p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
+    stored_config: Option<flash_config::ConfigData>,
+) -> Option<u8> {
+    let csa_gain = CURRENT_SENSE_GAIN;
+    let driver = PwmDriver::new(timer.timer);
+    let mut gate_driver = drv8316t::Drv8316T::new(drvoff_pin);
+    Timer::after_millis(1).await;
+
+    let Some(config) = stored_config.as_ref() else {
+        error!("No stored calibration found; flash tuner firmware first");
+        gate_driver.turn_off();
+        return None;
+    };
+
+    info!("Found stored calibration, skipping motor calibration");
+
+    let can_id = config.can_id;
+    let mut foc = create_foc_controller();
+
+    foc.set_psu_voltage(measure_vm_sense());
+    apply_stored_calibration(&mut foc, config);
+    start_configured_foc(foc, gate_driver, driver, csa_gain).await;
+
+    Some(can_id)
+}
+
+#[inline]
+#[cfg(feature = "tuner-fw")]
+pub(crate) async fn init_foc(
+    drvoff_pin: gpio::Output<'static>,
+    timer: MotorTimer,
     mut p_adc: adc::DummyAdc<peripherals::ADC1>,
     p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
     stored_config: Option<flash_config::ConfigData>,
@@ -421,8 +500,8 @@ pub(crate) async fn init_foc(
     Timer::after_millis(1).await;
 
     let mut foc = create_foc_controller();
-    gate_driver.turn_on();
 
+    gate_driver.turn_on();
     foc.set_psu_voltage(measure_vm_sense());
 
     if let Some(config) = &stored_config {
@@ -443,15 +522,6 @@ pub(crate) async fn init_foc(
         return None;
     }
 
-    foc.set_run_mode(RunMode::Torque);
-    foc.set_target_torque(0.0);
-    foc.enable();
-
-    start_foc(foc, csa_gain);
-
-    *(GATE_DRIVER.lock().await) = Some(gate_driver);
-
-    core::mem::forget(driver);
-
+    start_configured_foc(foc, gate_driver, driver, csa_gain).await;
     Some(can_id)
 }

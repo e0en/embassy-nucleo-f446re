@@ -68,6 +68,7 @@ where
         Self { _inner: p_adc }
     }
 
+    #[cfg(feature = "tuner-fw")]
     pub fn read(&self) -> (u16, u16, u16) {
         let ia = IA_RAW.load(Ordering::Relaxed);
         let ib = IB_RAW.load(Ordering::Relaxed);

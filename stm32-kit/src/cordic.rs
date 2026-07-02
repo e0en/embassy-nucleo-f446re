@@ -1,4 +1,6 @@
-use core::f32::consts::{PI, SQRT_2};
+use core::f32::consts::PI;
+#[cfg(any(feature = "tuner-fw", feature = "cordic-self-test"))]
+use core::f32::consts::SQRT_2;
 
 use embassy_stm32::pac::cordic::vals;
 use embassy_stm32::pac::{CORDIC, RCC};
@@ -63,6 +65,7 @@ fn clean_rrdy_flag() -> usize {
 ///
 /// Note: STM32 CORDIC sqrt expects input in range [0.027, 0.75] with scale=1,
 /// so we scale the input by 0.5 and the output by sqrt(2) to handle [0, 1] range.
+#[cfg(any(feature = "tuner-fw", feature = "cordic-self-test"))]
 pub fn sqrt(x: f32) -> f32 {
     debug_assert!((0.0..=1.0).contains(&x), "sqrt input must be in [0.0, 1.0]");
 
@@ -98,6 +101,7 @@ pub fn sqrt(x: f32) -> f32 {
 
 /// Compute square root for values outside [0, 1] range.
 /// Scales the input down, computes sqrt, then scales the result back up.
+#[cfg(any(feature = "tuner-fw", feature = "cordic-self-test"))]
 pub fn sqrt_scaled(x: f32) -> f32 {
     if x <= 0.0 {
         return 0.0;
@@ -122,6 +126,7 @@ pub fn sqrt_scaled(x: f32) -> f32 {
 
 /// Compute atan2(y, x) using CORDIC hardware PHASE function.
 /// Returns angle in radians in range [-π, π].
+#[cfg(any(feature = "tuner-fw", feature = "cordic-self-test"))]
 pub fn atan2(y: f32, x: f32) -> f32 {
     // CORDIC PHASE function computes atan2(y, x) and returns angle in [-1, 1] representing [-π, π]
     // It also returns the modulus sqrt(x² + y²) as a second result (which we discard)

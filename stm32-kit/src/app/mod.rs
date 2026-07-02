@@ -16,20 +16,6 @@ pub(crate) type FocControllerType = FocController<fn(f32) -> (f32, f32)>;
 pub(crate) const PSU_VOLTAGE: f32 = 16.0;
 pub(crate) const VOLTAGE_RAMP_RATE: f32 = 1000.0;
 pub(crate) const CURRENT_SAFETY_MARGIN: f32 = 0.8;
-pub(crate) const PHASE_MAPPING_TOLERANCE: f32 = 0.05;
-/// Must stay below current filter cutoff (1/(2π×0.001) ≈ 159 Hz)
-pub(crate) const CURRENT_PI_FREQUENCY: f32 = 100.0;
-pub(crate) const VELOCITY_PI_FREQUENCY: f32 = 3.0;
-pub(crate) const ALIGN_VOLTAGE: f32 = 2.0;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_START: f32 = 0.1;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_STEP: f32 = 0.1;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_SETTLE_MS: u64 = 200;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD: f32 = 0.01;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS: usize = 40;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS: u64 = 10;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD: f32 = 0.0005;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS: usize = 16;
-pub(crate) const ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD: f32 = 0.005;
 pub(crate) const INIT_DELAY_CYCLES: u32 = 160_000;
 pub(crate) const CAN_BITRATE: u32 = 1_000_000;
 pub(crate) const VELOCITY_OBSERVER_BANDWIDTH: f32 = 20.0;
@@ -37,9 +23,27 @@ pub(crate) const CAN_INTERRUPT_PRIORITY: interrupt::Priority = interrupt::Priori
 pub(crate) const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
 pub(crate) const DEFAULT_HOST_CAN_ID: u8 = 0;
 pub(crate) const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
-pub(crate) const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
 pub(crate) const CURRENT_SENSE_GAIN: drv8316::CsaGain = drv8316::CsaGain::Gain0_3V;
 pub(crate) const ACTUATOR_REDUCTION_RATIO_MAGNITUDE: i32 = 19;
 pub(crate) const ACTUATOR_REDUCTION_RATIO: f32 = ACTUATOR_REDUCTION_RATIO_MAGNITUDE as f32;
 /// Measured with a 100mm arm pressing a load cell: torque[Nm] ~= |i_q_ref| * 0.81.
 pub(crate) const ACTUATOR_IQ_TO_TORQUE_NM: f32 = 0.81;
+
+#[cfg(feature = "tuner-fw")]
+pub(crate) mod tuning {
+    pub(crate) const PHASE_MAPPING_TOLERANCE: f32 = 0.05;
+    /// Must stay below current filter cutoff (1/(2π×0.001) ≈ 159 Hz)
+    pub(crate) const CURRENT_PI_FREQUENCY: f32 = 100.0;
+    pub(crate) const VELOCITY_PI_FREQUENCY: f32 = 3.0;
+    pub(crate) const ALIGN_VOLTAGE: f32 = 2.0;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_START: f32 = 0.1;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_STEP: f32 = 0.1;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_SETTLE_MS: u64 = 200;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD: f32 = 0.01;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS: usize = 40;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS: u64 = 10;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_DELTA_EPSILON_RAD: f32 = 0.0005;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_MIN_DOMINANT_STEPS: usize = 16;
+    pub(crate) const ALIGN_VOLTAGE_SEARCH_MIN_NET_ANGLE_RAD: f32 = 0.005;
+    pub(crate) const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
+}

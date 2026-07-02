@@ -203,6 +203,7 @@ impl ConfigData {
         }
     }
 
+    #[cfg(feature = "tuner-fw")]
     pub fn set_encoder_correction(&mut self, correction: EncoderCorrection) {
         self.encoder_lut_valid = if correction.valid { 1 } else { 0 };
         self.encoder_error_lut = correction.error_lut;

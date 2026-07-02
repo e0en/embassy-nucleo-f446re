@@ -7,6 +7,7 @@ use embassy_time::Instant;
 use foc::encoder::EncoderReading;
 use foc::tracking_observer::TrackingObserver;
 
+#[cfg(feature = "tuner-fw")]
 use crate::cordic::atan2;
 
 pub const LUT_SIZE: usize = 128;
@@ -162,10 +163,12 @@ pub fn wrap_pm_pi(angle: f32) -> f32 {
     wrapped - PI
 }
 
+#[cfg(feature = "tuner-fw")]
 pub fn circular_mean(a: f32, b: f32) -> f32 {
     wrap_0_tau(a + 0.5 * wrap_pm_pi(b - a))
 }
 
+#[cfg(feature = "tuner-fw")]
 pub fn average_wrapped_samples(sum_sin: f32, sum_cos: f32) -> Option<f32> {
     if sum_sin == 0.0 && sum_cos == 0.0 {
         None
@@ -174,6 +177,7 @@ pub fn average_wrapped_samples(sum_sin: f32, sum_cos: f32) -> Option<f32> {
     }
 }
 
+#[cfg(feature = "tuner-fw")]
 pub fn build_lut_from_samples(samples: &[(f32, f32)]) -> Option<EncoderCorrection> {
     if samples.is_empty() {
         return None;
@@ -205,6 +209,7 @@ pub fn build_lut_from_samples(samples: &[(f32, f32)]) -> Option<EncoderCorrectio
     })
 }
 
+#[cfg(feature = "tuner-fw")]
 fn fill_missing_bins(lut: &mut [f32; LUT_SIZE], count: &[u16; LUT_SIZE]) -> Option<()> {
     let mut filled = 0usize;
     for &c in count {
@@ -242,6 +247,7 @@ fn fill_missing_bins(lut: &mut [f32; LUT_SIZE], count: &[u16; LUT_SIZE]) -> Opti
     Some(())
 }
 
+#[cfg(feature = "tuner-fw")]
 fn find_filled_bin(count: &[u16; LUT_SIZE], start: usize, direction: isize) -> Option<usize> {
     for offset in 1..=LUT_SIZE {
         let index = if direction > 0 {
