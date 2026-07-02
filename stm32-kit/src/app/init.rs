@@ -5,20 +5,21 @@ use embassy_stm32::{flash::Flash, gpio, peripherals};
 #[cfg(feature = "tuner-fw")]
 use embassy_time::Duration;
 use embassy_time::Timer;
-use foc::controller::{FocController, OutputLimit, RunMode};
+#[cfg(feature = "main-fw")]
+use foc::controller::RunMode;
+use foc::controller::{FocController, OutputLimit};
 #[cfg(feature = "tuner-fw")]
 use foc::{
     pwm_output::{DutyCycle3Phase, PwmOutput},
     svpwm,
 };
 
+use crate::encoder_correction::set_runtime_correction;
 use crate::{
     adc::{self, measure_vm_sense},
     bldc_driver::PwmDriver,
     cordic::sincos,
-    drv8316, drv8316t,
-    encoder_correction::set_runtime_correction,
-    flash_config, foc_isr, gm3506 as motor, pwm,
+    drv8316, drv8316t, flash_config, foc_isr, gm3506 as motor, pwm,
 };
 #[cfg(feature = "tuner-fw")]
 use crate::{
@@ -27,9 +28,10 @@ use crate::{
     motor_tuning, velocity_tuning,
 };
 
+#[cfg(feature = "main-fw")]
+use super::persistence::GATE_DRIVER;
 use super::{
     CURRENT_SAFETY_MARGIN, CURRENT_SENSE_GAIN, FocControllerType, PSU_VOLTAGE, VOLTAGE_RAMP_RATE,
-    persistence::GATE_DRIVER,
 };
 #[cfg(feature = "tuner-fw")]
 use super::{
@@ -292,6 +294,7 @@ async fn find_minimum_align_voltage(
     Err("Failed to find align voltage with directional response")
 }
 
+#[cfg(feature = "main-fw")]
 fn apply_stored_calibration(foc: &mut FocControllerType, config: &flash_config::ConfigData) {
     flash_config::apply_to_foc(foc, config);
     set_runtime_correction(config.get_encoder_correction());
@@ -406,6 +409,7 @@ async fn run_full_calibration(
     Ok(())
 }
 
+#[cfg(feature = "main-fw")]
 fn start_foc(foc: FocControllerType, csa_gain: drv8316::CsaGain) {
     foc_isr::initialize_foc_context(foc, csa_gain);
     info!("FOC interrupt-driven control started");
@@ -422,6 +426,7 @@ type MotorTimer = pwm::Pwm6Timer<
     peripherals::PB15,
 >;
 
+#[cfg(feature = "main-fw")]
 async fn start_configured_foc(
     mut foc: FocControllerType,
     mut gate_driver: drv8316t::Drv8316T<'static>,
@@ -489,11 +494,7 @@ pub(crate) async fn init_foc(
         .map(|c| c.can_id)
         .unwrap_or(DEFAULT_MOTOR_CAN_ID);
 
-    if stored_config.is_some() {
-        info!("Found stored calibration, skipping motor calibration");
-    } else {
-        info!("No stored calibration found, running motor calibration");
-    }
+    info!("Running motor calibration");
 
     let mut driver = PwmDriver::new(timer.timer);
     let mut gate_driver = drv8316t::Drv8316T::new(drvoff_pin);
@@ -504,9 +505,7 @@ pub(crate) async fn init_foc(
     gate_driver.turn_on();
     foc.set_psu_voltage(measure_vm_sense());
 
-    if let Some(config) = &stored_config {
-        apply_stored_calibration(&mut foc, config);
-    } else if let Err(e) = run_full_calibration(
+    if let Err(e) = run_full_calibration(
         &mut foc,
         &mut p_adc,
         &mut driver,
@@ -522,6 +521,8 @@ pub(crate) async fn init_foc(
         return None;
     }
 
-    start_configured_foc(foc, gate_driver, driver, csa_gain).await;
-    Some(can_id)
+    driver.run(DutyCycle3Phase::zero());
+    gate_driver.turn_off();
+    info!("Motor calibration complete; flash main firmware next");
+    None
 }

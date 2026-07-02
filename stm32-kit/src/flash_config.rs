@@ -168,6 +168,7 @@ impl ConfigData {
             && self.crc == self.compute_crc()
     }
 
+    #[cfg(feature = "main-fw")]
     pub fn get_sensor_direction(&self) -> Direction {
         match self.sensor_direction {
             0 => Direction::Clockwise,
@@ -182,6 +183,7 @@ impl ConfigData {
         };
     }
 
+    #[cfg(feature = "main-fw")]
     pub fn get_current_offset(&self) -> PhaseCurrent {
         PhaseCurrent::new(
             self.current_offset_a,
@@ -196,6 +198,7 @@ impl ConfigData {
         self.current_offset_c = offset.c;
     }
 
+    #[cfg(feature = "main-fw")]
     pub fn get_encoder_correction(&self) -> EncoderCorrection {
         EncoderCorrection {
             valid: self.encoder_lut_valid != 0,
@@ -271,6 +274,7 @@ pub fn clear_config(flash: &mut Flash<'_, Blocking>) -> Result<(), ConfigError> 
 }
 
 /// Apply stored configuration to FOC controller
+#[cfg(feature = "main-fw")]
 pub fn apply_to_foc<Fsincos>(foc: &mut foc::controller::FocController<Fsincos>, config: &ConfigData)
 where
     Fsincos: Fn(f32) -> (f32, f32),

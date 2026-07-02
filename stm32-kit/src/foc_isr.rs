@@ -49,6 +49,7 @@ pub struct FocContext {
 }
 
 /// Must be called after sensor alignment and calibration
+#[cfg(feature = "main-fw")]
 pub fn initialize_foc_context(foc: FocController<FocSincos>, csa_gain: CsaGain) {
     critical_section::with(|cs| {
         FOC_CONTEXT
