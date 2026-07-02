@@ -121,7 +121,6 @@ pub struct FocController<Fsincos: Fn(f32) -> (f32, f32)> {
     pub current_mapping: (u8, u8, u8),
     pub state: FocState,
 
-    pub use_current_sensing: bool,
     current_offset: PhaseCurrent,
 
     psu_voltage: Option<f32>,
@@ -206,7 +205,6 @@ where
             i_ref: 0.0,
         };
         Self {
-            use_current_sensing: false,
             motor,
             bias_angle: 0.0,
             current_phase_bias: 0.0,
@@ -254,14 +252,6 @@ where
             is_running: false,
             f_sincos,
         }
-    }
-
-    pub fn enable_current_sensing(&mut self) {
-        self.use_current_sensing = true;
-    }
-
-    pub fn disable_current_sensing(&mut self) {
-        self.use_current_sensing = false;
     }
 
     pub fn set_current_offset(&mut self, offset: PhaseCurrent) {
@@ -628,11 +618,7 @@ where
             self.state.velocity_error = 0.0;
             self.state.velocity_integral = 0.0;
             self.state.i_ref = 0.0;
-            let (i_q, i_d) = if self.use_current_sensing {
-                self.calculate_pq_currents(measured_current, electrical_angle)
-            } else {
-                (0.0, 0.0)
-            };
+            let (i_q, i_d) = self.calculate_pq_currents(measured_current, electrical_angle);
             self.state.i_q = i_q;
             self.state.i_d = i_d;
             self.state.v_q = 0.0;
@@ -692,7 +678,7 @@ where
         let (v_q, v_d) = {
             if self.mode == RunMode::Voltage {
                 (self.target.voltage, 0.0)
-            } else if self.use_current_sensing {
+            } else {
                 self.state.electrical_angle = electrical_angle;
 
                 let (mut i_q, mut i_d) =
@@ -710,8 +696,6 @@ where
                 self.state.i_q_error = self.current_q_pid.last_error;
                 self.state.i_q_integral = self.current_q_pid.integral;
                 (v_q, v_d)
-            } else {
-                (i_ref, 0.0)
             }
         };
         self.state.v_q = v_q;

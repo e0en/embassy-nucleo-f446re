@@ -10,7 +10,6 @@ use critical_section::Mutex;
 use embassy_stm32::pac;
 
 use foc::controller::{FocController, FocState, RunMode};
-use foc::current::PhaseCurrent;
 use foc::encoder::EncoderReading;
 use foc::pwm_output::DutyCycle3Phase;
 
@@ -47,21 +46,14 @@ fn user_output_to_input_shaft(value: f32) -> f32 {
 pub struct FocContext {
     pub foc: FocController<FocSincos>,
     pub csa_gain: CsaGain,
-    pub use_current_sensing: bool,
 }
 
 /// Must be called after sensor alignment and calibration
-pub fn initialize_foc_context(
-    foc: FocController<FocSincos>,
-    csa_gain: CsaGain,
-    use_current_sensing: bool,
-) {
+pub fn initialize_foc_context(foc: FocController<FocSincos>, csa_gain: CsaGain) {
     critical_section::with(|cs| {
-        FOC_CONTEXT.borrow(cs).replace(Some(FocContext {
-            foc,
-            csa_gain,
-            use_current_sensing,
-        }));
+        FOC_CONTEXT
+            .borrow(cs)
+            .replace(Some(FocContext { foc, csa_gain }));
     });
 }
 
@@ -138,11 +130,7 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
                 dt: CONTROL_LOOP_DT_SECONDS,
             };
 
-            let phase_current = if ctx.use_current_sensing {
-                drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, ctx.csa_gain)
-            } else {
-                PhaseCurrent::new(0.0, 0.0, 0.0)
-            };
+            let phase_current = drv8316::convert_csa_readings(ia_raw, ib_raw, ic_raw, ctx.csa_gain);
 
             if let Ok(duty) = ctx.foc.get_duty_cycle(&foc_reading, phase_current) {
                 // Update PWM directly via PAC (no Embassy overhead)

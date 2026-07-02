@@ -23,13 +23,13 @@ use super::{
     ALIGN_VOLTAGE_SEARCH_START, ALIGN_VOLTAGE_SEARCH_STEP, ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_MS,
     ALIGN_VOLTAGE_SEARCH_SWEEP_STEP_RAD, ALIGN_VOLTAGE_SEARCH_SWEEP_STEPS, CURRENT_PI_FREQUENCY,
     CURRENT_SAFETY_MARGIN, CURRENT_SENSE_GAIN, DEFAULT_MOTOR_CAN_ID, FocControllerType,
-    IMPEDANCE_TUNING_MAX_CURRENT, PHASE_MAPPING_TOLERANCE, PSU_VOLTAGE, USE_CURRENT_SENSING,
-    VELOCITY_PI_FREQUENCY, VOLTAGE_RAMP_RATE,
+    IMPEDANCE_TUNING_MAX_CURRENT, PHASE_MAPPING_TOLERANCE, PSU_VOLTAGE, VELOCITY_PI_FREQUENCY,
+    VOLTAGE_RAMP_RATE,
     encoder::{apply_secondary_zero_offset, read_sensor},
     persistence::GATE_DRIVER,
 };
 
-fn create_foc_controller(use_current_sensing: bool) -> FocControllerType {
+fn create_foc_controller() -> FocControllerType {
     let mut foc = FocController::new(
         motor::SETUP,
         motor::CURRENT_PID,
@@ -42,13 +42,6 @@ fn create_foc_controller(use_current_sensing: bool) -> FocControllerType {
         sincos as fn(f32) -> (f32, f32),
     );
     foc.set_driver_current_limit(drv8316::MAX_CURRENT * CURRENT_SAFETY_MARGIN);
-
-    if use_current_sensing {
-        foc.enable_current_sensing();
-    } else {
-        foc.disable_current_sensing();
-    }
-
     foc
 }
 
@@ -58,26 +51,23 @@ async fn run_motor_calibration(
     driver: &mut PwmDriver<'_, peripherals::TIM1>,
     gate_driver: &mut drv8316t::Drv8316T<'static>,
     csa_gain: drv8316::CsaGain,
-    use_current_sensing: bool,
 ) -> Result<f32, &'static str> {
-    if use_current_sensing {
-        let current_offset = calibration::get_current_offset(p_adc, driver, csa_gain).await;
-        if let Some(m) = calibration::get_phase_mapping(
-            p_adc,
-            driver,
-            csa_gain,
-            current_offset,
-            PHASE_MAPPING_TOLERANCE,
-        )
-        .await
-        {
-            info!("phase mapping = {} {} {}", m.0, m.1, m.2);
-            foc.current_mapping = m;
-        } else {
-            return Err("Current phase mapping failed");
-        }
-        foc.set_current_offset(current_offset);
+    let current_offset = calibration::get_current_offset(p_adc, driver, csa_gain).await;
+    if let Some(m) = calibration::get_phase_mapping(
+        p_adc,
+        driver,
+        csa_gain,
+        current_offset,
+        PHASE_MAPPING_TOLERANCE,
+    )
+    .await
+    {
+        info!("phase mapping = {} {} {}", m.0, m.1, m.2);
+        foc.current_mapping = m;
+    } else {
+        return Err("Current phase mapping failed");
     }
+    foc.set_current_offset(current_offset);
 
     let align_voltage = find_minimum_align_voltage(driver, measure_vm_sense()).await?;
     info!("Using align voltage {}", align_voltage);
@@ -105,9 +95,8 @@ async fn run_motor_calibration(
         return Err("Sensor align failed");
     }
 
-    if use_current_sensing
-        && let Some(offset) =
-            calibration::align_current(p_adc, driver, csa_gain, foc, align_voltage).await
+    if let Some(offset) =
+        calibration::align_current(p_adc, driver, csa_gain, foc, align_voltage).await
     {
         foc.set_current_phase_bias(offset);
         info!("current phase bias = {}", offset);
@@ -379,17 +368,8 @@ async fn run_full_calibration(
     p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
     can_id: u8,
     csa_gain: drv8316::CsaGain,
-    use_current_sensing: bool,
 ) -> Result<(), &'static str> {
-    let align_voltage = run_motor_calibration(
-        foc,
-        p_adc,
-        driver,
-        gate_driver,
-        csa_gain,
-        use_current_sensing,
-    )
-    .await?;
+    let align_voltage = run_motor_calibration(foc, p_adc, driver, gate_driver, csa_gain).await?;
 
     let secondary_zero_offset = calibrate_encoder_tables(foc, driver, align_voltage).await;
 
@@ -401,8 +381,8 @@ async fn run_full_calibration(
     Ok(())
 }
 
-fn start_foc(foc: FocControllerType, csa_gain: drv8316::CsaGain, use_current_sensing: bool) {
-    foc_isr::initialize_foc_context(foc, csa_gain, use_current_sensing);
+fn start_foc(foc: FocControllerType, csa_gain: drv8316::CsaGain) {
+    foc_isr::initialize_foc_context(foc, csa_gain);
     info!("FOC interrupt-driven control started");
 }
 
@@ -423,7 +403,6 @@ pub(crate) async fn init_foc(
     p_flash: &mut Flash<'static, embassy_stm32::flash::Blocking>,
     stored_config: Option<flash_config::ConfigData>,
 ) -> Option<u8> {
-    let use_current_sensing = USE_CURRENT_SENSING;
     let csa_gain = CURRENT_SENSE_GAIN;
 
     let can_id = stored_config
@@ -441,7 +420,7 @@ pub(crate) async fn init_foc(
     let mut gate_driver = drv8316t::Drv8316T::new(drvoff_pin);
     Timer::after_millis(1).await;
 
-    let mut foc = create_foc_controller(use_current_sensing);
+    let mut foc = create_foc_controller();
     gate_driver.turn_on();
 
     foc.set_psu_voltage(measure_vm_sense());
@@ -456,7 +435,6 @@ pub(crate) async fn init_foc(
         p_flash,
         can_id,
         csa_gain,
-        use_current_sensing,
     )
     .await
     {
@@ -469,7 +447,7 @@ pub(crate) async fn init_foc(
     foc.set_target_torque(0.0);
     foc.enable();
 
-    start_foc(foc, csa_gain, use_current_sensing);
+    start_foc(foc, csa_gain);
 
     *(GATE_DRIVER.lock().await) = Some(gate_driver);
 

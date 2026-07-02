@@ -38,7 +38,6 @@ pub(crate) const DEFAULT_MOTOR_CAN_ID: u8 = 0x0F;
 pub(crate) const DEFAULT_HOST_CAN_ID: u8 = 0;
 pub(crate) const DRV_FAULT_POLL_INTERVAL_MS: u64 = 10;
 pub(crate) const IMPEDANCE_TUNING_MAX_CURRENT: f32 = 1.5;
-pub(crate) const USE_CURRENT_SENSING: bool = true;
 pub(crate) const CURRENT_SENSE_GAIN: drv8316::CsaGain = drv8316::CsaGain::Gain0_3V;
 pub(crate) const ACTUATOR_REDUCTION_RATIO_MAGNITUDE: i32 = 19;
 pub(crate) const ACTUATOR_REDUCTION_RATIO: f32 = ACTUATOR_REDUCTION_RATIO_MAGNITUDE as f32;
