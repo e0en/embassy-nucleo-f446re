@@ -51,6 +51,7 @@ default = [
   "defmt-rtt",
   "panic-probe",
 ]
+cordic-self-test = []
 
 [[bin]]
 name = "stm32-kit"

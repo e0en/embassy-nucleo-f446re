@@ -8,6 +8,8 @@ mod calibration;
 mod can;
 mod clock;
 mod cordic;
+#[cfg(feature = "cordic-self-test")]
+mod cordic_selftest;
 mod current_tuning;
 mod drv8316;
 mod drv8316t;
@@ -59,8 +61,8 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     clock::set_clock(&mut config);
     cordic::initialize_cordic();
-    #[cfg(debug_assertions)]
-    cordic::run_and_log_validation_tests();
+    #[cfg(feature = "cordic-self-test")]
+    cordic_selftest::run_and_log_validation_tests();
     let p = embassy_stm32::init(config);
     clock::print_clock_info(&p.RCC);
 
