@@ -39,7 +39,8 @@ panic-probe = { version = "^1.0", features = ["print-defmt"], optional = true }
 embedded-can = "^0.4"
 
 [features]
-default = [
+default = ["main-fw"]
+firmware-deps = [
   "embassy-stm32",
   "embassy-executor",
   "embassy-time",
@@ -51,6 +52,8 @@ default = [
   "defmt-rtt",
   "panic-probe",
 ]
+main-fw = ["firmware-deps"]
+tuner-fw = ["firmware-deps"]
 cordic-self-test = []
 
 [[bin]]

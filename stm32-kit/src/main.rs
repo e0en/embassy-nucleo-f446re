@@ -1,5 +1,9 @@
 #![no_std]
 #![no_main]
+
+#[cfg(all(feature = "main-fw", feature = "tuner-fw"))]
+compile_error!("features `main-fw` and `tuner-fw` cannot be enabled together");
+
 mod adc;
 mod app;
 mod as5047p;
