@@ -1,15 +1,18 @@
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
 use defmt::{info, warn};
 use embassy_executor::task;
 use embassy_stm32::can::{self as stm32_can, CanRx, CanTx};
 use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
+    blocking_mutex::raw::ThreadModeRawMutex,
     channel::{Channel, Sender},
 };
+use embassy_time::Timer;
 use embedded_can::Id;
 
 use can_message::message::{
-    Command, CommandMessage, MotionControl, ParameterIndex, ParameterValue, ResponseBody,
-    ResponseMessage,
+    Command, CommandMessage, DebugValue, DebugValueKind, FeedbackType, MotionControl, MotorCurrent,
+    MotorStatus, ParameterIndex, ParameterValue, ResponseBody, ResponseMessage,
 };
 
 use crate::{
@@ -18,6 +21,7 @@ use crate::{
 };
 
 use super::{
+    DEFAULT_HOST_CAN_ID,
     fault::{has_active_fault, set_gate_driver_enabled, take_motor_disarmed_by_fault},
     persistence::{
         CAN_ID, CAN_PROPERTIES, save_can_id_to_flash, save_output_zero_offset_to_flash,
@@ -60,9 +64,38 @@ pub(crate) struct QueuedResponse {
 }
 
 static COMMAND_CHANNEL: Channel<ThreadModeRawMutex, CommandMessage, 32> = Channel::new();
-/// Response channel uses CriticalSectionRawMutex because it's accessed from ADC interrupt
-pub(crate) static RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, QueuedResponse, 64> =
+pub(crate) static RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, QueuedResponse, 64> =
     Channel::new();
+
+const DEFAULT_FEEDBACK_HZ: u32 = 1_000;
+const DEFAULT_FEEDBACK_INTERVAL_TICKS: u8 =
+    ((1.0 / (foc_isr::CONTROL_LOOP_DT_SECONDS * DEFAULT_FEEDBACK_HZ as f32)) as u8)
+        .saturating_sub(1);
+
+static FEEDBACK_TYPE: AtomicU8 = AtomicU8::new(0);
+static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(DEFAULT_FEEDBACK_INTERVAL_TICKS);
+static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(DEFAULT_HOST_CAN_ID);
+static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
+
+fn set_feedback_type(typ: FeedbackType) {
+    let val = match typ {
+        FeedbackType::Status => 0,
+        FeedbackType::Current => 1,
+        FeedbackType::SpeedError => 2,
+        FeedbackType::TorqueRef => 3,
+        FeedbackType::VelocityIntegral => 4,
+    };
+    FEEDBACK_TYPE.store(val, Ordering::Relaxed);
+}
+
+fn set_feedback_period(period: u8) {
+    FEEDBACK_PERIOD.store(period, Ordering::Relaxed);
+}
+
+fn set_feedback_host_can_id(host_can_id: u8) {
+    FEEDBACK_HOST_CAN_ID.store(host_can_id, Ordering::Relaxed);
+    FEEDBACK_HOST_CAN_ID_SET.store(true, Ordering::Relaxed);
+}
 
 pub(crate) fn can_id_filter(can_id: u8) -> stm32_can::filter::ExtendedFilter {
     stm32_can::filter::ExtendedFilter {
@@ -95,12 +128,12 @@ pub(crate) async fn command_task() {
 
         match command {
             Command::SetFeedbackInterval(period) => {
-                foc_isr::set_feedback_host_can_id(message.host_can_id);
-                foc_isr::set_feedback_period(period);
+                set_feedback_host_can_id(message.host_can_id);
+                set_feedback_period(period);
             }
             Command::SetFeedbackType(typ) => {
-                foc_isr::set_feedback_host_can_id(message.host_can_id);
-                foc_isr::set_feedback_type(typ);
+                set_feedback_host_can_id(message.host_can_id);
+                set_feedback_type(typ);
             }
             Command::Recalibrate => {
                 info!("Recalibrate command received, clearing config and resetting");
@@ -138,7 +171,7 @@ pub(crate) async fn command_task() {
 async fn handle_command(
     command: &Command,
     host_can_id: u8,
-    response_sender: &Sender<'static, CriticalSectionRawMutex, QueuedResponse, 64>,
+    response_sender: &Sender<'static, ThreadModeRawMutex, QueuedResponse, 64>,
 ) {
     match command {
         Command::Enable => enable_motor().await,
@@ -151,7 +184,7 @@ async fn handle_command(
     }
 
     if let Command::RequestStatus(_) = command {
-        foc_isr::set_feedback_host_can_id(host_can_id);
+        set_feedback_host_can_id(host_can_id);
     }
 
     if let Command::GetParameter(p) = command {
@@ -249,7 +282,7 @@ fn apply_set_parameter(parameter: &ParameterValue) {
 async fn send_parameter_response(
     parameter: ParameterIndex,
     host_can_id: u8,
-    response_sender: &Sender<'static, CriticalSectionRawMutex, QueuedResponse, 64>,
+    response_sender: &Sender<'static, ThreadModeRawMutex, QueuedResponse, 64>,
 ) {
     info!("parameter requested {}", parameter as u16);
     let pv = foc_isr::with_foc(|foc| {
@@ -284,6 +317,61 @@ async fn send_parameter_response(
             })
             .await;
     }
+}
+
+#[task]
+pub(crate) async fn feedback_task() {
+    let response_sender = RESPONSE_CHANNEL.sender();
+
+    loop {
+        Timer::after_micros(feedback_interval_micros()).await;
+
+        if !FEEDBACK_HOST_CAN_ID_SET.load(Ordering::Relaxed) {
+            continue;
+        }
+
+        let host_can_id = FEEDBACK_HOST_CAN_ID.load(Ordering::Relaxed);
+        if let Some(body) = build_feedback_body() {
+            let _ = response_sender.try_send(QueuedResponse { host_can_id, body });
+        }
+    }
+}
+
+fn feedback_interval_micros() -> u64 {
+    let ticks = FEEDBACK_PERIOD.load(Ordering::Relaxed) as u32 + 1;
+    let micros = (ticks as f32 * foc_isr::CONTROL_LOOP_DT_SECONDS * 1_000_000.0) as u64;
+    if micros == 0 { 1 } else { micros }
+}
+
+fn build_feedback_body() -> Option<ResponseBody> {
+    let feedback_type = FEEDBACK_TYPE.load(Ordering::Relaxed);
+    foc_isr::with_foc(|foc| {
+        let state = &foc.state;
+        match feedback_type {
+            0 => ResponseBody::MotorStatus(MotorStatus {
+                angle: foc_isr::input_to_user_angle(state.angle),
+                velocity: input_to_output_shaft(state.velocity),
+                torque: iq_to_torque_nm(foc.user_frame_i_q()),
+                temperature: 0.0,
+            }),
+            1 => ResponseBody::MotorCurrent(MotorCurrent {
+                i_q: foc.user_frame_i_q(),
+                i_d: state.i_d,
+            }),
+            2 => ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::SpeedError,
+                value: state.velocity_error,
+            }),
+            3 => ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::TorqueRef,
+                value: iq_to_torque_nm(foc.user_frame_i_ref()),
+            }),
+            _ => ResponseBody::DebugValue(DebugValue {
+                kind: DebugValueKind::VelocityIntegral,
+                value: state.velocity_integral,
+            }),
+        }
+    })
 }
 
 fn apply_motion_control(command: MotionControl) {

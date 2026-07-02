@@ -4,25 +4,19 @@
 //! synchronized with PWM updates for deterministic timing.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use embassy_stm32::pac;
 
-use can_message::message::{
-    DebugValue, DebugValueKind, FeedbackType, MotorCurrent, MotorStatus, ResponseBody,
-};
 use foc::controller::{FocController, FocState, RunMode};
 use foc::current::PhaseCurrent;
 use foc::encoder::EncoderReading;
 use foc::pwm_output::DutyCycle3Phase;
 
-use crate::app::{
-    DEFAULT_HOST_CAN_ID,
-    units::{input_to_output_shaft, iq_to_torque_nm, output_to_input_shaft},
-};
+use crate::app::units::{input_to_output_shaft, output_to_input_shaft};
 use crate::drv8316::{self, CsaGain};
-use crate::{RESPONSE_CHANNEL, read_sensor};
+use crate::read_sensor;
 
 type FocSincos = fn(f32) -> (f32, f32);
 
@@ -30,21 +24,12 @@ type FocSincos = fn(f32) -> (f32, f32);
 pub const MAX_COMPARE_VALUE: u32 = (1 << 11) - 1;
 const MAX_DUTY: u32 = MAX_COMPARE_VALUE + 1;
 const TIM1_CLOCK_HZ: u32 = 170_000_000;
-const DEFAULT_FEEDBACK_HZ: u32 = 1_000;
-const DEFAULT_FEEDBACK_INTERVAL_TICKS: u8 =
-    ((TIM1_CLOCK_HZ / (2 * MAX_DUTY * DEFAULT_FEEDBACK_HZ)) as u8).saturating_sub(1);
 // TIM1 runs from the 170 MHz APB2 clock. In center-aligned mode the counter
 // traverses one full PWM cycle in 2 * ARR counts, and REP=1 reduces the two
 // update events (overflow + underflow) to one TRGO/ADC trigger per full cycle.
-const CONTROL_LOOP_DT_SECONDS: f32 = (2.0 * MAX_DUTY as f32) / TIM1_CLOCK_HZ as f32;
+pub const CONTROL_LOOP_DT_SECONDS: f32 = (2.0 * MAX_DUTY as f32) / TIM1_CLOCK_HZ as f32;
 
 static FOC_CONTEXT: Mutex<RefCell<Option<FocContext>>> = Mutex::new(RefCell::new(None));
-
-static FEEDBACK_TYPE: AtomicU8 = AtomicU8::new(0); // 0 = Status, 1 = Current
-static FEEDBACK_PERIOD: AtomicU8 = AtomicU8::new(DEFAULT_FEEDBACK_INTERVAL_TICKS);
-static FEEDBACK_COUNTER: AtomicU8 = AtomicU8::new(0);
-static FEEDBACK_HOST_CAN_ID: AtomicU8 = AtomicU8::new(DEFAULT_HOST_CAN_ID);
-static FEEDBACK_HOST_CAN_ID_SET: AtomicBool = AtomicBool::new(false);
 
 static LOOP_COUNTER: AtomicU16 = AtomicU16::new(0);
 static OUTPUT_ZERO_OFFSET: AtomicU32 = AtomicU32::new(0);
@@ -82,26 +67,6 @@ pub fn initialize_foc_context(
 
 pub fn is_initialized() -> bool {
     critical_section::with(|cs| FOC_CONTEXT.borrow(cs).borrow().is_some())
-}
-
-pub fn set_feedback_type(typ: FeedbackType) {
-    let val = match typ {
-        FeedbackType::Status => 0,
-        FeedbackType::Current => 1,
-        FeedbackType::SpeedError => 2,
-        FeedbackType::TorqueRef => 3,
-        FeedbackType::VelocityIntegral => 4,
-    };
-    FEEDBACK_TYPE.store(val, Ordering::Relaxed);
-}
-
-pub fn set_feedback_period(period: u8) {
-    FEEDBACK_PERIOD.store(period, Ordering::Relaxed);
-}
-
-pub fn set_feedback_host_can_id(host_can_id: u8) {
-    FEEDBACK_HOST_CAN_ID.store(host_can_id, Ordering::Relaxed);
-    FEEDBACK_HOST_CAN_ID_SET.store(true, Ordering::Relaxed);
 }
 
 pub fn get_loop_counter() -> u16 {
@@ -182,16 +147,6 @@ pub fn run_foc_iteration(ia_raw: u16, ib_raw: u16, ic_raw: u16) {
             if let Ok(duty) = ctx.foc.get_duty_cycle(&foc_reading, phase_current) {
                 // Update PWM directly via PAC (no Embassy overhead)
                 set_pwm_duty(duty);
-
-                let counter = FEEDBACK_COUNTER.load(Ordering::Relaxed);
-                let period = FEEDBACK_PERIOD.load(Ordering::Relaxed);
-
-                if counter >= period {
-                    FEEDBACK_COUNTER.store(0, Ordering::Relaxed);
-                    send_feedback(&ctx.foc);
-                } else {
-                    FEEDBACK_COUNTER.store(counter + 1, Ordering::Relaxed);
-                }
             }
 
             LOOP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -210,44 +165,4 @@ fn set_pwm_duty(duty: DutyCycle3Phase) {
     tim1.ccr(0).write(|w| w.set_ccr(d1 as u16));
     tim1.ccr(1).write(|w| w.set_ccr(d2 as u16));
     tim1.ccr(2).write(|w| w.set_ccr(d3 as u16));
-}
-
-#[inline(always)]
-fn send_feedback(foc: &FocController<FocSincos>) {
-    if !FEEDBACK_HOST_CAN_ID_SET.load(Ordering::Relaxed) {
-        return;
-    }
-
-    let state = &foc.state;
-    let feedback_type = FEEDBACK_TYPE.load(Ordering::Relaxed);
-    let host_can_id = FEEDBACK_HOST_CAN_ID.load(Ordering::Relaxed);
-    let sender = RESPONSE_CHANNEL.sender();
-
-    let body = match feedback_type {
-        0 => ResponseBody::MotorStatus(MotorStatus {
-            angle: input_to_user_output_shaft(state.angle),
-            velocity: input_to_output_shaft(state.velocity),
-            torque: iq_to_torque_nm(foc.user_frame_i_q()),
-            temperature: 0.0,
-        }),
-        1 => ResponseBody::MotorCurrent(MotorCurrent {
-            i_q: foc.user_frame_i_q(),
-            i_d: state.i_d,
-        }),
-        2 => ResponseBody::DebugValue(DebugValue {
-            kind: DebugValueKind::SpeedError,
-            value: state.velocity_error,
-        }),
-        3 => ResponseBody::DebugValue(DebugValue {
-            kind: DebugValueKind::TorqueRef,
-            value: iq_to_torque_nm(foc.user_frame_i_ref()),
-        }),
-        _ => ResponseBody::DebugValue(DebugValue {
-            kind: DebugValueKind::VelocityIntegral,
-            value: state.velocity_integral,
-        }),
-    };
-
-    // Non-blocking send - drop if channel is full
-    let _ = sender.try_send(crate::QueuedResponse { host_can_id, body });
 }

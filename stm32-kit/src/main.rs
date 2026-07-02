@@ -42,7 +42,6 @@ use embassy_stm32::{
 };
 use {defmt_rtt as _, panic_probe as _};
 
-pub(crate) use app::can_control::{QueuedResponse, RESPONSE_CHANNEL};
 pub(crate) use app::encoder::read_sensor;
 
 bind_interrupts!(
@@ -172,6 +171,7 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(monitor::monitor_task()));
     unwrap!(spawner.spawn(fault::drv_fault_monitor_task(drv_fault_pin, led_fault)));
     unwrap!(spawner.spawn(can_control::command_task()));
+    unwrap!(spawner.spawn(can_control::feedback_task()));
     unwrap!(spawner.spawn(can_control::can_rx_task(can_rx)));
     unwrap!(spawner.spawn(can_control::can_tx_task(can_tx)));
 }
