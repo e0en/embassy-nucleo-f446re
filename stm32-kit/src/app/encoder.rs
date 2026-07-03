@@ -2,7 +2,6 @@ use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, Ordering};
 
 use defmt::error;
 use embassy_executor::task;
-#[cfg(feature = "tuner-fw")]
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     channel::{Channel, Sender},
@@ -65,21 +64,18 @@ static SENSOR_SNAPSHOTS: [SensorSnapshotBuffer; 2] =
 static ACTIVE_SENSOR_SNAPSHOT: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy)]
-#[cfg(feature = "tuner-fw")]
+#[cfg_attr(feature = "main-fw", allow(dead_code))]
 enum EncoderTaskCommand {
     SetSecondaryZeroOffset(f32),
 }
 
 #[derive(Clone, Copy)]
-#[cfg(feature = "tuner-fw")]
 enum EncoderTaskResponse {
     SecondaryZeroOffsetSet,
 }
 
-#[cfg(feature = "tuner-fw")]
 static ENCODER_TASK_COMMAND_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskCommand, 1> =
     Channel::new();
-#[cfg(feature = "tuner-fw")]
 static ENCODER_TASK_RESPONSE_CHANNEL: Channel<ThreadModeRawMutex, EncoderTaskResponse, 1> =
     Channel::new();
 
@@ -107,7 +103,6 @@ fn write_sensor_snapshot(encoder_reading: &EncoderReading, secondary_phase: f32)
     ACTIVE_SENSOR_SNAPSHOT.store(next_index as u8, Ordering::Release);
 }
 
-#[cfg(feature = "tuner-fw")]
 async fn handle_encoder_task_command(
     command: EncoderTaskCommand,
     dual_encoder: &mut DualEncoder<As5047P<'static>, As5047P<'static>>,
@@ -126,7 +121,7 @@ async fn handle_encoder_task_command(
     }
 }
 
-#[cfg(feature = "tuner-fw")]
+#[cfg_attr(feature = "main-fw", allow(dead_code))]
 pub(crate) async fn apply_secondary_zero_offset(secondary_zero_offset: f32) -> bool {
     ENCODER_TASK_COMMAND_CHANNEL
         .sender()
@@ -146,9 +141,7 @@ pub(crate) async fn encoder_task(
     let mut tracker = AngleTracker::new(VELOCITY_OBSERVER_BANDWIDTH);
     let mut correction_version = 0;
     let mut correction = runtime_snapshot();
-    #[cfg(feature = "tuner-fw")]
     let command_receiver = ENCODER_TASK_COMMAND_CHANNEL.receiver();
-    #[cfg(feature = "tuner-fw")]
     let response_sender = ENCODER_TASK_RESPONSE_CHANNEL.sender();
 
     loop {
@@ -158,7 +151,6 @@ pub(crate) async fn encoder_task(
             correction_version = latest_version;
         }
 
-        #[cfg(feature = "tuner-fw")]
         if let Ok(command) = command_receiver.try_receive()
             && handle_encoder_task_command(command, &mut dual_encoder, &response_sender).await
         {

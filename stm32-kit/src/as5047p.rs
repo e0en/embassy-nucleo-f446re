@@ -60,7 +60,6 @@ impl<'d> As5047P<'d> {
         }
     }
 
-    #[cfg(feature = "tuner-fw")]
     pub fn set_zero_offset(&mut self, zero_offset: f32) {
         self.zero_offset_raw = angle_to_raw(zero_offset);
         self.previous_raw_angle = None;
