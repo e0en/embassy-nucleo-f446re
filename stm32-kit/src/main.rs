@@ -21,6 +21,8 @@ mod drv8316;
 mod drv8316t;
 mod dual_encoder;
 mod encoder_correction;
+#[cfg(feature = "tuner-fw")]
+mod encoder_correction_tuning;
 mod flash_config;
 mod foc_isr;
 mod gm3506;

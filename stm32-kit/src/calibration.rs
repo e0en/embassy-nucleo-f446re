@@ -12,10 +12,8 @@ use crate::{
     bldc_driver::PwmDriver,
     cordic::{atan2, sincos},
     drv8316::{self, CsaGain},
-    encoder_correction::{
-        EncoderCorrection, LUT_SIZE, average_wrapped_samples, build_lut_from_samples,
-        circular_mean, wrap_0_tau,
-    },
+    encoder_correction::{EncoderCorrection, LUT_SIZE, wrap_0_tau},
+    encoder_correction_tuning::{average_wrapped_samples, build_lut_from_samples, circular_mean},
     read_sensor,
 };
 
