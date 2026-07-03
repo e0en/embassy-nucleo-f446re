@@ -6,6 +6,11 @@ use crate::drv8316;
 pub(crate) mod can_control;
 pub(crate) mod encoder;
 pub(crate) mod fault;
+mod foc_setup;
+#[cfg(feature = "main-fw")]
+pub(crate) mod init;
+#[cfg(feature = "tuner-fw")]
+#[path = "tuner_init.rs"]
 pub(crate) mod init;
 pub(crate) mod monitor;
 pub(crate) mod persistence;
